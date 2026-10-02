@@ -27,11 +27,7 @@ export function MenuBar({ menus }: { menus: { title: string; items: MenuItem[] }
         <div key={menu.title} className={`menu ${open === menu.title ? 'open' : ''}`} onPointerEnter={() => open && setOpen(menu.title)}>
           <button onClick={() => setOpen(open === menu.title ? null : menu.title)}>{menu.title}</button>
           {open === menu.title && (
-            <div className="menu-list">
-              {menu.items.map((item, index) => item === 'divider' ? <hr key={index} /> : (
-                <button key={item.label} disabled={item.disabled} onClick={() => { setOpen(null); item.action?.() }}><span>{item.checked ? '✓ ' : ''}{item.label}</span><kbd>{shortcutLabel(item.shortcut)}</kbd></button>
-              ))}
-            </div>
+            <div className="menu-list"><Items items={menu.items} close={() => setOpen(null)} /></div>
           )}
         </div>
       ))}

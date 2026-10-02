@@ -1,7 +1,8 @@
 import { useEffect, useState, useSyncExternalStore } from 'react'
 import { useEditor } from './hooks'
 import { store, tabs, type Tool } from '../editor/store'
-import { closeProject, documentName, downloadZip, exportImage, importImage, openFiles, openProject, openSample, openZip, placeImages, save } from '../editor/actions'
+import { clearRecent, loadRecent, recentProjects, subscribeRecent } from '../io/recent'
+import { closeProject, openRecent, documentName, downloadZip, exportImage, importImage, openFiles, openProject, openSample, openZip, placeImages, save } from '../editor/actions'
 import { copy, cut, layerViaCopy, paste } from '../editor/clipboard'
 import { readDrop, canWriteDirectories } from '../io/files'
 import { adjustmentKinds, blendModes } from '../model/types'
@@ -133,6 +134,8 @@ function canvasCommand(title: string): boolean {
 export function App() {
   const state = useEditor()
   useSyncExternalStore(subscribePrefs, () => prefs)
+  const recent = useSyncExternalStore(subscribeRecent, recentProjects)
+  useEffect(() => { loadRecent() }, [])
   const [, setShortcutVersion] = useState(0)
   useEffect(() => subscribeShortcuts(() => setShortcutVersion(v => v + 1)), [])
   const [dragging, setDragging] = useState(false)
@@ -146,6 +149,11 @@ export function App() {
     { title: 'File', items: [
       item('New Canvas…', 'New Canvas'),
       item(canWriteDirectories ? 'Open Project…' : 'Open Project Folder (read only)…', 'Open Project'),
+      { label: 'Open Recent', disabled: !canWriteDirectories, submenu: [
+        ...recent.map(r => ({ label: r.name, action: () => openRecent(r) })),
+        ...(recent.length ? ['divider' as const] : []),
+        { label: 'Clear Menu', action: clearRecent, disabled: !recent.length },
+      ] },
       { label: 'Open Zipped Project…', action: openZip },
       { label: 'Import Images…', action: importImage },
       { label: 'Open Sample Project', action: openSample },

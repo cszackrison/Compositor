@@ -1,5 +1,6 @@
 import { commitFloating } from './floating'
-import { Store, closeTab, store, tabForOpening } from './store'
+import { Store, activateTab, closeTab, store, tabForOpening, tabs } from './store'
+import { forgetRecent, noteRecent, type Recent } from '../io/recent'
 import { canWriteDirectories, download, readDirectoryHandle, readFileList, rootedAtManifest, unzipPackage, writeDirectory, zipPackage, type PackageFiles, type PackageTarget } from '../io/files'
 import { readProject, writeProject } from '../io/project'
 import { Raster, decodeImageFile, encodePNG } from '../model/raster'
@@ -35,6 +36,7 @@ export const newCanvas = guard((width: number, height: number, fill: 'white' | '
 export const openFiles = guard(async (files: PackageFiles, target: PackageTarget) => {
   const { doc, activeId } = await readProject(files)
   tabForOpening().open(doc, activeId, target)
+  if (target.kind === 'directory') noteRecent(target.handle)
 })
 
 export const openProject = guard(async () => {
@@ -98,6 +100,7 @@ export const save = guard(async (as: boolean = false) => {
     }
   }
   await writeDirectory(target.handle, files)
+  noteRecent(target.handle)
   store.set({ saved: true, target })
   store.notify(`Saved ${target.name}`, 'info')
 })
@@ -153,4 +156,14 @@ export const pasteImage = guard(async () => {
 export const openSample = guard(async () => {
   const bytes = new Uint8Array(await (await fetch(`${import.meta.env.BASE_URL}samples/Sample.comp.zip`)).arrayBuffer())
   await openFiles(unzipPackage(bytes), { kind: 'download', name: 'Sample' })
+})
+
+// Open Recent: a project that's already open is just brought forward; one that's gone is dropped from the list.
+export const openRecent = guard(async (recent: Recent) => {
+  for (const tab of tabs) if (tab.state.target?.kind === 'directory' && await tab.state.target.handle.isSameEntry(recent.handle)) { activateTab(tab); return }
+  if ((await (recent.handle as any).requestPermission?.({ mode: 'readwrite' })) === 'denied') return
+  let files: PackageFiles
+  try { files = rootedAtManifest(await readDirectoryHandle(recent.handle)) }
+  catch (error) { await forgetRecent(recent.handle); throw new Error(`Couldn’t open the project “${recent.name}”: ${(error as Error).message}`) }
+  await openFiles(files, { kind: 'directory', handle: recent.handle, name: recent.handle.name })
 })
