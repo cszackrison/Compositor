@@ -14,6 +14,8 @@ export function falloff(u: number) {
   const k = 2.5
   return Math.max(0, (Math.exp(-k * u * u) - Math.exp(-k)) / (1 - Math.exp(-k)))
 }
+// The same, tabulated, for the inner loop of every dab.
+const falloffTable = Float32Array.from({ length: 2049 }, (_, i) => falloff(i / 2048))
 
 // One brush stroke on a layer's pixels or mask. Dabs build coverage (lighten for a hard tip, screen for a soft one), and the
 // stroke's color is laid over the untouched original at coverage × opacity, so overlapping dabs never pass the stroke's opacity.
@@ -139,24 +141,39 @@ export class BrushStroke {
 
   private dabAt(docX: number, docY: number) {
     const { width, height } = this.raster
-    const [cx, cy] = apply(this.toPixel, docX, docY)
+    const m = this.toPixel, cx = m[0] * docX + m[3] * docY + m[6], cy = m[1] * docX + m[4] * docY + m[7]
     const radius = this.settings.diameter / 2 * this.pixelScale
     if (radius <= 0) return
     const x0 = Math.max(0, Math.floor(cx - radius - 1)), y0 = Math.max(0, Math.floor(cy - radius - 1))
     const x1 = Math.min(width, Math.ceil(cx + radius + 1)), y1 = Math.min(height, Math.ceil(cy + radius + 1))
     if (x0 >= x1 || y0 >= y1) return
     const hard = this.settings.hardness >= 1, inner = radius * this.settings.hardness, band = Math.max(1e-6, radius - inner)
-    const coverage = this.coverage
+    const coverage = this.coverage, outer = radius + 0.5, outer2 = outer * outer, solid = Math.max(0, radius - 0.5), solid2 = solid * solid, inner2 = inner * inner
+    const lutScale = (falloffTable.length - 1) / band
     for (let y = y0; y < y1; y++) {
-      const dy = y + 0.5 - cy
-      for (let x = x0; x < x1; x++) {
-        const d = Math.hypot(x + 0.5 - cx, dy)
+      const dy = y + 0.5 - cy, dy2 = dy * dy
+      if (dy2 >= outer2) continue
+      // Only the pixels on this row that the circle reaches.
+      const chord = Math.sqrt(outer2 - dy2)
+      const from = Math.max(x0, Math.floor(cx - chord - 0.5)), to = Math.min(x1, Math.ceil(cx + chord + 0.5))
+      let i = y * width + from
+      for (let x = from; x < to; x++, i++) {
+        const dx = x + 0.5 - cx, d2 = dx * dx + dy2
         let v: number
-        if (hard) v = Math.min(1, Math.max(0, radius - d + 0.5))
-        else v = d <= inner ? 1 : d >= radius ? 0 : falloff((d - inner) / band)
-        if (v <= 0) continue
-        const i = y * width + x, c = coverage[i]
-        coverage[i] = hard ? Math.max(c, v) : c + v - c * v
+        if (hard) {
+          if (d2 >= outer2) continue
+          v = d2 <= solid2 ? 1 : radius - Math.sqrt(d2) + 0.5
+          if (v > 1) v = 1
+          if (v <= 0) continue
+          const c = coverage[i]
+          if (v > c) coverage[i] = v
+        } else {
+          if (d2 >= radius * radius) continue
+          v = d2 <= inner2 ? 1 : falloffTable[((Math.sqrt(d2) - inner) * lutScale) | 0]
+          if (v <= 0) continue
+          const c = coverage[i]
+          coverage[i] = c + v - c * v
+        }
       }
     }
     this.include({ x0, y0, x1, y1 })
@@ -185,8 +202,8 @@ export class BrushStroke {
         let a = coverage[i] * opacity
         if (a <= 0) continue
         if (selection) {
-          const [dx, dy] = apply(toDoc, x + 0.5, y + 0.5)
-          const sx = Math.floor(dx), sy = Math.floor(dy)
+          const px = x + 0.5, py = y + 0.5
+          const sx = Math.floor(toDoc[0] * px + toDoc[3] * py + toDoc[6]), sy = Math.floor(toDoc[1] * px + toDoc[4] * py + toDoc[7])
           a *= sx >= 0 && sy >= 0 && sx < selection.width && sy < selection.height ? selection.data[sy * selection.width + sx] / 255 : 0
           if (a <= 0) continue
         }

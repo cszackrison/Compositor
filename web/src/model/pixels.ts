@@ -11,20 +11,23 @@ function boxes(sigma: number, n = 3) {
 }
 
 // One running-sum box pass over `channels`-interleaved floats, along rows (horizontal) or columns. `clamp` repeats the edge,
-// otherwise past the edge is transparent zero.
+// otherwise past the edge is transparent zero. Straight indexing, no per-sample calls: this runs for every pixel of every blur.
 function boxPass(source: Float32Array, out: Float32Array, width: number, height: number, channels: number, radius: number, horizontal: boolean, clamp: boolean) {
   const length = horizontal ? width : height, lines = horizontal ? height : width
   const step = (horizontal ? 1 : width) * channels, lineStep = (horizontal ? width : 1) * channels
-  const scale = 1 / (radius * 2 + 1)
+  const scale = 1 / (radius * 2 + 1), last = (length - 1) * step
   for (let line = 0; line < lines; line++) {
     const base = line * lineStep
     for (let c = 0; c < channels; c++) {
-      const at = (i: number) => i < 0 ? (clamp ? source[base + c] : 0) : i >= length ? (clamp ? source[base + (length - 1) * step + c] : 0) : source[base + i * step + c]
+      const first = source[base + c], end = source[base + last + c]
       let sum = 0
-      for (let i = -radius; i <= radius; i++) sum += at(i)
-      for (let i = 0; i < length; i++) {
-        out[base + i * step + c] = sum * scale
-        sum += at(i + radius + 1) - at(i - radius)
+      for (let i = -radius; i <= radius; i++) sum += i < 0 ? (clamp ? first : 0) : i >= length ? (clamp ? end : 0) : source[base + i * step + c]
+      let o = base + c, add = base + (radius + 1) * step + c, sub = base - radius * step + c
+      for (let i = 0; i < length; i++, o += step, add += step, sub += step) {
+        out[o] = sum * scale
+        const incoming = i + radius + 1 < length ? source[add] : clamp ? end : 0
+        const outgoing = i - radius >= 0 ? source[sub] : clamp ? first : 0
+        sum += incoming - outgoing
       }
     }
   }

@@ -11,16 +11,23 @@ import type { ToolHandler } from './tool'
 type Warp = {
   kind: 'Liquify' | 'Smudge'; layerId: string; raster: Raster; original: Uint8Array; toPixel: Mat3; scale: number
   offsets: Float32Array | null; carried: Float32Array | null; last: [number, number] | null; dirty: { x0: number; y0: number; x1: number; y1: number } | null
+  tip?: { diameter: number; hardness: number; strength: number; radius: number; falloff: Float32Array }; scratch?: Float32Array
 }
 let warp: Warp | null = null
 let pointer: [number, number] | null = null
 
 const weight = (u: number, h: number) => { if (u >= 1) return 0; if (u <= h) return 1; const t = (1 - u) / (1 - h); return t * t * (3 - 2 * t) }
 
+// The tip's weight by squared distance over squared radius, so the dab loops skip a square root per pixel.
+const falloffSteps = 4096
+
 function settings(w: Warp) {
+  if (w.tip) return w.tip
   const brush = store.state.brush
   const diameter = Math.max(2, brush.diameter) * w.scale
-  return { diameter, hardness: Math.min(0.98, Math.max(0, brush.hardness)), strength: Math.min(1, Math.max(0.01, brush.opacity)), radius: Math.ceil(diameter / 2) }
+  const hardness = Math.min(0.98, Math.max(0, brush.hardness)), falloff = new Float32Array(falloffSteps + 1)
+  for (let i = 0; i <= falloffSteps; i++) falloff[i] = weight(Math.sqrt(i / falloffSteps), hardness)
+  return (w.tip = { diameter, hardness, strength: Math.min(1, Math.max(0.01, brush.opacity)), radius: Math.ceil(diameter / 2), falloff })
 }
 
 function include(w: Warp, x0: number, y0: number, x1: number, y1: number) {
@@ -28,62 +35,84 @@ function include(w: Warp, x0: number, y0: number, x1: number, y1: number) {
   w.dirty = d ? { x0: Math.min(d.x0, x0), y0: Math.min(d.y0, y0), x1: Math.max(d.x1, x1), y1: Math.max(d.y1, y1) } : { x0, y0, x1, y1 }
 }
 
-function sampleOriginal(w: Warp, x: number, y: number, c: number) {
-  const { raster, original } = w, width = raster.width, height = raster.height
-  const sx = Math.min(width - 1.001, Math.max(0, x)), sy = Math.min(height - 1.001, Math.max(0, y))
-  const ix = Math.floor(sx), iy = Math.floor(sy), fx = sx - ix, fy = sy - iy
-  const at = (px: number, py: number) => original[(py * width + px) * 4 + c]
-  return (at(ix, iy) * (1 - fx) + at(ix + 1, iy) * fx) * (1 - fy) + (at(ix, iy + 1) * (1 - fx) + at(ix + 1, iy + 1) * fx) * fy
-}
-
+// One Liquify dab from a to b: every pixel within the tip takes the offset field (and so the original pixels) from where the push
+// came from, weighted by the tip. Tight loops: these run for every pixel of every dab.
 function liquifyDab(w: Warp, a: [number, number], b: [number, number]) {
-  const { diameter, hardness, strength, radius } = settings(w)
-  const { raster } = w, width = raster.width, height = raster.height, offsets = w.offsets!
+  const { diameter, strength, radius, falloff } = settings(w)
+  const { raster, original } = w, width = raster.width, height = raster.height, offsets = w.offsets!, data = raster.data
   const mx = (b[0] - a[0]) * strength, my = (b[1] - a[1]) * strength
   const margin = Math.ceil(Math.max(Math.abs(mx), Math.abs(my))) + 2
   const cx = Math.round(b[0]), cy = Math.round(b[1])
   const x0 = Math.max(0, cx - radius - margin), y0 = Math.max(0, cy - radius - margin), x1 = Math.min(width, cx + radius + margin + 1), y1 = Math.min(height, cy + radius + margin + 1)
   const aw = x1 - x0, ah = y1 - y0
   if (aw < 2 || ah < 2) return
-  const before = new Float32Array(aw * ah * 2)
+  if (!w.scratch || w.scratch.length < aw * ah * 2) w.scratch = new Float32Array(aw * ah * 2)
+  const before = w.scratch
   for (let y = 0; y < ah; y++) before.set(offsets.subarray(((y + y0) * width + x0) * 2, ((y + y0) * width + x1) * 2), y * aw * 2)
-  for (let y = Math.max(y0, cy - radius); y < Math.min(y1, cy + radius + 1); y++) for (let x = Math.max(x0, cx - radius); x < Math.min(x1, cx + radius + 1); x++) {
-    const k = weight(Math.hypot(x - b[0], y - b[1]) / (diameter / 2), hardness)
-    if (k <= 0) continue
-    const sx = Math.min(aw - 1, Math.max(0, x - x0 - mx * k)), sy = Math.min(ah - 1, Math.max(0, y - y0 - my * k))
-    const ix = Math.min(aw - 2, Math.floor(sx)), iy = Math.min(ah - 2, Math.floor(sy))
-    if (ix < 0 || iy < 0) continue
-    const fx = sx - ix, fy = sy - iy
-    const o = (px: number, py: number, c: number) => before[((py) * aw + px) * 2 + c]
-    const ox = (o(ix, iy, 0) * (1 - fx) + o(ix + 1, iy, 0) * fx) * (1 - fy) + (o(ix, iy + 1, 0) * (1 - fx) + o(ix + 1, iy + 1, 0) * fx) * fy - mx * k
-    const oy = (o(ix, iy, 1) * (1 - fx) + o(ix + 1, iy, 1) * fx) * (1 - fy) + (o(ix, iy + 1, 1) * (1 - fx) + o(ix + 1, iy + 1, 1) * fx) * fy - my * k
-    const i = y * width + x
-    offsets[i * 2] = ox; offsets[i * 2 + 1] = oy
-    for (let c = 0; c < 4; c++) raster.data[i * 4 + c] = Math.round(sampleOriginal(w, x + ox, y + oy, c))
+  const half = diameter / 2, inverse2 = falloffSteps / (half * half), maxX = width - 1.001, maxY = height - 1.001
+  for (let y = Math.max(y0, cy - radius); y < Math.min(y1, cy + radius + 1); y++) {
+    const dy = y - b[1], dy2 = dy * dy
+    if (dy2 >= half * half) continue
+    const chord = Math.sqrt(half * half - dy2)
+    for (let x = Math.max(x0, Math.floor(b[0] - chord)); x < Math.min(x1, Math.ceil(b[0] + chord) + 1); x++) {
+      const dx = x - b[0], u = (dx * dx + dy2) * inverse2
+      if (u >= falloffSteps) continue
+      const k = falloff[u | 0]
+      if (k <= 0) continue
+      let sx = x - x0 - mx * k, sy = y - y0 - my * k
+      sx = sx < 0 ? 0 : sx > aw - 1 ? aw - 1 : sx; sy = sy < 0 ? 0 : sy > ah - 1 ? ah - 1 : sy
+      const ix = Math.min(aw - 2, sx | 0), iy = Math.min(ah - 2, sy | 0), fx = sx - ix, fy = sy - iy
+      const p00 = (iy * aw + ix) * 2, p10 = p00 + 2, p01 = p00 + aw * 2, p11 = p01 + 2
+      const w00 = (1 - fx) * (1 - fy), w10 = fx * (1 - fy), w01 = (1 - fx) * fy, w11 = fx * fy
+      const ox = before[p00] * w00 + before[p10] * w10 + before[p01] * w01 + before[p11] * w11 - mx * k
+      const oy = before[p00 + 1] * w00 + before[p10 + 1] * w10 + before[p01 + 1] * w01 + before[p11 + 1] * w11 - my * k
+      const i = y * width + x
+      offsets[i * 2] = ox; offsets[i * 2 + 1] = oy
+      // The original pixels at the moved place, all four channels in one bilinear sample.
+      let tx = x + ox, ty = y + oy
+      tx = tx < 0 ? 0 : tx > maxX ? maxX : tx; ty = ty < 0 ? 0 : ty > maxY ? maxY : ty
+      const jx = tx | 0, jy = ty | 0, gx = tx - jx, gy = ty - jy
+      const q00 = (jy * width + jx) * 4, q10 = q00 + 4, q01 = q00 + width * 4, q11 = q01 + 4
+      const v00 = (1 - gx) * (1 - gy), v10 = gx * (1 - gy), v01 = (1 - gx) * gy, v11 = gx * gy, o = i * 4
+      data[o] = original[q00] * v00 + original[q10] * v10 + original[q01] * v01 + original[q11] * v11 + 0.5
+      data[o + 1] = original[q00 + 1] * v00 + original[q10 + 1] * v10 + original[q01 + 1] * v01 + original[q11 + 1] * v11 + 0.5
+      data[o + 2] = original[q00 + 2] * v00 + original[q10 + 2] * v10 + original[q01 + 2] * v01 + original[q11 + 2] * v11 + 0.5
+      data[o + 3] = original[q00 + 3] * v00 + original[q10 + 3] * v10 + original[q01 + 3] * v01 + original[q11 + 3] * v11 + 0.5
+    }
   }
   include(w, x0, y0, x1, y1)
 }
 
 function smudgeDab(w: Warp, b: [number, number], pickUp: boolean) {
-  const { diameter, hardness, strength, radius } = settings(w)
-  const { raster } = w, width = raster.width, height = raster.height
+  const { diameter, strength, radius, falloff } = settings(w)
+  const { raster } = w, width = raster.width, height = raster.height, data = raster.data
   const cx = Math.round(b[0]), cy = Math.round(b[1]), size = radius * 2 + 1
   if (pickUp || !w.carried) {
     w.carried = new Float32Array(size * size * 4)
     for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
       const px = cx - radius + x, py = cy - radius + y
       if (px < 0 || py < 0 || px >= width || py >= height) continue
-      for (let c = 0; c < 4; c++) w.carried[(y * size + x) * 4 + c] = raster.data[(py * width + px) * 4 + c]
+      for (let c = 0; c < 4; c++) w.carried[(y * size + x) * 4 + c] = data[(py * width + px) * 4 + c]
     }
     return
   }
-  for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
-    const px = cx - radius + x, py = cy - radius + y
-    if (px < 0 || py < 0 || px >= width || py >= height) continue
-    const k = weight(Math.hypot(px - b[0], py - b[1]) / (diameter / 2), hardness) * strength
-    if (k <= 0) continue
-    const i = (py * width + px) * 4, j = (y * size + x) * 4
-    for (let c = 0; c < 4; c++) { const painted = raster.data[i + c] + (w.carried[j + c] - raster.data[i + c]) * k; raster.data[i + c] = Math.min(255, Math.max(0, Math.round(painted))); w.carried[j + c] = painted }
+  const carried = w.carried, half = diameter / 2, inverse2 = falloffSteps / (half * half), x0 = cx - radius, y0 = cy - radius
+  for (let py = Math.max(0, y0); py < Math.min(height, y0 + size); py++) {
+    const dy = py - b[1], dy2 = dy * dy
+    if (dy2 >= half * half) continue
+    const chord = Math.sqrt(half * half - dy2)
+    for (let px = Math.max(0, x0, Math.floor(b[0] - chord)); px < Math.min(width, x0 + size, Math.ceil(b[0] + chord) + 1); px++) {
+      const dx = px - b[0], u = (dx * dx + dy2) * inverse2
+      if (u >= falloffSteps) continue
+      const k = falloff[u | 0] * strength
+      if (k <= 0) continue
+      const i = (py * width + px) * 4, j = ((py - y0) * size + px - x0) * 4
+      for (let c = i, d = j; c < i + 4; c++, d++) {
+        const painted = data[c] + (carried[d] - data[c]) * k
+        data[c] = painted < 0 ? 0 : painted > 255 ? 255 : painted + 0.5
+        carried[d] = painted
+      }
+    }
   }
   include(w, cx - radius, cy - radius, cx + radius + 1, cy + radius + 1)
 }

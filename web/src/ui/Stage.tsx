@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useEditor } from './hooks'
 import { Store, store, type Tool } from '../editor/store'
 import { prefs, subscribePrefs, gridLines } from '../editor/prefs'
@@ -196,10 +196,9 @@ export function Stage() {
   const guideGesture = useRef(false)
   const lastPointer = useRef<Pointer | null>(null)
   const [space, setSpace] = useState(false)
-  const [status, setStatus] = useState('')
+  const statusRef = useRef<HTMLDivElement>(null)
   const [error, setError] = useState<string | null>(null)
   const [menu, setMenu] = useState<{ x: number; y: number; items: MenuItem[] } | null>(null)
-  const [, setCursorTick] = useState(0)
   const closeMenu = useCallback(() => setMenu(null), [])
   const state = useEditor()
 
@@ -209,6 +208,7 @@ export function Stage() {
     overlayCanvas = overlayRef.current
     Store.renderer = renderFull
     onFrame(frame)
+    compositor!.onStale = () => requestRender()
     const resize = () => {
       const box = ref.current!.getBoundingClientRect(), dpr = window.devicePixelRatio || 1
       for (const canvas of [canvasRef.current!, overlayRef.current!]) { canvas.width = Math.round(box.width * dpr); canvas.height = Math.round(box.height * dpr) }
@@ -260,13 +260,16 @@ export function Stage() {
     return { point: view.toDocument(...screen), screen, shift: event.shiftKey, alt: event.altKey, command: isMac ? event.metaKey : event.ctrlKey, control: isMac && event.ctrlKey, button: event.button, clicks: event.detail, coalesced: points }
   }
 
+  // The cursor follows hover without a React render per pointer move.
+  function updateCursor() { if (ref.current) { const next = cursorFor(); if (ref.current.style.cursor !== next) ref.current.style.cursor = next } }
+
   const onPointerDown = (event: React.PointerEvent) => {
     if (!store.hasDocument || menu) return
     ref.current!.focus()
     ;(event.target as Element).setPointerCapture(event.pointerId)
     const p = pointerFrom(event)
     lastPointer.current = p
-    if (space || store.state.tool === 'hand' || event.button === 1) { pan.current = { x: event.clientX, y: event.clientY, offsetX: view.offsetX, offsetY: view.offsetY }; setCursorTick(t => t + 1); return }
+    if (space || store.state.tool === 'hand' || event.button === 1) { pan.current = { x: event.clientX, y: event.clientY, offsetX: view.offsetX, offsetY: view.offsetY }; updateCursor(); return }
     if (prefs.rulers && event.button === 0 && (p.screen[0] < rulerSize || p.screen[1] < rulerSize)) {
       if ((p.screen[0] >= rulerSize || p.screen[1] >= rulerSize) && !prefs.lockGuides) { startGuideDrag(p.screen[1] < rulerSize ? 'horizontal' : 'vertical', null, p); guideGesture.current = true }
       return
@@ -280,17 +283,18 @@ export function Stage() {
   const onPointerMove = (event: React.PointerEvent) => {
     const p = pointerFrom(event, true)
     lastPointer.current = p
-    setStatus(store.hasDocument ? `${Math.floor(p.point[0])}, ${Math.floor(p.point[1])}  ·  ${Math.round(view.zoom * 100)}%` : '')
+    // Straight to the DOM: re-rendering the canvas component on every pointer move just for this costs more than it shows.
+    if (statusRef.current) statusRef.current.textContent = `${Math.floor(p.point[0])}, ${Math.floor(p.point[1])}  ·  ${Math.round(view.zoom * 100)}%`
     if (pan.current) { view.offsetX = pan.current.offsetX + event.clientX - pan.current.x; view.offsetY = pan.current.offsetY + event.clientY - pan.current.y; viewChanged(); requestRender(false); return }
     if (guideGesture.current) { moveGuideDrag(p); return }
     if (canvasDrag.current && event.buttons) { canvasDrag.current.move(event.clientX - canvasDrag.startX, p.command); return }
     if (event.buttons) activeHandler().move?.(p)
-    else { activeHandler().hover?.(p); setCursorTick(t => t + 1) }
+    else { activeHandler().hover?.(p); updateCursor() }
   }
 
   const onPointerUp = (event: React.PointerEvent) => {
     const p = pointerFrom(event)
-    if (pan.current) { pan.current = null; setCursorTick(t => t + 1); return }
+    if (pan.current) { pan.current = null; updateCursor(); return }
     if (guideGesture.current) { guideGesture.current = false; endGuideDrag(p); return }
     if (canvasDrag.current) { canvasDrag.current.up(); return }
     if (canvasPicker.current) return
@@ -313,11 +317,11 @@ export function Stage() {
       if (typing(event)) return
       if (event.code === 'Space') { setSpace(true); event.preventDefault() }
       if (event.key === 'Escape' && guideDrag()) { cancelGuideDrag(); guideGesture.current = false; event.preventDefault() }
-      if (event.key === 'Alt' && lastPointer.current) { activeHandler().hover?.({ ...lastPointer.current, alt: true }); setCursorTick(t => t + 1) }
+      if (event.key === 'Alt' && lastPointer.current) { activeHandler().hover?.({ ...lastPointer.current, alt: true }); updateCursor() }
     }
     const up = (event: KeyboardEvent) => {
       if (event.code === 'Space') setSpace(false)
-      if (event.key === 'Alt' && lastPointer.current) { activeHandler().hover?.({ ...lastPointer.current, alt: false }); setCursorTick(t => t + 1) }
+      if (event.key === 'Alt' && lastPointer.current) { activeHandler().hover?.({ ...lastPointer.current, alt: false }); updateCursor() }
     }
     window.addEventListener('keydown', down)
     window.addEventListener('keyup', up)
@@ -325,10 +329,11 @@ export function Stage() {
   }, [])
 
   const handler = activeHandler()
-  const cursor = space || state.tool === 'hand' ? (pan.current ? 'grabbing' : 'grab') : canvasPicker.current ? 'crosshair' : handler.cursor?.(lastPointer.current) ?? 'default'
+  const cursorFor = () => space || store.state.tool === 'hand' ? (pan.current ? 'grabbing' : 'grab') : canvasPicker.current ? 'crosshair' : activeHandler().cursor?.(lastPointer.current) ?? 'default'
+  useLayoutEffect(updateCursor)
   return (
-    <div ref={ref} className="stage" tabIndex={0} style={{ cursor }} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerUp}
-      onPointerLeave={() => { lastPointer.current = null; requestRender(false) }}
+    <div ref={ref} className="stage" tabIndex={0} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerUp}
+      onPointerLeave={() => { lastPointer.current = null; if (statusRef.current) statusRef.current.textContent = `${state.doc.width} × ${state.doc.height}  ·  ${Math.round(view.zoom * 100)}%`; requestRender(false) }}
       onDragOver={e => { if (draggedFromOtherProject()) { e.preventDefault(); e.stopPropagation() } }}
       onDrop={e => {
         if (!draggedFromOtherProject()) return
@@ -339,7 +344,7 @@ export function Stage() {
       onContextMenu={e => { e.preventDefault(); if (store.hasDocument && !handler.busy?.() && !brushTools.has(state.tool)) { const box = ref.current!.getBoundingClientRect(); setMenu({ x: e.clientX, y: e.clientY, items: canvasMenu(view.toDocument(e.clientX - box.left, e.clientY - box.top)) }) } }}>
       <canvas ref={canvasRef} />
       <canvas ref={overlayRef} style={{ pointerEvents: 'none' }} />
-      {store.hasDocument && <div className="status">{status || `${state.doc.width} × ${state.doc.height}  ·  ${Math.round(view.zoom * 100)}%`}</div>}
+      {store.hasDocument && <div ref={statusRef} className="status">{`${state.doc.width} × ${state.doc.height}  ·  ${Math.round(view.zoom * 100)}%`}</div>}
       {menu && <ContextMenu x={menu.x} y={menu.y} items={menu.items} onClose={closeMenu} />}
       {error && <div className="welcome"><div className="card"><h1>Can’t start the canvas</h1><p className="muted">{error}</p></div></div>}
     </div>

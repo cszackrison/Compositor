@@ -78,17 +78,19 @@ export class FilterSession {
     const reuse = this.shown && this.shown !== original && this.shown.width === pixels.width && this.shown.height === pixels.height
     const out = reuse ? this.shown! : new Raster(pixels.width, pixels.height, channels)
     const selection = store.state.selection
-    for (let y = 0; y < pixels.height; y++) for (let x = 0; x < pixels.width; x++) {
-      let k = 1
-      if (selection) {
-        const [dx, dy] = apply(toDocument, x + origin[0] + 0.5, y + origin[1] + 0.5)
-        const sx = Math.floor(dx), sy = Math.floor(dy)
-        k = sx >= 0 && sy >= 0 && sx < selection.width && sy < selection.height ? selection.data[sy * selection.width + sx] / 255 : 0
-      }
-      const i = y * pixels.width + x
-      for (let c = 0; c < channels; c++) {
-        const before = base.data[i * channels + c], after = pixels.data[i * 4 + c]
-        out.data[i * channels + c] = k >= 1 ? after : k <= 0 ? before : Math.round(before + (after - before) * k)
+    const [m0, m1, , m3, m4, , m6, m7] = toDocument, src = base.data, dst = out.data, next = pixels.data
+    for (let y = 0; y < pixels.height; y++) {
+      let qx = m3 * (y + origin[1] + 0.5) + m0 * (origin[0] + 0.5) + m6, qy = m4 * (y + origin[1] + 0.5) + m1 * (origin[0] + 0.5) + m7
+      for (let x = 0, i = y * pixels.width; x < pixels.width; x++, i++, qx += m0, qy += m1) {
+        let k = 1
+        if (selection) {
+          const sx = Math.floor(qx), sy = Math.floor(qy)
+          k = sx >= 0 && sy >= 0 && sx < selection.width && sy < selection.height ? selection.data[sy * selection.width + sx] / 255 : 0
+        }
+        const o = i * channels, n = i * 4
+        if (k >= 1) for (let c = 0; c < channels; c++) dst[o + c] = next[n + c]
+        else if (k <= 0) for (let c = 0; c < channels; c++) dst[o + c] = src[o + c]
+        else for (let c = 0; c < channels; c++) dst[o + c] = Math.round(src[o + c] + (next[n + c] - src[o + c]) * k)
       }
     }
     out.touch()

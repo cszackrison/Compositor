@@ -60,7 +60,7 @@ export class Compositor {
   // Rasters dropped by the document (undo history aged out, previews replaced) give their GPU textures back once collected.
   private released = new FinalizationRegistry<WebGLTexture>(texture => this.gl.deleteTexture(texture))
   private luts = new WeakMap<Adjustment, { kind: 'table' | 'cube'; texture: WebGLTexture } | null>()
-  private effectsCache = new Map<string, { key: string; raster: Raster; inset: number }>()
+  private effectsCache = new Map<string, { key: string; settings: string; image: Raster; at: number; retry: number; raster: Raster; inset: number }>()
   private clipCache = new Map<string, Target>()
   private maskBackgrounds = new WeakMap<Raster, { version: number; value: number }>()
   private white: WebGLTexture
@@ -123,6 +123,8 @@ export class Compositor {
         gl.pixelStorei(gl.UNPACK_ROW_LENGTH, 0); gl.pixelStorei(gl.UNPACK_SKIP_PIXELS, 0); gl.pixelStorei(gl.UNPACK_SKIP_ROWS, 0)
       } else gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, raster.width, raster.height, format[1], gl.UNSIGNED_BYTE, raster.data)
       record.version = raster.version
+      // The texture has it all now: the next change starts a fresh dirty rectangle instead of growing this one all stroke long.
+      raster.dirty = null
     }
     gl.bindTexture(gl.TEXTURE_2D, record.texture)
     if (mipmaps && record.mipVersion !== record.version) { gl.generateMipmap(gl.TEXTURE_2D); record.mipVersion = record.version }
@@ -224,16 +226,27 @@ export class Compositor {
     return placed ? { mode: 2, texture, unitToDoc: unitToDocument(layer.maskPlacement!), outside: this.maskBackground(layer.mask) } : { mode: 1, texture }
   }
 
+  // Effects are worked out on the CPU, so while a layer's pixels keep changing (a brush stroke) the last result is reused for a
+  // moment and redone once the changes pause; settings changes always redo it at once.
   private effects(layer: Layer) {
     const mask = layer.mask && layer.maskEnabled ? layer.mask : null
-    const key = `${layer.image!.version}:${mask?.version}:${JSON.stringify(layer.effects)}`
+    const settings = JSON.stringify(layer.effects)
+    const key = `${layer.image!.version}:${mask?.version}:${settings}`
     const cached = this.effectsCache.get(layer.id)
     if (cached?.key === key) return cached
-    if (cached) this.forget(cached.raster)
-    const rendered = { key, ...renderEffects(layer.image!, mask, layer.effects!) }
+    const now = performance.now()
+    if (cached && cached.settings === settings && cached.image === layer.image && now - cached.at < 150) {
+      clearTimeout(cached.retry)
+      cached.retry = window.setTimeout(() => this.onStale?.(), 160)
+      return cached
+    }
+    if (cached) { clearTimeout(cached.retry); if (cached.raster !== layer.image) this.forget(cached.raster) }
+    const rendered = { key, settings, image: layer.image!, at: now, retry: 0, ...renderEffects(layer.image!, mask, layer.effects!) }
     this.effectsCache.set(layer.id, rendered)
     return rendered
   }
+  // Called when something drawn from a stale cache is ready to be redone.
+  onStale: (() => void) | null = null
 
   private opacity(entry: Entry) { return entry.ancestors.reduce((o, a) => o * a.opacity, entry.layer.opacity) }
 

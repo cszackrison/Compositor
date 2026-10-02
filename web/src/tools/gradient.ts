@@ -37,24 +37,26 @@ function render() {
   const [c0, c1] = colors()
   const [sx, sy] = p.start, dx = p.end[0] - sx, dy = p.end[1] - sy, length2 = dx * dx + dy * dy, radius = Math.sqrt(length2)
   const selection = store.state.selection, { width, height } = store.doc
-  for (let y = 0; y < raster.height; y++) for (let x = 0; x < raster.width; x++) {
-    const [qx, qy] = apply(toDoc, x + 0.5, y + 0.5)
-    if (qx < 0 || qy < 0 || qx >= width || qy >= height) continue
-    let k = opacity
-    if (selection) k *= selection.data[Math.floor(qy) * selection.width + Math.floor(qx)] / 255
-    if (k <= 0) continue
-    const t = Math.min(1, Math.max(0, shape === 'Radial' ? Math.hypot(qx - sx, qy - sy) / Math.max(1e-6, radius) : ((qx - sx) * dx + (qy - sy) * dy) / Math.max(1e-6, length2)))
-    const a = (c0[3] + (c1[3] - c0[3]) * t) * k
-    if (a <= 0) continue
-    const i = y * raster.width + x
-    if (raster.channels === 1) { raster.data[i] = Math.round((c0[0] + (c1[0] - c0[0]) * t) * a + raster.data[i] * (1 - a)); continue }
-    const keep = 1 - a
-    for (let c = 0; c < 3; c++) {
+  const [m0, m1, , m3, m4, , m6, m7] = toDoc, radial = shape === 'Radial', inverse = radial ? 1 / Math.max(1e-6, radius) : 1 / Math.max(1e-6, length2)
+  const out = raster.data, mask = raster.channels === 1, sel = selection?.data, selWidth = selection?.width ?? 0
+  for (let y = 0; y < raster.height; y++) {
+    let qx = m3 * (y + 0.5) + m0 * 0.5 + m6, qy = m4 * (y + 0.5) + m1 * 0.5 + m7
+    for (let x = 0, i = y * raster.width; x < raster.width; x++, i++, qx += m0, qy += m1) {
+      if (qx < 0 || qy < 0 || qx >= width || qy >= height) continue
+      let k = opacity
+      if (sel) k *= sel[Math.floor(qy) * selWidth + Math.floor(qx)] / 255
+      if (k <= 0) continue
+      const ox = qx - sx, oy = qy - sy
+      let t = radial ? Math.sqrt(ox * ox + oy * oy) * inverse : (ox * dx + oy * dy) * inverse
+      t = t < 0 ? 0 : t > 1 ? 1 : t
+      const a = (c0[3] + (c1[3] - c0[3]) * t) * k
+      if (a <= 0) continue
+      if (mask) { out[i] = Math.round((c0[0] + (c1[0] - c0[0]) * t) * a + out[i] * (1 - a)); continue }
       // Colors blend in straight sRGB, weighted by each end's alpha, as Core Graphics gradients do.
-      const w0 = c0[3] * (1 - t), w1 = c1[3] * t, color = w0 + w1 > 0 ? (c0[c] * w0 + c1[c] * w1) / (w0 + w1) : c0[c]
-      raster.data[i * 4 + c] = Math.round(color * a + raster.data[i * 4 + c] * keep)
+      const keep = 1 - a, w0 = c0[3] * (1 - t), w1 = c1[3] * t, total = w0 + w1, j = i * 4
+      for (let c = 0; c < 3; c++) out[j + c] = Math.round((total > 0 ? (c0[c] * w0 + c1[c] * w1) / total : c0[c]) * a + out[j + c] * keep)
+      out[j + 3] = Math.round(255 * a + out[j + 3] * keep)
     }
-    raster.data[i * 4 + 3] = Math.round(255 * a + raster.data[i * 4 + 3] * keep)
   }
   store.updateLayerLive(p.layerId, p.isMask ? { mask: raster } : { image: raster })
   requestRender()
