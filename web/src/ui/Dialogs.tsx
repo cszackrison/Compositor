@@ -176,10 +176,10 @@ function About() {
 }
 
 function Amount({ kind }: { kind: 'expand' | 'contract' | 'feather' }) {
-  const [amount, setAmount] = useState(kind === 'feather' ? 2 : 1)
+  const [amount, setAmount] = useState(store.state.modifyAmounts[kind])
   const max = kind === 'feather' ? 250 : 500, title = kind === 'expand' ? 'Expand Selection' : kind === 'contract' ? 'Contract Selection' : 'Feather Selection'
   return (
-    <Modal title={title} onSubmit={() => store.modifySelection(kind, amount)}>
+    <Modal title={title} onSubmit={() => { store.set({ modifyAmounts: { ...store.state.modifyAmounts, [kind]: amount } }); store.modifySelection(kind, amount) }}>
       <div className="grid"><Scrub label={kind === 'feather' ? 'Feather radius' : kind === 'expand' ? 'Expand by' : 'Contract by'} value={amount} min={1} max={max} onChange={v => setAmount(Math.round(v))} /><label><input type="number" min={1} max={max} value={amount} onChange={e => setAmount(Math.min(max, Math.max(1, +e.target.value)))} autoFocus /> px</label></div>
     </Modal>
   )

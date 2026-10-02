@@ -16,7 +16,8 @@ let drag: Drag | null = null
 let polygon: { points: [number, number][]; hover: [number, number] | null; mode: SelectionMode } | null = null
 
 // Shift adds, Option subtracts (and wins over Shift), both together intersect.
-export const modeFor = (p: { shift: boolean; alt: boolean }): SelectionMode => p.shift && p.alt ? 'intersect' : p.alt ? 'subtract' : p.shift ? 'add' : 'replace'
+// Option subtracts and Shift adds (Option wins), otherwise the header's sticky mode applies.
+export const modeFor = (p: { shift: boolean; alt: boolean }): SelectionMode => p.alt ? 'subtract' : p.shift ? 'add' : store.state.selectionMode
 
 const inside = (point: [number, number]) => {
   const s = store.state.selection
@@ -41,7 +42,7 @@ function finishPolygon() {
   if (!polygon) return
   const { points, mode } = polygon
   polygon = null
-  if (points.length > 2) store.setSelection(shapeCoverage(store.doc.width, store.doc.height, { kind: 'polygon', points }), mode, 'Polygonal Lasso')
+  if (points.length > 2) store.setSelection(shapeCoverage(store.doc.width, store.doc.height, { kind: 'polygon', points }, store.state.selectionAntialias), mode, 'Polygonal Lasso')
   requestOverlay()
 }
 
@@ -117,7 +118,7 @@ export const magic: ToolHandler = {
     if (d?.kind === 'click') {
       const pixels = samplePixels(store.state.wand.sampleAll)
       if (!pixels) { store.notify('Choose a layer with pixels, or sample all layers.'); return }
-      store.setSelection(wand(pixels, Math.floor(d.start[0]), Math.floor(d.start[1]), store.state.wand.tolerance, store.state.wand.contiguous), d.mode, 'Magic Wand')
+      store.setSelection(wand(pixels, Math.floor(d.start[0]), Math.floor(d.start[1]), store.state.wand.tolerance, store.state.wand.contiguous, store.state.wand.sampleSize), d.mode, 'Magic Wand')
       return
     }
     drag = d
@@ -156,9 +157,9 @@ function dragUp() {
   if (d.kind === 'marquee') {
     const shape = box(d.start, d.current, d.square, d.center)
     if (shape.w < 1 || shape.h < 1) { if (d.mode === 'replace') store.deselect() }
-    else store.setSelection(shapeCoverage(store.doc.width, store.doc.height, { kind: store.state.marqueeShape, ...shape }), d.mode, store.state.marqueeShape === 'ellipse' ? 'Elliptical Marquee' : 'Rectangular Marquee')
+    else store.setSelection(shapeCoverage(store.doc.width, store.doc.height, { kind: store.state.marqueeShape, ...shape }, store.state.marqueeShape === 'ellipse' && store.state.selectionAntialias), d.mode, store.state.marqueeShape === 'ellipse' ? 'Elliptical Marquee' : 'Rectangular Marquee')
   } else if (d.kind === 'lasso') {
-    if (d.points.length > 2) store.setSelection(shapeCoverage(store.doc.width, store.doc.height, { kind: 'polygon', points: d.points }), d.mode, 'Lasso')
+    if (d.points.length > 2) store.setSelection(shapeCoverage(store.doc.width, store.doc.height, { kind: 'polygon', points: d.points }, store.state.selectionAntialias), d.mode, 'Lasso')
     else if (d.mode === 'replace') store.deselect()
   } else if (d.kind === 'outline') {
     if (d.moved) store.endGesture()

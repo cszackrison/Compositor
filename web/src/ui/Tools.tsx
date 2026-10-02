@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useEditor } from './hooks'
 import { openColorPicker } from './ColorPicker'
 import { store, type HealMode, type ShapeKind, type SmearMode, type Tool } from '../editor/store'
@@ -142,8 +142,9 @@ export function ToolHeader() {
       </>}
       {state.tool === 'wand' && <>
         <Range label="Tolerance" value={state.wand.tolerance} min={0} max={255} onChange={tolerance => store.set({ wand: { ...state.wand, tolerance } })} />
+        <select value={state.wand.sampleSize} onChange={e => store.set({ wand: { ...state.wand, sampleSize: +e.target.value } })}><option value={0}>Point Sample</option><option value={1}>3 by 3 Average</option><option value={2}>5 by 5 Average</option></select>
+        <Choice value={state.wand.sampleAll ? 'All Layers' : 'This Layer'} options={['This Layer', 'All Layers'] as const} onChange={v => store.set({ wand: { ...state.wand, sampleAll: v === 'All Layers' } })} />
         <label><input type="checkbox" checked={state.wand.contiguous} onChange={e => store.set({ wand: { ...state.wand, contiguous: e.target.checked } })} /> Contiguous</label>
-        <label><input type="checkbox" checked={state.wand.sampleAll} onChange={e => store.set({ wand: { ...state.wand, sampleAll: e.target.checked } })} /> Sample all layers</label>
         <SelectionHeader />
       </>}
       {state.tool === 'move' && <MoveHeader />}
@@ -154,15 +155,41 @@ export function ToolHeader() {
   )
 }
 
+// Modifier keys held right now, so the mode switch can show what a click would do.
+function useHeldKeys() {
+  const [held, setHeld] = useState({ shift: false, alt: false })
+  useEffect(() => {
+    const update = (e: KeyboardEvent) => setHeld({ shift: e.shiftKey, alt: e.altKey })
+    window.addEventListener('keydown', update); window.addEventListener('keyup', update)
+    return () => { window.removeEventListener('keydown', update); window.removeEventListener('keyup', update) }
+  }, [])
+  return held
+}
+
+// The rest of the Marquee, Lasso and Magic headers (LassoControls): the selection mode, anti-alias, and Expand, Contract and
+// Feather applied to the current selection straight away.
 function SelectionHeader() {
   const state = useEditor()
+  const held = useHeldKeys()
+  const shown = held.alt ? 'subtract' : held.shift ? 'add' : state.selectionMode
+  const amounts = state.modifyAmounts
+  const setAmount = (key: keyof typeof amounts, value: number, max: number) => store.set({ modifyAmounts: { ...amounts, [key]: Math.min(max, Math.max(1, Math.round(value) || 1)) } })
+  const can = !!state.selection
+  const showsAntialias = state.tool !== 'marquee' || state.marqueeShape === 'ellipse'
   return <>
-    {state.selection && <>
-      <button onClick={() => store.set({ panel: 'Expand Selection' })}>Expand…</button>
-      <button onClick={() => store.set({ panel: 'Contract Selection' })}>Contract…</button>
-      <button onClick={() => store.set({ panel: 'Feather Selection' })}>Feather…</button>
-    </>}
-    <span className="muted">Shift adds, {option} subtracts · drag inside to move the outline, {command}-drag moves the pixels, {command}{option}-drag copies them</span>
+    <Choice value={({ replace: 'New', add: 'Add', subtract: 'Subtract', intersect: 'New' } as const)[shown]} options={['New', 'Add', 'Subtract'] as const} onChange={v => store.set({ selectionMode: v === 'New' ? 'replace' : v === 'Add' ? 'add' : 'subtract' })} />
+    {showsAntialias && <label><input type="checkbox" checked={state.selectionAntialias} onChange={e => store.set({ selectionAntialias: e.target.checked })} /> Anti-alias</label>}
+    <span className="divider" />
+    {(['expand', 'contract', 'feather'] as const).map(key => {
+      const max = key === 'feather' ? 250 : 500
+      return <label key={key}>
+        <button disabled={!can} onClick={() => store.modifySelection(key, amounts[key])}>{key[0].toUpperCase() + key.slice(1)}</button>
+        <input type="number" min={1} max={max} style={{ width: key === 'feather' ? 48 : 40 }} value={amounts[key]} onChange={e => setAmount(key, +e.target.value, max)} />
+        <Scrub label="px" value={amounts[key]} min={1} max={max} onChange={v => setAmount(key, v, max)} />
+      </label>
+    })}
+    <span style={{ flex: 1 }} />
+    {state.selection && <button onClick={() => store.deselect()}>Deselect</button>}
   </>
 }
 
