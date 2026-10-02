@@ -218,6 +218,7 @@ export class Store {
   }
 
   addLayer(layer: Layer, name = 'New Layer') {
+    if (!this.hasDocument) return
     this.commit(name, { doc: this.replaceLayers(this.insert([layer])), activeId: layer.id, selectedIds: [layer.id], editingMask: false })
   }
 
