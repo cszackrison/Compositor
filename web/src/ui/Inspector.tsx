@@ -4,7 +4,10 @@ import { Store, store } from '../editor/store'
 import { drawOrder } from '../render/compositor'
 import { LevelsTools } from './Filters'
 import { ColorSwatch } from './ColorPicker'
-import { type Adjustment, type ColorRange, type CurvePoint, identityCurve, type EffectKind, type RGB, colorRanges, effectNames, defaultBands } from '../model/types'
+import { canvasDrag, canvasPicker } from './canvasState'
+import { centered, exclude, handleDegrees, include, rangeAt, shiftedHue, toHSB, withHandle } from '../model/hueBands'
+import { isMac } from '../editor/shortcuts'
+import { type Adjustment, type ColorRange, type HueSaturationSettings, type CurvePoint, identityCurve, type EffectKind, type RGB, colorRanges, effectNames, defaultBands } from '../model/types'
 import { curveValue } from '../model/adjustments'
 
 export function defaultEffect(kind: EffectKind): any {
@@ -151,7 +154,8 @@ export function AdjustmentEditor({ adjustment, onChange }: { adjustment: Adjustm
         <Slider label="Hue" value={current.hue} min={settings.colorize ? 0 : -180} max={settings.colorize ? 360 : 180} onChange={hue => write({ hue })} />
         <Slider label="Saturation" value={current.saturation} min={settings.colorize ? 0 : -100} max={100} onChange={saturation => write({ saturation })} />
         <Slider label="Lightness" value={current.lightness} min={-100} max={100} onChange={lightness => write({ lightness })} />
-        <label><input type="checkbox" checked={settings.colorize} onChange={e => set({ hsvSettings: { ...settings, colorize: e.target.checked, range: e.target.checked ? 'Master' : settings.range } })} /> Colorize</label>
+        {!settings.colorize && <HueSaturationTools settings={settings} onChange={hsvSettings => set({ hsvSettings })} />}
+        <label><input type="checkbox" checked={settings.colorize} onChange={e => set({ hsvSettings: { range: 'Master', colorize: e.target.checked, invertRange: false, bands: { ...defaultBands }, adjustments: { Master: e.target.checked ? { hue: 0, saturation: 25, lightness: 0 } : { hue: 0, saturation: 0, lightness: 0 } } } })} /> Colorize</label>
       </>
     }
     case 'Exposure': {
@@ -288,4 +292,83 @@ function UnderlyingLevels({ layerId }: { layerId: string }) {
   }, [layerId, store.state.pixelRevision])
   if (!below || !layer.adjustment) return null
   return <><LevelsTools source={below} toSource={p => p} adjustment={layer.adjustment} onChange={a => store.setAdjustment(layerId, a)} /><span className="muted">Underlying pixels · alpha-weighted histogram</span></>
+}
+
+// The Hue/Saturation extras (HueSaturationSheet.swift): eyedroppers that fit the selected color range to a clicked color, the
+// targeted-adjustment hand (press a color, drag sideways for saturation, or hue with ⌘), and the spectrum with the band's handles.
+function HueSaturationTools({ settings, onChange }: { settings: HueSaturationSettings; onChange: (s: HueSaturationSettings) => void }) {
+  const [armed, setArmed] = useState<'sample' | 'add' | 'remove' | 'hand' | null>(null)
+  const latest = useRef(settings)
+  latest.current = settings
+  const isRange = settings.range !== 'Master'
+  const band = settings.bands[settings.range] ?? defaultBands[settings.range]
+  useEffect(() => {
+    if (!armed) { canvasPicker.current = null; canvasDrag.current = null; return }
+    const hueAt = (point: [number, number]) => {
+      const pixels = Store.renderer?.(store.doc)
+      const x = Math.floor(point[0]), y = Math.floor(point[1])
+      if (!pixels || x < 0 || y < 0 || x >= pixels.width || y >= pixels.height) return null
+      const i = (y * pixels.width + x) * 4, a = pixels.data[i + 3]
+      if (!a) return null
+      const hsb = toHSB(...([0, 1, 2].map(c => Math.min(a, pixels.data[i + c]) / a) as [number, number, number]))
+      return hsb.s <= 0.02 ? null : hsb.h
+    }
+    canvasPicker.current = point => {
+      const s = latest.current, hue = hueAt(point)
+      if (hue === null) { store.notify('That color has no hue to pick.', 'info'); return }
+      if (armed === 'hand') {
+        const range = rangeAt(s, hue), start = s.adjustments[range] ?? { hue: 0, saturation: 0, lightness: 0 }
+        onChange({ ...s, range })
+        canvasDrag.current = {
+          move: (dx, command) => {
+            const now = latest.current, adjustment = { ...start, ...(command ? { hue: Math.min(180, Math.max(-180, start.hue + dx / 2)) } : { saturation: Math.min(100, Math.max(-100, start.saturation + dx / 2)) }) }
+            onChange({ ...now, range, adjustments: { ...now.adjustments, [range]: adjustment } })
+          },
+          up: () => { canvasDrag.current = null },
+        }
+        return
+      }
+      if (s.range === 'Master') return
+      const b = s.bands[s.range] ?? defaultBands[s.range]
+      const next = armed === 'sample' ? centered(b, hue) : armed === 'add' ? include(b, hue) : exclude(b, hue)
+      onChange({ ...s, bands: { ...s.bands, [s.range]: next } })
+    }
+    return () => { canvasPicker.current = null; canvasDrag.current = null }
+  }, [armed])
+  const toggle = (mode: typeof armed) => setArmed(armed === mode ? null : mode)
+  const spectrum = useRef<HTMLDivElement>(null)
+  const dragging = useRef<number | null>(null)
+  const dragHandle = (e: React.PointerEvent) => {
+    const box = spectrum.current!.getBoundingClientRect()
+    const at = (x: number) => Math.min(1, Math.max(0, (x - box.left) / box.width)) * 360
+    const degrees = handleDegrees(band), d = at(e.clientX)
+    const distance = (h: number) => { const r = Math.abs(h - d) % 360; return Math.min(r, 360 - r) }
+    dragging.current = degrees.reduce((best, h, i) => distance(h) < distance(degrees[best]) ? i : best, 0)
+    const move = (ev: PointerEvent) => { const s = latest.current, b = s.bands[s.range] ?? defaultBands[s.range]; onChange({ ...s, bands: { ...s.bands, [s.range]: withHandle(b, dragging.current!, at(ev.clientX)) } }) }
+    const up = () => { dragging.current = null; window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up) }
+    window.addEventListener('pointermove', move); window.addEventListener('pointerup', up)
+    move(e.nativeEvent)
+  }
+  const slices = (color: (h: number) => number) => `linear-gradient(to right, ${Array.from({ length: 73 }, (_, i) => `hsl(${color(i * 5)} 100% 50%) ${(i / 72 * 100).toFixed(2)}%`).join(', ')})`
+  return <>
+    <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+      {isRange && <>
+        <button type="button" className={armed === 'sample' ? 'primary' : ''} title="Click the image to center this range on that color" onClick={() => toggle('sample')}>Sample</button>
+        <button type="button" className={armed === 'add' ? 'primary' : ''} title="Click the image to widen this range to include that color" onClick={() => toggle('add')}>Add +</button>
+        <button type="button" className={armed === 'remove' ? 'primary' : ''} title="Click the image to narrow this range to exclude that color" onClick={() => toggle('remove')}>Remove −</button>
+      </>}
+      <button type="button" className={armed === 'hand' ? 'primary' : ''} title={`Drag on the image: sideways changes saturation, with ${isMac ? '⌘' : 'Ctrl'} the hue`} onClick={() => toggle('hand')}>☝ Targeted</button>
+    </div>
+    {isRange && <>
+      <div ref={spectrum} style={{ display: 'flex', flexDirection: 'column', gap: 5, touchAction: 'none', cursor: 'ew-resize' }} onPointerDown={dragHandle}>
+        <div style={{ height: 16, borderRadius: 3, background: slices(h => h) }} />
+        <div style={{ position: 'relative', height: 12 }}>
+          {handleDegrees(band).map((d, i) => <span key={i} style={{ position: 'absolute', left: `${d / 360 * 100}%`, top: i === 1 || i === 2 ? 0 : 3.5, width: i === 1 || i === 2 ? 2 : 7, height: i === 1 || i === 2 ? 12 : 5, marginLeft: i === 1 || i === 2 ? -1 : -3.5, background: 'var(--text)' }} />)}
+        </div>
+        <div style={{ height: 16, borderRadius: 3, background: slices(h => shiftedHue(settings, h)) }} />
+      </div>
+      <span className="muted" style={{ fontVariantNumeric: 'tabular-nums' }}>{handleDegrees(band).map(d => `${Math.round(d)}°`).join('   ')}</span>
+      <label><input type="checkbox" checked={settings.invertRange} onChange={e => onChange({ ...settings, invertRange: e.target.checked })} /> Apply outside this range instead</label>
+    </>}
+  </>
 }

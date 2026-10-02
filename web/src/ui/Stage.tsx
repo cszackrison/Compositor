@@ -9,7 +9,7 @@ import { ContextMenu, type MenuItem } from './Menu'
 import { copyMerged } from '../editor/actions'
 import { copyLayersInto, paste } from '../editor/clipboard'
 import { draggedFromOtherProject, takeDraggedLayers } from './Tabs'
-import { actualSize, canvasPicker, compositor, fit, onFrame, renderFull, renderScaleFor, requestRender, setCompositor, snapLines, view, viewChanged } from './canvasState'
+import { actualSize, canvasDrag, canvasPicker, compositor, fit, onFrame, renderFull, renderScaleFor, requestRender, setCompositor, snapLines, view, viewChanged } from './canvasState'
 import type { Pointer, ToolHandler } from '../tools/tool'
 import { eyedropper, paint } from '../tools/paint'
 import { smear } from '../tools/smear'
@@ -271,7 +271,7 @@ export function Stage() {
       if ((p.screen[0] >= rulerSize || p.screen[1] >= rulerSize) && !prefs.lockGuides) { startGuideDrag(p.screen[1] < rulerSize ? 'horizontal' : 'vertical', null, p); guideGesture.current = true }
       return
     }
-    if (canvasPicker.current && event.button === 0) { canvasPicker.current(p.point, p.shift, p.alt); return }
+    if (canvasPicker.current && event.button === 0) { canvasPicker.current(p.point, p.shift, p.alt); canvasDrag.startX = event.clientX; return }
     if (event.button === 2 && !brushTools.has(store.state.tool)) return
     activeHandler().down?.(p)
     guideGesture.current = !!guideDrag()
@@ -283,6 +283,7 @@ export function Stage() {
     setStatus(store.hasDocument ? `${Math.floor(p.point[0])}, ${Math.floor(p.point[1])}  ·  ${Math.round(view.zoom * 100)}%` : '')
     if (pan.current) { view.offsetX = pan.current.offsetX + event.clientX - pan.current.x; view.offsetY = pan.current.offsetY + event.clientY - pan.current.y; viewChanged(); requestRender(false); return }
     if (guideGesture.current) { moveGuideDrag(p); return }
+    if (canvasDrag.current && event.buttons) { canvasDrag.current.move(event.clientX - canvasDrag.startX, p.command); return }
     if (event.buttons) activeHandler().move?.(p)
     else { activeHandler().hover?.(p); setCursorTick(t => t + 1) }
   }
@@ -291,6 +292,8 @@ export function Stage() {
     const p = pointerFrom(event)
     if (pan.current) { pan.current = null; setCursorTick(t => t + 1); return }
     if (guideGesture.current) { guideGesture.current = false; endGuideDrag(p); return }
+    if (canvasDrag.current) { canvasDrag.current.up(); return }
+    if (canvasPicker.current) return
     activeHandler().up?.(p)
   }
 

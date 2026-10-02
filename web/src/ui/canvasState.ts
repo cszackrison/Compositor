@@ -59,3 +59,5 @@ export function samplePixels(allLayers: boolean): Raster | null {
 
 // While a panel samples from the canvas (Color Range, Levels' eyedroppers), clicks go to it instead of the tool.
 export const canvasPicker: { current: ((point: [number, number], shift: boolean, alt: boolean) => void) | null } = { current: null }
+// A panel's drag on the canvas (Hue/Saturation's targeted hand): screen x since the press, and whether ⌘ is held.
+export const canvasDrag: { current: { move: (dx: number, command: boolean) => void; up: () => void } | null; startX: number } = { current: null, startX: 0 }

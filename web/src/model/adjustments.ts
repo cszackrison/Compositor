@@ -48,9 +48,9 @@ export function channelTables(adjustment: Adjustment): Float32Array | null {
   return tables
 }
 
-function forward(a: number, b: number) { let d = (b - a) % 360; if (d < 0) d += 360; return d }
+export function forward(a: number, b: number) { let d = (b - a) % 360; if (d < 0) d += 360; return d }
 
-function bandWeight(band: HueBand, h: number) {
+export function bandWeight(band: HueBand, h: number) {
   const span = forward(band.falloffStart, band.falloffEnd)
   if (span === 0) return 1
   const pos = forward(band.falloffStart, h)
