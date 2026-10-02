@@ -111,7 +111,17 @@ export const exportImage = guard(async (format: 'png' | 'jpeg', quality: number 
   if (!store.hasDocument) return
   commitFloating()
   const pixels = renderFull(store.state.doc)
-  if (format === 'png') { download(`${documentName()}.png`, encodePNG(pixels), 'image/png'); return }
+  if (format === 'png') {
+    const png = encodePNG(pixels)
+    // A save dialog where the browser has one (Chrome, Edge); otherwise a download.
+    if ('showSaveFilePicker' in window) {
+      const handle: FileSystemFileHandle = await (window as any).showSaveFilePicker({ suggestedName: `${documentName()}.png`, types: [{ description: 'PNG image', accept: { 'image/png': ['.png'] } }] })
+      const writable = await handle.createWritable()
+      await writable.write(png as Uint8Array<ArrayBuffer>)
+      await writable.close()
+    } else download(`${documentName()}.png`, png, 'image/png')
+    return
+  }
   const canvas = new OffscreenCanvas(pixels.width, pixels.height)
   const context = canvas.getContext('2d')!
   const image = context.createImageData(pixels.width, pixels.height)
