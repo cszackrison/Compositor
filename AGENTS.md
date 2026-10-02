@@ -13,3 +13,7 @@ If you've been asked to make or change an image in a `.comp` project, you don't 
 - Match the surrounding code: its naming, its comment style and density.
 - American spelling in code, comments and UI ("color", not "colour").
 - The project file format is described in [docs/project-format.md](docs/project-format.md). A change to what's saved means a format version bump there and in `ProjectManifest.current`.
+
+## The web edition
+
+`web/` is a browser version of the editor (TypeScript, React, WebGL 2). It reads and writes the same `.comp` format and compiles the C kernels in `Compositor/Rendering` to WebAssembly. See [web/README.md](web/README.md). A change to the project format or to a C kernel's signature should be mirrored in `web/src/io/project.ts` or `web/src/model/adjustments.ts`. Run `npm test` in `web/` afterwards.
