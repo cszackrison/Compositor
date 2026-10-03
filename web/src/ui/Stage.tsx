@@ -41,7 +41,7 @@ function frame(contentDirty: boolean) {
   if (!compositor || !stageCanvas) return
   const { doc } = store.state
   const dpr = window.devicePixelRatio || 1
-  if (store.hasDocument && contentDirty) compositor.render(doc, renderScaleFor(doc, compositor.maxSize))
+  if (store.hasDocument && contentDirty) { compositor.live = true; compositor.render(doc, renderScaleFor(doc, compositor.maxSize)); compositor.live = false }
   const style = getComputedStyle(document.documentElement).getPropertyValue('--canvas').trim() || '#161617'
   const rgb = [1, 3, 5].map(i => parseInt(style.slice(i, i + 2), 16) / 255) as [number, number, number]
   if (store.hasDocument) compositor.present([view.zoom * dpr, 0, 0, 0, view.zoom * dpr, 0, view.offsetX * dpr, view.offsetY * dpr, 1], stageCanvas.width, stageCanvas.height, rgb)

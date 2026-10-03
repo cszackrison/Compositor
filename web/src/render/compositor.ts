@@ -60,7 +60,13 @@ export class Compositor {
   // Rasters dropped by the document (undo history aged out, previews replaced) give their GPU textures back once collected.
   private released = new FinalizationRegistry<WebGLTexture>(texture => this.gl.deleteTexture(texture))
   private luts = new WeakMap<Adjustment, { kind: 'table' | 'cube'; texture: WebGLTexture } | null>()
-  private effectsCache = new Map<string, { key: string; settings: string; image: Raster; at: number; retry: number; raster: Raster; inset: number }>()
+  // `made` orders results by when they were started, so a worker result never replaces one made after it.
+  private effectsCache = new Map<string, { key: string; raster: Raster; inset: number; made: number }>()
+  // Effects being redone in the worker, by layer: the one running and the newest waiting.
+  private effectsJobs = new Map<string, { running: string; next: { key: string; layer: Layer } | null }>()
+  private effectsWorker: Worker | null | undefined
+  // The effects result each layer was last drawn with, so a newer one arriving from the worker redraws it.
+  private drawnEffects = new Map<string, object>()
   private clipCache = new Map<string, Target>()
   private maskBackgrounds = new WeakMap<Raster, { version: number; value: number }>()
   private white: WebGLTexture
@@ -71,6 +77,12 @@ export class Compositor {
   private region: { x: number; y: number; w: number; h: number } | null = null
   private previous: { doc: Doc; width: number; height: number; scale: number } | null = null
   private gpuChanges = new Map<Raster, { x0: number; y0: number; x1: number; y1: number }>()
+  // The canvas after the layers below the one being edited, kept while an edit goes on above them: each frame starts from it and
+  // draws only the rest. `signatures` says what each of those layers was; `last` is every layer's, as of the last frame.
+  private prefix: { target: Target; signatures: string[] } | null = null
+  private lastSignatures: string[] = []
+  private ids = new WeakMap<object, number>()
+  private nextId = 1
   private width = 0
   private height = 0
 
@@ -166,7 +178,7 @@ export class Compositor {
       if (layer.adjustment && (layer.adjustment.kind === 'Gaussian Blur' || layer.adjustment.kind === 'Motion Blur') && layer.visible) return 'all'
       if (layer.image && hasVisibleEffects(layer.effects)) {
         const cached = this.effectsCache.get(layer.id), mask = layer.mask && layer.maskEnabled ? layer.mask : null
-        if (!cached || cached.key !== `${layer.image.version}:${mask?.version}:${JSON.stringify(layer.effects)}`) return 'all'
+        if (!cached || cached !== this.drawnEffects.get(layer.id) || cached.key !== `${layer.image.version}:${mask?.version}:${JSON.stringify(layer.effects)}`) return 'all'
       }
       if (!visible) continue
       const owned: [Raster | null | undefined, Transform][] = [[layer.image, layer.transform], [layer.mask, layer.maskPlacement && !layer.isGroup && !layer.adjustment ? layer.maskPlacement : layer.transform]]
@@ -184,6 +196,19 @@ export class Compositor {
     }
     return area
   }
+
+  // What a drawing step depends on besides the canvas below it: the layer itself (its settings), its pixels and mask, its folders'
+  // masks, what it's clipped to, and for effects the result in use.
+  private signature(entry: Entry, children: Entry[] = []): string {
+    const id = (o: object) => { let n = this.ids.get(o); if (!n) { n = this.nextId++; this.ids.set(o, n) } return n }
+    const one = (e: Entry): string => {
+      const l = e.layer, clip = l.clipTo ? this.byIdForSignature?.get(l.clipTo) : null
+      const effects = l.image && hasVisibleEffects(l.effects) ? `fx${this.effectsCache.get(l.id)?.key}` : ''
+      return `${id(l)}:${l.image?.version}:${l.mask?.version}:${e.ancestors.map(a => `${id(a)}.${a.mask?.version}`).join(',')}:${clip ? one(clip) : ''}${effects}`
+    }
+    return [entry, ...children].map(one).join('|')
+  }
+  private byIdForSignature: Map<string, Entry> | null = null
 
   // Scissors to a layer's bounds within this frame's region; false when they don't meet.
   private limit(x0: number, y0: number, x1: number, y1: number) {
@@ -298,24 +323,59 @@ export class Compositor {
     return placed ? { mode: 2, texture, unitToDoc: unitToDocument(layer.maskPlacement!), outside: this.maskBackground(layer.mask) } : { mode: 1, texture }
   }
 
-  // Effects are worked out on the CPU, so while a layer's pixels keep changing (a brush stroke) the last result is reused for a
-  // moment and redone once the changes pause; settings changes always redo it at once.
+  // Effects are worked out on the CPU. The first time a layer shows them they're made here; after that, while its pixels or
+  // settings change, the live view keeps drawing the last result and the worker makes the new one, redrawing when it's ready.
+  // Exports and merges (not the live view) always make them here, so they're current.
   private effects(layer: Layer) {
     const mask = layer.mask && layer.maskEnabled ? layer.mask : null
-    const settings = JSON.stringify(layer.effects)
-    const key = `${layer.image!.version}:${mask?.version}:${settings}`
+    const key = `${layer.image!.version}:${mask?.version}:${JSON.stringify(layer.effects)}`
     const cached = this.effectsCache.get(layer.id)
     if (cached?.key === key) return cached
-    const now = performance.now()
-    if (cached && cached.settings === settings && cached.image === layer.image && now - cached.at < 150) {
-      clearTimeout(cached.retry)
-      cached.retry = window.setTimeout(() => this.onStale?.(), 160)
-      return cached
-    }
-    if (cached) { clearTimeout(cached.retry); if (cached.raster !== layer.image) this.forget(cached.raster) }
-    const rendered = { key, settings, image: layer.image!, at: now, retry: 0, ...renderEffects(layer.image!, mask, layer.effects!) }
+    if (cached && this.live && this.requestEffects(layer, key)) return cached
+    if (cached && cached.raster !== layer.image) this.forget(cached.raster)
+    const rendered = { key, made: this.nextId++, ...renderEffects(layer.image!, mask, layer.effects!) }
     this.effectsCache.set(layer.id, rendered)
     return rendered
+  }
+
+  private requestEffects(layer: Layer, key: string): boolean {
+    if (this.effectsWorker === undefined) {
+      try {
+        this.effectsWorker = new Worker(new URL('./effectsWorker.ts', import.meta.url), { type: 'module' })
+        this.effectsWorker.onmessage = (event: MessageEvent<{ id: number; width: number; height: number; data: Uint8Array; inset: number }>) => this.effectsDone(event.data)
+        this.effectsWorker.onerror = () => { this.effectsWorker = null; this.effectsJobs.clear() }
+      } catch { this.effectsWorker = null }
+    }
+    if (!this.effectsWorker) return false
+    const job = this.effectsJobs.get(layer.id)
+    if (job) { if (job.running !== key) job.next = { key, layer }; return true }
+    this.startEffects(layer, key)
+    return true
+  }
+
+  private effectsIds = new Map<number, { layerId: string; key: string; made: number }>()
+  private startEffects(layer: Layer, key: string) {
+    const id = this.nextId++, mask = layer.mask && layer.maskEnabled ? layer.mask : null
+    const pixels = (r: Raster) => ({ width: r.width, height: r.height, channels: r.channels, data: r.data.slice() })
+    const image = pixels(layer.image!), maskPixels = mask ? pixels(mask) : null
+    this.effectsJobs.set(layer.id, { running: key, next: null })
+    this.effectsIds.set(id, { layerId: layer.id, key, made: id })
+    this.effectsWorker!.postMessage({ id, image, mask: maskPixels, effects: layer.effects }, { transfer: [image.data.buffer, ...(maskPixels ? [maskPixels.data.buffer] : [])] })
+  }
+
+  private effectsDone({ id, width, height, data, inset }: { id: number; width: number; height: number; data: Uint8Array; inset: number }) {
+    const job = this.effectsIds.get(id)
+    this.effectsIds.delete(id)
+    if (!job) return
+    const waiting = this.effectsJobs.get(job.layerId)
+    this.effectsJobs.delete(job.layerId)
+    const cached = this.effectsCache.get(job.layerId)
+    if (!cached || cached.made < job.made) {
+      if (cached) this.forget(cached.raster)
+      this.effectsCache.set(job.layerId, { key: job.key, raster: new Raster(width, height, 4, data), inset, made: job.made })
+    }
+    if (waiting?.next) this.startEffects(waiting.next.layer, waiting.next.key)
+    this.onStale?.()
   }
   // Called when something drawn from a stale cache is ready to be redone.
   onStale: (() => void) | null = null
@@ -328,7 +388,8 @@ export class Compositor {
     if (!layer.image) return
     const opacity = this.opacity(entry), blendMode = options.blendMode ?? layer.blendMode
     if (hasVisibleEffects(layer.effects)) {
-      const { raster, inset } = this.effects(layer)
+      const effects = this.effects(layer), { raster, inset } = effects
+      this.drawnEffects.set(layer.id, effects)
       const t = layer.transform, sx = raster.width / (raster.width - 2 * inset), sy = raster.height / (raster.height - 2 * inset)
       const grown: Transform = { ...t, origin: [t.origin[0] + t.size[0] / 2 - t.size[0] * sx / 2, t.origin[1] + t.size[1] / 2 - t.size[1] * sy / 2], size: [t.size[0] * sx, t.size[1] * sy] }
       this.draw(target, { texture: this.texture(raster), raster, width: raster.width, height: raster.height, unitToDoc: unitToDocument(grown), sampling: t.sampling, rotation: t.rotation }, { opacity, blendMode, clip: options.clip, coverage: options.coverage })
@@ -487,7 +548,8 @@ export class Compositor {
     }
     const canvas = this.output!
     const entries = drawOrder(doc)
-    const changed = this.changes(doc, entries)
+    // Exports and merges draw it all: the last live frame may show effects that are still being redone.
+    const changed = this.live ? this.changes(doc, entries) : 'all'
     this.gpuChanges.clear()
     this.previous = { doc, width, height, scale: renderScale }
     if (changed === null) return canvas
@@ -523,9 +585,26 @@ export class Compositor {
       coverages.set(id, target)
       return target
     }
-    for (const entry of drawn) {
-      const { layer } = entry
-      if (stacked.has(layer.id)) continue
+    const units = drawn.filter(e => !stacked.has(e.layer.id))
+    // Effects being redone change what their layer draws; working them out first keeps the signatures true to this frame.
+    for (const e of units) if (e.layer.image && hasVisibleEffects(e.layer.effects)) this.effects(e.layer)
+    this.byIdForSignature = byId
+    const signatures = units.map(e => this.signature(e, stacks.get(e.layer.id)))
+    this.byIdForSignature = null
+    // Start from the kept canvas when every layer it holds is as it was.
+    let start = 0
+    const kept = this.prefix
+    if (kept && (kept.target.width !== width || kept.target.height !== height)) { kept.target.dispose(); this.prefix = null }
+    else if (kept && kept.signatures.every((sig, i) => signatures[i] === sig)) { this.copy(kept.target, canvas); start = kept.signatures.length }
+    // The first layer that changed since the last frame: everything below it is worth keeping while the edit goes on (taken from
+    // a whole-canvas frame, as a partial one only redraws its region).
+    let firstChanged = 0
+    while (firstChanged < signatures.length && signatures[firstChanged] === this.lastSignatures[firstChanged]) firstChanged++
+    const keep = !this.region && firstChanged > 0 && firstChanged < units.length && this.prefix?.signatures.length !== firstChanged && this.live ? firstChanged : -1
+    this.lastSignatures = signatures
+    for (let i = start; i < units.length; i++) {
+      if (i === keep) this.keepPrefix(canvas, signatures.slice(0, i))
+      const entry = units[i], { layer } = entry
       const clip = this.folderClip(entry.ancestors, used)
       if (layer.adjustment) { if (!layer.clipTo) this.applyAdjustment(entry, canvas, clip); continue }
       const children = stacks.get(layer.id)
@@ -541,6 +620,15 @@ export class Compositor {
     gl.generateMipmap(gl.TEXTURE_2D)
     return canvas
   }
+
+  private keepPrefix(canvas: Target, signatures: string[]) {
+    if (!this.prefix) this.prefix = { target: new Target(this.gl, canvas.width, canvas.height, 'rgba8'), signatures }
+    this.prefix.signatures = signatures
+    this.copy(canvas, this.prefix.target)
+  }
+  // Set while the live view draws: only it keeps the canvas below an edit or shows effects that are still being redone. Exports,
+  // merges and sampling render everything current.
+  live = false
 
   // A clipping base and the layers clipped to it: the children draw over the base's colors made opaque, then the result is cut
   // back to the base's coverage and blended onto the canvas in the base's mode.

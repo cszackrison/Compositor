@@ -1,5 +1,6 @@
-import { Raster } from '../model/raster'
-import type { LayerEffects } from '../model/types'
+// The layer effects renderer as it was before it was sped up, kept to check the faster one against.
+import { Raster } from '../../src/model/raster'
+import type { LayerEffects } from '../../src/model/types'
 
 const on = <T extends { enabled?: boolean } | undefined>(effect: T) => effect && effect.enabled !== false ? effect : undefined
 
@@ -7,8 +8,6 @@ export function hasVisibleEffects(effects: LayerEffects | null) {
   return !!effects && Object.values(effects).some(effect => effect && effect.enabled !== false)
 }
 
-// The helpers below run over every pixel of a layer's grown grid each time its effects are redone, so they index directly and
-// only clamp near the edges; the sums run in the same order as before, so the results are the same to the bit.
 function blur(source: Float32Array, width: number, height: number, sigma: number) {
   if (sigma <= 0.01) return source
   const radius = Math.max(1, Math.round(3 * sigma))
@@ -16,24 +15,19 @@ function blur(source: Float32Array, width: number, height: number, sigma: number
   let sum = 0
   for (let k = -radius; k <= radius; k++) sum += weights[k + radius] = Math.exp(-k * k / (2 * sigma * sigma))
   for (let k = 0; k < weights.length; k++) weights[k] /= sum
-  const temp = new Float32Array(source.length), out = new Float32Array(source.length), taps = radius * 2 + 1
+  const temp = new Float32Array(source.length), out = new Float32Array(source.length)
   for (let y = 0; y < height; y++) {
     const row = y * width
     for (let x = 0; x < width; x++) {
       let v = 0
-      if (x >= radius && x + radius < width) for (let k = 0, i = row + x - radius; k < taps; k++, i++) v += source[i] * weights[k]
-      else for (let k = -radius; k <= radius; k++) { const sx = x + k; v += source[row + (sx < 0 ? 0 : sx > width - 1 ? width - 1 : sx)] * weights[k + radius] }
+      for (let k = -radius; k <= radius; k++) v += source[row + Math.min(width - 1, Math.max(0, x + k))] * weights[k + radius]
       temp[row + x] = v
     }
   }
-  for (let y = 0; y < height; y++) {
-    const inside = y >= radius && y + radius < height
-    for (let x = 0; x < width; x++) {
-      let v = 0
-      if (inside) for (let k = 0, i = (y - radius) * width + x; k < taps; k++, i += width) v += temp[i] * weights[k]
-      else for (let k = -radius; k <= radius; k++) { const sy = y + k; v += temp[(sy < 0 ? 0 : sy > height - 1 ? height - 1 : sy) * width + x] * weights[k + radius] }
-      out[y * width + x] = v
-    }
+  for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
+    let v = 0
+    for (let k = -radius; k <= radius; k++) v += temp[Math.min(height - 1, Math.max(0, y + k)) * width + x] * weights[k + radius]
+    out[y * width + x] = v
   }
   return out
 }
@@ -42,29 +36,24 @@ function shift(source: Float32Array, width: number, height: number, dx: number, 
   const out = new Float32Array(source.length)
   const at = (x: number, y: number) => x < 0 || y < 0 || x >= width || y >= height ? 0 : source[y * width + x]
   for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
-    const sx = x - dx, sy = y - dy, x0 = Math.floor(sx), y0 = Math.floor(sy), gx = sx - x0, gy = sy - y0
-    if (x0 >= 0 && y0 >= 0 && x0 + 1 < width && y0 + 1 < height) {
-      const i = y0 * width + x0
-      out[y * width + x] = (source[i] * (1 - gx) + source[i + 1] * gx) * (1 - gy) + (source[i + width] * (1 - gx) + source[i + width + 1] * gx) * gy
-    } else out[y * width + x] = (at(x0, y0) * (1 - gx) + at(x0 + 1, y0) * gx) * (1 - gy) + (at(x0, y0 + 1) * (1 - gx) + at(x0 + 1, y0 + 1) * gx) * gy
+    const sx = x - dx, sy = y - dy, x0 = Math.floor(sx), y0 = Math.floor(sy), fx = sx - x0, fy = sy - y0
+    out[y * width + x] = (at(x0, y0) * (1 - fx) + at(x0 + 1, y0) * fx) * (1 - fy) + (at(x0, y0 + 1) * (1 - fx) + at(x0 + 1, y0 + 1) * fx) * fy
   }
   return out
 }
 
 // Square dilation (outside) or erosion (inside) by `reach`, as separable running max/min.
 function morph(source: Float32Array, width: number, height: number, reach: number, dilate: boolean) {
+  const pick = dilate ? Math.max : Math.min
   const temp = new Float32Array(source.length), out = new Float32Array(source.length)
-  for (let y = 0; y < height; y++) {
-    const row = y * width
-    for (let x = 0; x < width; x++) {
-      let v = dilate ? 0 : 1
-      for (let sx = x - reach; sx <= x + reach; sx++) { const s = sx < 0 || sx >= width ? 0 : source[row + sx]; if (dilate ? s > v : s < v) v = s }
-      temp[row + x] = v
-    }
+  for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
+    let v = dilate ? 0 : 1
+    for (let k = -reach; k <= reach; k++) { const sx = x + k; v = pick(v, sx < 0 || sx >= width ? 0 : source[y * width + sx]) }
+    temp[y * width + x] = v
   }
   for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
     let v = dilate ? 0 : 1
-    for (let sy = y - reach; sy <= y + reach; sy++) { const s = sy < 0 || sy >= height ? 0 : temp[sy * width + x]; if (dilate ? s > v : s < v) v = s }
+    for (let k = -reach; k <= reach; k++) { const sy = y + k; v = pick(v, sy < 0 || sy >= height ? 0 : temp[sy * width + x]) }
     out[y * width + x] = v
   }
   return out
