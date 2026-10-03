@@ -1,13 +1,14 @@
-import { Fragment, useCallback, useState, type DragEvent } from 'react'
+import { Fragment, useCallback, useRef, useState, type DragEvent } from 'react'
 import { useEditor } from './hooks'
 import { store } from '../editor/store'
-import { type Layer, adjustmentKinds, blendModeGroups, effectKinds, effectNames, type BlendMode } from '../model/types'
+import { type Layer, adjustmentKinds, blendModeGroups, effectKinds, effectNames, type BlendMode, type EffectKind } from '../model/types'
 import { thumbnail } from './thumbnails'
 import { Icon } from './icons'
 import { defaultEffect } from './Inspector'
 import { ContextMenu, type MenuItem } from './Menu'
 import { isMac } from '../editor/shortcuts'
 import { setDraggedLayers } from './Tabs'
+import { useCoarse } from './layout'
 
 const command = isMac ? '⌘' : 'Ctrl'
 const commandKey = (e: React.MouseEvent) => isMac ? e.metaKey : e.ctrlKey
@@ -55,7 +56,7 @@ function Appearance() {
 function Popup({ label, icon, items, disabled }: { label: string; icon: string; items: { label: string; action: () => void; disabled?: boolean }[]; disabled?: boolean }) {
   const [open, setOpen] = useState(false)
   return (
-    <div className="menu" style={{ position: 'relative' }} onPointerLeave={() => setOpen(false)}>
+    <div className="menu" style={{ position: 'relative' }} onPointerLeave={e => { if (e.pointerType === 'mouse') setOpen(false) }}>
       <button className="icon" title={label} disabled={disabled} onClick={() => setOpen(!open)}><Icon name={icon} /></button>
       {open && <div className="menu-list" style={{ top: 'auto', bottom: '100%', left: 0 }}>{items.map(item => <button key={item.label} disabled={item.disabled} onClick={() => { setOpen(false); item.action() }}><span>{item.label}</span></button>)}</div>}
     </div>
@@ -75,17 +76,42 @@ export function LayersPanel() {
   // The Mac app's layer menu, in its order: right-clicking a row outside the selection selects it, inside it makes it primary.
   const openMenu = (event: React.MouseEvent, layer: Layer) => {
     event.preventDefault()
-    const onMask = (event.target as HTMLElement).classList.contains('mask')
-    if (state.selectedIds.includes(layer.id)) store.set({ activeId: layer.id, editingMask: onMask, inspector: layer.adjustment ? layer.id : state.inspector })
-    else { store.setActive(layer.id); store.set({ editingMask: onMask }) }
-    setMenu({ x: event.clientX, y: event.clientY })
+    // A long press already opened it on touch; Android sends contextmenu too.
+    if (Date.now() - touchedAt.current < 1500) return
+    openMenuAt(event.clientX, event.clientY, layer, (event.target as HTMLElement).classList.contains('mask'))
   }
+  const openMenuAt = (x: number, y: number, layer: Layer, onMask: boolean) => {
+    if (store.state.selectedIds.includes(layer.id)) store.set({ activeId: layer.id, editingMask: onMask, inspector: layer.adjustment ? layer.id : store.state.inspector })
+    else { store.setActive(layer.id); store.set({ editingMask: onMask }) }
+    setMenu({ x, y })
+  }
+  // Touch has no right-click: holding a row still for half a second opens its menu.
+  const coarse = useCoarse()
+  const press = useRef<{ timer: number; x: number; y: number } | null>(null), touchedAt = useRef(0)
+  const cancelPress = () => { if (press.current) clearTimeout(press.current.timer); press.current = null }
+  const startPress = (event: React.PointerEvent, layer: Layer, effect?: EffectKind) => {
+    if (event.pointerType !== 'touch') return
+    touchedAt.current = Date.now()
+    const { clientX: x, clientY: y } = event, onMask = (event.target as HTMLElement).classList.contains('mask')
+    cancelPress()
+    press.current = { x, y, timer: window.setTimeout(() => { press.current = null; touchedAt.current = Date.now(); openMenuAt(x, y, layer, onMask); if (effect) store.set({ effectSelection: { layerId: layer.id, kind: effect } }) }, 500) }
+  }
+  const movePress = (event: React.PointerEvent) => { if (press.current && Math.hypot(event.clientX - press.current.x, event.clientY - press.current.y) > 10) cancelPress() }
   const menuItems = (): MenuItem[] => {
     const layer = store.active
     if (!layer) return []
     const several = store.state.selectedIds.length > 1
     const plain = !layer.isGroup && !layer.adjustment
+    const effect = store.state.effectSelection
+    // What a double-click or a drag does with a mouse, for fingers.
+    const touchItems: MenuItem[] = coarse ? [
+      ...(effect ? [{ label: `Edit ${effectNames[effect.kind]}…`, action: () => store.set({ effectSelection: { ...effect, before: layer.effects?.[effect.kind] }, panel: 'Effect' }) }] : layer.adjustment || layer.effects ? [{ label: layer.adjustment ? 'Edit Adjustment…' : 'Edit Layer…', action: () => store.set({ inspector: layer.id }) }] : []),
+      { label: 'Move Up', action: () => store.stepLayer(1) },
+      { label: 'Move Down', action: () => store.stepLayer(-1) },
+      'divider',
+    ] : []
     return [
+      ...touchItems,
       { label: 'Duplicate Layer', action: () => store.duplicate() },
       { label: 'Rename…', action: () => setRenaming(layer.id), disabled: several },
       { label: store.state.effectSelection ? `Delete ${effectNames[store.state.effectSelection.kind]}` : store.state.editingMask && layer.mask ? 'Delete Mask' : several ? 'Delete Selected Layers' : 'Delete Layer', action: () => store.deleteSelected() },
@@ -140,10 +166,10 @@ export function LayersPanel() {
           const editingMask = isActive && state.editingMask
           return (
             <Fragment key={layer.id}>
-            <div className={classes} style={{ paddingLeft: 4 + depth * 16 }} draggable={renaming !== layer.id}
+            <div className={classes} style={{ paddingLeft: 4 + depth * 16 }} draggable={renaming !== layer.id && !coarse} onPointerMoveCapture={movePress} onPointerUp={cancelPress} onPointerCancel={cancelPress}
               onDragStart={e => { const ids = selected ? state.selectedIds : [layer.id]; e.dataTransfer.setData('application/x-compositor-layers', JSON.stringify(ids)); setDraggedLayers(ids); e.dataTransfer.effectAllowed = 'copyMove' }} onDragEnd={() => setDraggedLayers(null)}
               onDragOver={e => onDragOver(e, layer)} onDrop={onDrop} onContextMenu={e => openMenu(e, layer)}
-              onPointerDown={e => { if (e.button === 0 && e.altKey && !commandKey(e) && clipZone(e, layer) && !(e.target as HTMLElement).classList.contains('mask')) { store.set({ effectSelection: null }); store.toggleClip(layer.id); e.preventDefault(); return } if (e.button === 0 && !(e.target as HTMLElement).closest('button,input')) { store.setActive(layer.id, e.shiftKey ? 'range' : e.metaKey || e.ctrlKey ? 'toggle' : 'none'); if (!(e.target as HTMLElement).classList.contains('mask')) store.set({ editingMask: false }) } }}
+              onPointerDown={e => { startPress(e, layer); if (e.button === 0 && e.altKey && !commandKey(e) && clipZone(e, layer) && !(e.target as HTMLElement).classList.contains('mask')) { store.set({ effectSelection: null }); store.toggleClip(layer.id); e.preventDefault(); return } if (e.button === 0 && !(e.target as HTMLElement).closest('button,input')) { store.setActive(layer.id, e.shiftKey ? 'range' : e.metaKey || e.ctrlKey ? 'toggle' : 'none'); if (!(e.target as HTMLElement).classList.contains('mask')) store.set({ editingMask: false }) } }}
               onDoubleClick={e => { if ((e.target as HTMLElement).classList.contains('name')) setRenaming(layer.id); else if (layer.adjustment || layer.effects) store.set({ inspector: layer.id }) }}
               onPointerMove={e => { const zone = clipZone(e, layer); (e.currentTarget as HTMLElement).style.cursor = e.altKey && !commandKey(e) ? (zone ? (store.canToggleClipFor(layer.id) ? 'alias' : 'default') : 'copy') : '' }}>
               <button className={`icon eye ${layer.visible ? '' : 'off'}`} title={layer.visible ? 'Hide' : 'Show'} onClick={() => store.updateLayer(layer.id, { visible: !layer.visible }, layer.visible ? 'Hide Layer' : 'Show Layer')}><Icon name={layer.visible ? 'eye' : 'eyeOff'} /></button>
@@ -160,7 +186,7 @@ export function LayersPanel() {
               const effect = layer.effects![kind]!, shown = effect.enabled !== false
               return (
                 <div key={kind} className={`layer effect-row ${state.effectSelection?.layerId === layer.id && state.effectSelection.kind === kind ? 'active' : ''}`} style={{ paddingLeft: 4 + depth * 16 }} title={`Click to select; double-click to edit; ${isMac ? 'Option' : 'Alt'}-drag to copy ${effectNames[kind].toLowerCase()}`}
-                  draggable onDragStart={e => { e.stopPropagation(); e.dataTransfer.setData('application/x-compositor-effect', JSON.stringify({ layerId: layer.id, kind })); e.dataTransfer.effectAllowed = 'copy' }}
+                  draggable={!coarse} onPointerDown={e => startPress(e, layer, kind)} onPointerMove={movePress} onPointerUp={cancelPress} onPointerCancel={cancelPress} onDragStart={e => { e.stopPropagation(); e.dataTransfer.setData('application/x-compositor-effect', JSON.stringify({ layerId: layer.id, kind })); e.dataTransfer.effectAllowed = 'copy' }}
                   onClick={() => store.set({ activeId: layer.id, selectedIds: [layer.id], editingMask: false, effectSelection: { layerId: layer.id, kind } })}
                   onDoubleClick={() => store.set({ activeId: layer.id, selectedIds: [layer.id], effectSelection: { layerId: layer.id, kind, before: effect }, panel: 'Effect' })}
                   onContextMenu={e => { e.stopPropagation(); openMenu(e, layer); store.set({ effectSelection: { layerId: layer.id, kind } }) }}>

@@ -79,14 +79,14 @@ function Picker({ request: r }: { request: Request }) {
   return (
     <div className="color-picker" style={{ left: position.x, top: position.y }} onPointerDown={moveWindow}>
       <div className="picker-title">{r.title}</div>
-      <div style={{ display: 'flex', gap: 14 }}>
+      <div className="picker-body" style={{ display: 'flex', gap: 14 }}>
         <div ref={field} className="sb" style={{ background: `linear-gradient(to top, #000, transparent), linear-gradient(to right, #fff, rgb(${pure.join(',')}))` }} onPointerDown={e => dragIn(field.current, (x, y) => setHSB(h => ({ ...h, s: x, b: 1 - y })))(e)}>
           <span className="marker" style={{ left: `${hsb.s * 100}%`, top: `${(1 - hsb.b) * 100}%` }} />
         </div>
         <div ref={strip} className="hue" onPointerDown={e => dragIn(strip.current, (_, y) => setHSB(h => ({ ...h, h: (1 - y) * 360 % 360 })))(e)}>
           <span className="arrow" style={{ top: `${(1 - hsb.h / 360) * 100}%` }} />
         </div>
-        <div style={{ width: 180, display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <div className="picker-controls" style={{ width: 180, display: 'flex', flexDirection: 'column', gap: 8 }}>
           <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
             <div style={{ width: 64, height: 64, borderRadius: 5, background: `rgb(${color.join(',')})`, border: '1px solid var(--line)' }} />
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}><button className="primary" style={{ width: 90 }} onClick={() => finish(true)}>OK</button><button style={{ width: 90 }} onClick={() => finish(false)}>Cancel</button></div>
