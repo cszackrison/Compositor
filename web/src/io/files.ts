@@ -3,7 +3,7 @@ import { unzipSync, zipSync } from 'fflate'
 export type PackageFiles = Map<string, Uint8Array>
 
 // Where a project came from and can be saved back to: a folder the browser lets us write (Chromium), or nothing (download a zip).
-export type PackageTarget = { kind: 'directory'; handle: FileSystemDirectoryHandle; name: string } | { kind: 'download'; name: string }
+export type PackageTarget = { kind: 'directory'; handle: FileSystemDirectoryHandle; name: string } | { kind: 'download'; name: string } | { kind: 'browser'; id: string; name: string }
 
 export const canWriteDirectories = typeof window !== 'undefined' && 'showDirectoryPicker' in window
 

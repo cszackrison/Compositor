@@ -214,3 +214,7 @@ kbd { font: inherit; color: var(--muted); }
 .modifier-pad button { min-width: 46px; min-height: 46px; padding: 0 6px; border-radius: 12px; background: rgba(38,38,40,0.85); border: 1px solid var(--line); font-size: 15px; backdrop-filter: blur(6px); }
 .modifier-pad button.once { border-color: var(--accent); color: #9cc3ff; }
 .modifier-pad button.locked { background: var(--accent); border-color: var(--accent); color: white; }
+
+/* Added to a home screen, iOS draws its status bar over the page. */
+.app:not(.phone) { padding-top: env(safe-area-inset-top); grid-template-rows: 36px 40px 1fr; box-sizing: border-box; }
+.welcome .actions .muted { margin-top: 6px; }

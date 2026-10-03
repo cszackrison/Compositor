@@ -29,6 +29,8 @@ export class BrushStroke {
   private last: [number, number] | null = null
   private trail: [number, number] | null = null
   private carry = 0
+  // A pen's pressure (0–1) for the dabs being laid now; it scales the tip, and stays 1 without a pen or with pressure off.
+  pressure = 1
 
   constructor(readonly raster: Raster, readonly pixelToDocument: Mat3, readonly settings: BrushSettings, readonly color: [number, number, number], readonly selection: Raster | null, readonly mode: StrokeMode = { kind: 'paint' }) {
     this.coverage = new Float32Array(raster.width * raster.height)
@@ -128,7 +130,7 @@ export class BrushStroke {
   lineTo(x: number, y: number) {
     if (!this.last) { this.dabAt(x, y); this.last = [x, y]; return }
     const [lx, ly] = this.last
-    const spacing = Math.max(0.25, this.settings.diameter * (this.settings.hardness >= 1 ? 0.015 : 0.025))
+    const spacing = Math.max(0.25, this.settings.diameter * (this.pressure < 1 ? Math.max(0.05, this.pressure) : 1) * (this.settings.hardness >= 1 ? 0.015 : 0.025))
     const length = Math.hypot(x - lx, y - ly)
     let along = spacing - this.carry
     while (along <= length) {
@@ -142,7 +144,7 @@ export class BrushStroke {
   private dabAt(docX: number, docY: number) {
     const { width, height } = this.raster
     const m = this.toPixel, cx = m[0] * docX + m[3] * docY + m[6], cy = m[1] * docX + m[4] * docY + m[7]
-    const radius = this.settings.diameter / 2 * this.pixelScale
+    const radius = this.settings.diameter / 2 * this.pixelScale * (this.pressure < 1 ? Math.max(0.05, this.pressure) : 1)
     if (radius <= 0) return
     const x0 = Math.max(0, Math.floor(cx - radius - 1)), y0 = Math.max(0, Math.floor(cy - radius - 1))
     const x1 = Math.min(width, Math.ceil(cx + radius + 1)), y1 = Math.min(height, Math.ceil(cy + radius + 1))

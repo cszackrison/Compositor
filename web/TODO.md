@@ -44,12 +44,17 @@ existing features were.
 
 ## Touch and phones
 
-- [x] Canvas touch: one finger uses the tool, two fingers pinch to zoom and pan (a stroke the first finger started is undone),
-  and a long press opens the canvas menu (except with the brush tools, where holding still keeps painting).
-- [ ] Modifier stand-ins for touch: an on-screen Option/Shift button (Clone Stamp source, eyedropper, straight lines).
-- [ ] Phone layout: the sidebar as a pull-up sheet and the tools as a bottom bar at narrow widths.
-- [ ] Pen pressure from pointer events (Apple Pencil, Wacom).
-- [ ] Try it on a real iPad and Android phone; touch was only exercised with synthetic events.
+Done: pinch and two-finger pan, long-press menus, the phone layout (top bar, bottom tool strips, layers sheet, full-screen
+menu, dialogs as sheets), touch sizing, on-screen Shift/Option/Command, Clone Stamp's Set Source, bigger handles under a finger,
+opt-in pen pressure, a web app manifest for the home screen, a large-canvas warning, and saving projects in the browser.
+
+- [ ] Try it all on a real iPhone, iPad and Android phone: touch was only exercised with synthetic events, and the phone layout
+  in a 390 px frame on a desktop.
+- [ ] Phones in landscape get the desktop layout (they're wider than 760 px); a landscape phone layout may be worth it.
+- [ ] Reordering layers by dragging on touch (Move Up and Move Down in the long-press menu for now).
+- [ ] Offline use from the home screen would need a service worker.
+- [ ] iOS may clear browser storage for sites not added to the home screen after a week unused; projects saved in the browser
+  should be downloaded as a zip to keep.
 
 ## Untested by hand
 

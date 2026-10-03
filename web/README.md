@@ -58,6 +58,12 @@ Fields the web app doesn't edit (text and shape metadata, unknown keys from newe
   - PNG export, and JPEG export with a live preview.
   - Remappable keyboard shortcuts (Edit › Keyboard Shortcuts).
   - Drag a field's label to scrub its number.
+- **Phones and tablets:**
+  - Below 760 px wide: the canvas fills the screen, the tools and their options sit along the bottom, layers come up in a sheet, and the menus are one full-screen list.
+  - One finger uses the tool; two fingers pinch to zoom and pan. A long press opens the canvas or layer menu.
+  - On-screen Shift, Option and Command keys, and a Set Source button for Clone Stamp.
+  - Optional pen pressure for brush size (off by default, as the Mac app has none).
+  - Add to Home Screen for a full-screen app. Without folder access, Save keeps projects in the browser.
 
 ## Not yet ported
 

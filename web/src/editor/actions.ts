@@ -1,6 +1,7 @@
 import { commitFloating } from './floating'
 import { Store, activateTab, closeTab, store, tabForOpening, tabs } from './store'
 import { forgetRecent, noteRecent, type Recent } from '../io/recent'
+import { deleteFromBrowser, readFromBrowser, saveToBrowser, type BrowserProject } from '../io/browserProjects'
 import { canWriteDirectories, download, readDirectoryHandle, readFileList, rootedAtManifest, unzipPackage, writeDirectory, zipPackage, type PackageFiles, type PackageTarget } from '../io/files'
 import { readProject, writeProject } from '../io/project'
 import { Raster, decodeImageFile, encodePNG } from '../model/raster'
@@ -93,9 +94,13 @@ export const save = guard(async (as: boolean = false) => {
       const handle = await parent.getDirectoryHandle(name.endsWith('.comp') ? name : `${name}.comp`, { create: true })
       target = { kind: 'directory', handle, name: handle.name }
     } else {
-      download(`${documentName()}.comp.zip`, zipPackage(documentName(), files), 'application/zip')
-      store.set({ saved: true, target: { kind: 'download', name: documentName() } })
-      store.notify('Downloaded as a zip. Unzip it to get the .comp project folder.', 'info')
+      // Without folder access, Save keeps the project in this browser (Download as Zip makes a copy elsewhere).
+      const name = as ? prompt('Save project as', documentName())?.trim() : documentName()
+      if (!name) return
+      const id = !as && target?.kind === 'browser' ? target.id : uuid()
+      await saveToBrowser(id, name, zipPackage(name, files))
+      store.set({ saved: true, target: { kind: 'browser', id, name } })
+      store.notify(`Saved ${name} in this browser. Download as Zip to keep a copy elsewhere.`, 'info')
       return
     }
   }
@@ -103,6 +108,14 @@ export const save = guard(async (as: boolean = false) => {
   noteRecent(target.handle)
   store.set({ saved: true, target })
   store.notify(`Saved ${target.name}`, 'info')
+})
+
+export const openBrowserProject = guard(async (project: BrowserProject) => {
+  await openFiles(unzipPackage(await readFromBrowser(project.id)), { kind: 'browser', id: project.id, name: project.name })
+})
+
+export const deleteBrowserProject = guard(async (project: BrowserProject) => {
+  if (confirm(`Delete “${project.name}” from this browser? This can’t be undone.`)) await deleteFromBrowser(project.id)
 })
 
 export const downloadZip = guard(() => {

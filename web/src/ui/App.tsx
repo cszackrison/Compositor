@@ -2,7 +2,9 @@ import { useEffect, useState, useSyncExternalStore } from 'react'
 import { useEditor } from './hooks'
 import { store, tabs, type Tool } from '../editor/store'
 import { clearRecent, loadRecent, recentProjects, subscribeRecent } from '../io/recent'
-import { closeProject, openRecent, documentName, downloadZip, exportImage, importImage, openFiles, openProject, openSample, openZip, placeImages, save } from '../editor/actions'
+import { browserProjects, loadBrowserProjects, subscribeBrowserProjects } from '../io/browserProjects'
+import { useCoarse } from './layout'
+import { closeProject, deleteBrowserProject, openBrowserProject, openRecent, documentName, downloadZip, exportImage, importImage, openFiles, openProject, openSample, openZip, placeImages, save } from '../editor/actions'
 import { copy, cut, layerViaCopy, paste } from '../editor/clipboard'
 import { readDrop, canWriteDirectories } from '../io/files'
 import { adjustmentKinds, blendModes } from '../model/types'
@@ -38,7 +40,7 @@ const commands: Record<string, { run: () => void; enabled?: () => boolean }> = {
   'New Canvas': { run: open('New Canvas') },
   'Open Project': { run: openProject },
   Save: { run: () => save(), enabled: has },
-  'Save As': { run: () => save(true), enabled: () => has() && canWriteDirectories },
+  'Save As': { run: () => save(true), enabled: has },
   'Export PNG': { run: () => exportImage('png'), enabled: has },
   'Export JPEG': { run: open('Export JPEG'), enabled: has },
   'Close Project': { run: () => closeProject(), enabled: has },
@@ -139,6 +141,15 @@ export function App() {
   useSyncExternalStore(subscribePrefs, () => prefs)
   const recent = useSyncExternalStore(subscribeRecent, recentProjects)
   useEffect(() => { loadRecent() }, [])
+  const saved = useSyncExternalStore(subscribeBrowserProjects, browserProjects)
+  useEffect(() => { if (!canWriteDirectories) loadBrowserProjects() }, [])
+  // Phones and tablets give a tab far less memory than a computer: warn once per project when its canvas is large for one.
+  const coarse = useCoarse()
+  useEffect(() => {
+    if (!coarse || !store.hasDocument) return
+    const megapixels = state.doc.width * state.doc.height / 1e6, roomy = ((navigator as { deviceMemory?: number }).deviceMemory ?? 4) >= 8
+    if (megapixels > (roomy ? 50 : 24)) store.notify(`This canvas is ${Math.round(megapixels)} MP. Phones and tablets can run out of memory at this size, which reloads the page: save often.`, 'info')
+  }, [state.doc.id])
   const [, setShortcutVersion] = useState(0)
   useEffect(() => subscribeShortcuts(() => setShortcutVersion(v => v + 1)), [])
   const [dragging, setDragging] = useState(false)
@@ -160,12 +171,14 @@ export function App() {
         ...(recent.length ? ['divider' as const] : []),
         { label: 'Clear Menu', action: clearRecent, disabled: !recent.length },
       ] },
+      ...(!canWriteDirectories ? [{ label: 'Open Saved in Browser', disabled: !saved.length, submenu: saved.map(p => ({ label: p.name, action: () => openBrowserProject(p) })) }] : []),
       { label: 'Open Zipped Project…', action: openZip },
       { label: 'Import Images…', action: importImage },
       { label: 'Open Sample Project', action: openSample },
       'divider',
-      item(canWriteDirectories ? 'Save' : 'Save (Download Zip)', 'Save'),
+      item(canWriteDirectories ? 'Save' : 'Save in Browser', 'Save'),
       item('Save As…', 'Save As'),
+      ...(!canWriteDirectories && saved.length ? [{ label: 'Delete Saved in Browser', submenu: saved.map(p => ({ label: p.name, action: () => deleteBrowserProject(p) })) }] : []),
       { label: 'Download as Zip', action: downloadZip, disabled: !doc },
       'divider',
       item('Export PNG…', 'Export PNG'),
@@ -355,6 +368,9 @@ export function App() {
 }
 
 function Welcome() {
+  const saved = useSyncExternalStore(subscribeBrowserProjects, browserProjects)
+  // Phones can't open folders, so the folder button only shows with a mouse.
+  const coarse = useCoarse()
   return (
     <div className="welcome">
       <div className="card">
@@ -363,11 +379,12 @@ function Welcome() {
         <p className="muted">Open a <code>.comp</code> project from the Mac app, start a new canvas, or drop an image here.</p>
         <div className="actions">
           <button className="primary" onClick={open('New Canvas')}>New Canvas…</button>
-          <button onClick={openProject}>Open Project Folder…</button>
+          {!coarse && <button onClick={openProject}>Open Project Folder…</button>}
           <button onClick={openZip}>Open Zipped Project…</button>
           <button onClick={importImage}>Open Image…</button>
           <button onClick={openSample}>Open Sample Project</button>
         </div>
+        {saved.length > 0 && <div className="actions"><span className="muted">Saved in this browser</span>{saved.slice(0, 5).map(p => <button key={p.id} onClick={() => openBrowserProject(p)}>{p.name} <span className="muted">· {new Date(p.savedAt).toLocaleDateString()}</span></button>)}</div>}
       </div>
     </div>
   )

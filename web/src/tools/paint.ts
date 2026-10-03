@@ -1,4 +1,5 @@
 import { store, tipFamily } from '../editor/store'
+import { prefs } from '../editor/prefs'
 import { BrushStroke, type StrokeMode } from './brush'
 import { Raster } from '../model/raster'
 import { lazyBlur } from '../model/pixels'
@@ -176,6 +177,7 @@ export const paint: ToolHandler = {
     const stroke = new BrushStroke(raster, toDoc, settings, color, store.state.selection, mode)
     stroke.stringLength = settings.smoothing / Math.max(0.01, view.zoom)
     const same = lastEnd && lastEnd.layerId === layer.id && lastEnd.isMask === target.isMask
+    if (prefs.penPressure && p.pressure !== undefined) stroke.pressure = p.pressure
     if (p.shift && same) { stroke.lineTo(...lastEnd!.point); stroke.lineTo(...p.point) } else stroke.moveTo(...p.point)
     stroke.render()
     current = { stroke, layerId: layer.id, isMask: target.isMask, heal: tool === 'heal', kept, maskKept: maskGrowth?.kept ?? null, axis: null, anchor: p.point }
@@ -197,6 +199,7 @@ export const paint: ToolHandler = {
       if (!current!.axis) { if (Math.hypot(q[0] - ax, q[1] - ay) < 3) return [ax, ay]; current!.axis = Math.abs(q[0] - ax) >= Math.abs(q[1] - ay) ? 'x' : 'y' }
       return current!.axis === 'x' ? [q[0], ay] : [ax, q[1]]
     }
+    if (prefs.penPressure && p.pressure !== undefined) current.stroke.pressure = p.pressure
     for (const q of p.coalesced.length ? p.coalesced : [p.point]) current.stroke.moveTo(...lock(q))
     current.stroke.render()
     requestRender()

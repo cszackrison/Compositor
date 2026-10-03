@@ -10,6 +10,7 @@ import { applyCrop, cancelCrop, cropRatios, setCropRatio } from '../tools/crop'
 import { applyDistort, cancelDistort, isDistorting, maskAlone } from '../tools/move'
 import { armModifier, subscribeModifiers, touchModifiers } from './canvasState'
 import { useCoarse } from './layout'
+import { prefs, setPrefs, subscribePrefs } from '../editor/prefs'
 
 export const tools: { tool: Tool; label: string; shortcut: string; icon: string }[] = [
   { tool: 'move', label: 'Move / Transform', shortcut: 'Move / Transform tool', icon: 'move' },
@@ -90,6 +91,7 @@ export function ToolHeader() {
   const state = useEditor()
   const coarse = useCoarse()
   useSyncExternalStore(subscribeModifiers, touchModifiers)
+  useSyncExternalStore(subscribePrefs, () => prefs)
   const tool = tools.find(t => t.tool === state.tool)!
   const target = store.active
   const mask = state.editingMask && target?.mask
@@ -100,6 +102,7 @@ export function ToolHeader() {
         <Choice value={state.tool === 'brush' ? 'Paint' : 'Erase'} options={['Paint', 'Erase'] as const} onChange={v => store.setTool(v === 'Paint' ? 'brush' : 'eraser')} />
         <TipControls />
         <Range label="Smoothing" value={state.brush.smoothing} min={0} max={100} onChange={smoothing => store.set({ brush: { ...state.brush, smoothing } })} />
+        <label title="A pen's pressure sets the brush size"><input type="checkbox" checked={prefs.penPressure} onChange={e => setPrefs({ penPressure: e.target.checked })} /> Pen Pressure</label>
         {target && <span className="muted">On {mask ? `${target.name}’s mask` : target.name}</span>}
       </>}
       {state.tool === 'heal' && <>
