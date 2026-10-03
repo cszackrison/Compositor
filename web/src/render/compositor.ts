@@ -61,7 +61,9 @@ export class Compositor {
   private released = new FinalizationRegistry<WebGLTexture>(texture => this.gl.deleteTexture(texture))
   private luts = new WeakMap<Adjustment, { kind: 'table' | 'cube'; texture: WebGLTexture } | null>()
   // `made` orders results by when they were started, so a worker result never replaces one made after it.
-  private effectsCache = new Map<string, { key: string; raster: Raster; inset: number; made: number }>()
+  // `made` orders results by when they were started, so a worker result never replaces one made after it; `from` is the image's
+  // size and the layer's transform it was made from, to draw a result that's waiting to be redone where it belongs.
+  private effectsCache = new Map<string, { key: string; raster: Raster; inset: number; made: number; from: { width: number; height: number; transform: Transform } }>()
   // Effects being redone in the worker, by layer: the one running and the newest waiting.
   private effectsJobs = new Map<string, { running: string; next: { key: string; layer: Layer } | null }>()
   private effectsWorker: Worker | null | undefined
@@ -335,7 +337,7 @@ export class Compositor {
     if (cached?.key === key) return cached
     if (cached && this.live && this.requestEffects(layer, key)) return cached
     if (cached && cached.raster !== layer.image) this.forget(cached.raster)
-    const rendered = { key, made: this.nextId++, ...renderEffects(layer.image!, mask, layer.effects!) }
+    const rendered = { key, made: this.nextId++, from: { width: layer.image!.width, height: layer.image!.height, transform: layer.transform }, ...renderEffects(layer.image!, mask, layer.effects!) }
     this.effectsCache.set(layer.id, rendered)
     return rendered
   }
@@ -355,13 +357,13 @@ export class Compositor {
     return true
   }
 
-  private effectsIds = new Map<number, { layerId: string; key: string; made: number }>()
+  private effectsIds = new Map<number, { layerId: string; key: string; made: number; from: { width: number; height: number; transform: Transform } }>()
   private startEffects(layer: Layer, key: string) {
     const id = this.nextId++, mask = layer.mask && layer.maskEnabled ? layer.mask : null
     const pixels = (r: Raster) => ({ width: r.width, height: r.height, channels: r.channels, data: r.data.slice() })
     const image = pixels(layer.image!), maskPixels = mask ? pixels(mask) : null
     this.effectsJobs.set(layer.id, { running: key, next: null })
-    this.effectsIds.set(id, { layerId: layer.id, key, made: id })
+    this.effectsIds.set(id, { layerId: layer.id, key, made: id, from: { width: layer.image!.width, height: layer.image!.height, transform: layer.transform } })
     this.effectsWorker!.postMessage({ id, image, mask: maskPixels, effects: layer.effects }, { transfer: [image.data.buffer, ...(maskPixels ? [maskPixels.data.buffer] : [])] })
   }
 
@@ -374,7 +376,7 @@ export class Compositor {
     const cached = this.effectsCache.get(job.layerId)
     if (!cached || cached.made < job.made) {
       if (cached) this.forget(cached.raster)
-      this.effectsCache.set(job.layerId, { key: job.key, raster: new Raster(width, height, 4, data), inset, made: job.made })
+      this.effectsCache.set(job.layerId, { key: job.key, raster: new Raster(width, height, 4, data), inset, made: job.made, from: job.from })
     }
     if (waiting?.next) this.startEffects(waiting.next.layer, waiting.next.key)
     this.onStale?.()
@@ -392,7 +394,10 @@ export class Compositor {
     if (hasVisibleEffects(layer.effects)) {
       const effects = this.effects(layer), { raster, inset } = effects
       this.drawnEffects.set(layer.id, effects)
-      const t = layer.transform, sx = raster.width / (raster.width - 2 * inset), sy = raster.height / (raster.height - 2 * inset)
+      // Effects still being redone for a layer whose grid has since changed size (a stroke grows it to the canvas, the end of one
+      // trims it back) are drawn where they were made, not stretched over the new grid.
+      const same = effects.from.width === layer.image.width && effects.from.height === layer.image.height
+      const t = same ? layer.transform : effects.from.transform, sx = raster.width / (raster.width - 2 * inset), sy = raster.height / (raster.height - 2 * inset)
       const grown: Transform = { ...t, origin: [t.origin[0] + t.size[0] / 2 - t.size[0] * sx / 2, t.origin[1] + t.size[1] / 2 - t.size[1] * sy / 2], size: [t.size[0] * sx, t.size[1] * sy] }
       this.draw(target, { texture: this.texture(raster), raster, width: raster.width, height: raster.height, unitToDoc: unitToDocument(grown), sampling: t.sampling, rotation: t.rotation }, { opacity, blendMode, clip: options.clip, coverage: options.coverage })
       return
