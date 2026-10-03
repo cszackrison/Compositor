@@ -5,7 +5,7 @@ import { drawOrder, effectivelyVisible, transformCorners, unitToDocument } from 
 import { Raster } from '../model/raster'
 import { type Layer, type Transform } from '../model/types'
 import { call, withBuffers } from '../kernels'
-import { requestOverlay, requestRender, view } from '../ui/canvasState'
+import { requestOverlay, requestRender, view, hitSlop } from '../ui/canvasState'
 import { redrawShape } from './shape'
 import { clearSnap, snapMove, snapPoint } from './snap'
 import { guideAt, startGuideDrag } from './guides'
@@ -99,18 +99,18 @@ let distort: { ids: string[]; box: [number, number][]; corners: [number, number]
 function hitHandle(screen: [number, number]): Handle | 'rotate' | 'body' | null {
   const box = distort ? null : currentBox()
   if (distort) {
-    const i = distort.corners.findIndex(c => { const [x, y] = view.toScreen(...c); return Math.abs(x - screen[0]) <= 6 && Math.abs(y - screen[1]) <= 6 })
+    const i = distort.corners.findIndex(c => { const [x, y] = view.toScreen(...c); return Math.abs(x - screen[0]) <= 6 * hitSlop() && Math.abs(y - screen[1]) <= 6 * hitSlop() })
     return i >= 0 ? handleNames[[0, 2, 4, 6][i]] : null
   }
   if (!box || !prefs.transformControls) return null
   const m = unitToDocument(box)
   for (const name of handleNames) {
     const [x, y] = view.toScreen(...apply(m, ...handleUnit[name]))
-    if (Math.abs(x - screen[0]) <= 6 && Math.abs(y - screen[1]) <= 6) return name
+    if (Math.abs(x - screen[0]) <= 6 * hitSlop() && Math.abs(y - screen[1]) <= 6 * hitSlop()) return name
   }
   const corners = transformCorners(box).map(c => view.toScreen(...c))
   if (pointInPolygon(screen, corners)) return 'body'
-  if (corners.some(([x, y]) => Math.hypot(x - screen[0], y - screen[1]) < 26)) return 'rotate'
+  if (corners.some(([x, y]) => Math.hypot(x - screen[0], y - screen[1]) < 26 * hitSlop())) return 'rotate'
   return null
 }
 

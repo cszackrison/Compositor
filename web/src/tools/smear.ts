@@ -168,6 +168,7 @@ export const smear: ToolHandler = {
     store.pixelsChanged()
   },
   hover(p) { pointer = p.point; paint.hover!(p) },
+  leave() { if (!warp) pointer = null; paint.leave!() },
   key(event) {
     if (event.key === 'Escape' && warp) { warp.raster.data.set(warp.original); warp.raster.touch(); warp = null; store.cancelGesture(); requestRender(); return true }
     return paint.key!(event)

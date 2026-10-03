@@ -14,6 +14,8 @@ export interface ToolHandler {
   cursor?(p: Pointer | null): string
   // Whether a drag or pending edit is in progress (so menus and shortcuts that would disturb it wait).
   busy?(): boolean
+  // The pointer left the canvas (or a finger lifted): forget where it was, so no cursor is drawn there.
+  leave?(): void
   // Finishes or cancels a pending edit when the tool, layer or tab changes.
   settle?(): void
 }

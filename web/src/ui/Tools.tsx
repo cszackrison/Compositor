@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useSyncExternalStore } from 'react'
 import { useEditor } from './hooks'
 import { openColorPicker } from './ColorPicker'
 import { store, type HealMode, type ShapeKind, type SmearMode, type Tool } from '../editor/store'
@@ -8,6 +8,8 @@ import { isMac, shortcutText } from '../editor/shortcuts'
 import { applyGradient, cancelGradient, refreshGradient } from '../tools/gradient'
 import { applyCrop, cancelCrop, cropRatios, setCropRatio } from '../tools/crop'
 import { applyDistort, cancelDistort, isDistorting, maskAlone } from '../tools/move'
+import { armModifier, subscribeModifiers, touchModifiers } from './canvasState'
+import { useCoarse } from './layout'
 
 export const tools: { tool: Tool; label: string; shortcut: string; icon: string }[] = [
   { tool: 'move', label: 'Move / Transform', shortcut: 'Move / Transform tool', icon: 'move' },
@@ -86,6 +88,8 @@ function TipControls({ strength = false }: { strength?: boolean }) {
 
 export function ToolHeader() {
   const state = useEditor()
+  const coarse = useCoarse()
+  useSyncExternalStore(subscribeModifiers, touchModifiers)
   const tool = tools.find(t => t.tool === state.tool)!
   const target = store.active
   const mask = state.editingMask && target?.mask
@@ -105,6 +109,7 @@ export function ToolHeader() {
       {state.tool === 'clone' && <>
         <label><input type="checkbox" checked={state.clone.aligned} onChange={e => store.set({ clone: { ...state.clone, aligned: e.target.checked } })} /> Aligned</label>
         <Choice value={state.clone.sampleAll ? 'All Layers' : 'This Layer'} options={['This Layer', 'All Layers'] as const} onChange={v => store.set({ clone: { ...state.clone, sampleAll: v === 'All Layers' } })} />
+        {coarse && <button className={touchModifiers().alt !== 'off' ? 'primary' : ''} onClick={() => armModifier('alt')}>{state.clone.source ? 'Set New Source' : 'Set Source'}</button>}
         <TipControls />
         <span className="muted">{state.clone.source ? `${option}-click sets a new source` : `${option}-click where to copy from`}</span>
       </>}
@@ -158,12 +163,13 @@ export function ToolHeader() {
 // Modifier keys held right now, so the mode switch can show what a click would do.
 function useHeldKeys() {
   const [held, setHeld] = useState({ shift: false, alt: false })
+  const touch = useSyncExternalStore(subscribeModifiers, touchModifiers)
   useEffect(() => {
     const update = (e: KeyboardEvent) => setHeld({ shift: e.shiftKey, alt: e.altKey })
     window.addEventListener('keydown', update); window.addEventListener('keyup', update)
     return () => { window.removeEventListener('keydown', update); window.removeEventListener('keyup', update) }
   }, [])
-  return held
+  return { shift: held.shift || touch.shift !== 'off', alt: held.alt || touch.alt !== 'off' }
 }
 
 // The rest of the Marquee, Lasso and Magic headers (LassoControls): the selection mode, anti-alias, and Expand, Contract and

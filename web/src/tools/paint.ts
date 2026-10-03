@@ -216,6 +216,7 @@ export const paint: ToolHandler = {
     store.pixelsChanged()
   },
   hover(p) { pointer = p.point; altHeld = p.alt; requestOverlay() },
+  leave() { if (!current) pointer = null },
   key(event) {
     if (event.key === 'Escape' && current) { current.stroke.cancel(); current = null; store.cancelGesture(); requestRender(); return true }
     return false

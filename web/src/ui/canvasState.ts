@@ -1,4 +1,5 @@
 import { store } from '../editor/store'
+import { isCoarse } from './layout'
 import { Compositor } from '../render/compositor'
 import { Viewport } from '../render/viewport'
 import type { Raster } from '../model/raster'
@@ -61,3 +62,22 @@ export function samplePixels(allLayers: boolean): Raster | null {
 export const canvasPicker: { current: ((point: [number, number], shift: boolean, alt: boolean) => void) | null } = { current: null }
 // A panel's drag on the canvas (Hue/Saturation's targeted hand): screen x since the press, and whether ⌘ is held.
 export const canvasDrag: { current: { move: (dx: number, command: boolean) => void; up: () => void } | null; startX: number } = { current: null, startX: 0 }
+
+// On-screen stand-ins for Shift, Option and Command on touch screens. A tap holds the key for the next gesture on the canvas, a
+// second tap locks it on, a third lets it go.
+export type ModifierKey = 'shift' | 'alt' | 'command'
+export type ModifierState = 'off' | 'once' | 'locked'
+let modifiers: Record<ModifierKey, ModifierState> = { shift: 'off', alt: 'off', command: 'off' }
+const modifierListeners = new Set<() => void>()
+const setModifiers = (next: Record<ModifierKey, ModifierState>) => { modifiers = next; modifierListeners.forEach(l => l()) }
+export const touchModifiers = () => modifiers
+export function subscribeModifiers(listener: () => void) { modifierListeners.add(listener); return () => { modifierListeners.delete(listener) } }
+export function tapModifier(key: ModifierKey) { setModifiers({ ...modifiers, [key]: ({ off: 'once', once: 'locked', locked: 'off' } as const)[modifiers[key]] }) }
+export function armModifier(key: ModifierKey) { setModifiers({ ...modifiers, [key]: 'once' }) }
+export function releaseOnceModifiers() {
+  if (Object.values(modifiers).includes('once')) setModifiers(Object.fromEntries(Object.entries(modifiers).map(([k, v]) => [k, v === 'once' ? 'off' : v])) as typeof modifiers)
+}
+export const modifierHeld = (key: ModifierKey) => modifiers[key] !== 'off'
+
+// How much farther a finger can be from a handle than a mouse and still grab it.
+export const hitSlop = () => isCoarse() ? 2 : 1

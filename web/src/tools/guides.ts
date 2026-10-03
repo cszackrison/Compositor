@@ -1,7 +1,7 @@
 import { store } from '../editor/store'
 import { prefs, setPrefs } from '../editor/prefs'
 import { uuid, type Guide } from '../model/types'
-import { requestOverlay, view } from '../ui/canvasState'
+import { requestOverlay, view, hitSlop } from '../ui/canvasState'
 import { snapGuide } from './snap'
 import type { Pointer } from './tool'
 
@@ -9,7 +9,7 @@ export const rulerSize = 18
 
 // The guide within 5 points of a stage point, if any.
 export function guideAt(screen: [number, number]): Guide | undefined {
-  return store.doc.guides.find(g => g.axis === 'vertical' ? Math.abs(view.toScreen(g.position, 0)[0] - screen[0]) <= 5 : Math.abs(view.toScreen(0, g.position)[1] - screen[1]) <= 5)
+  return store.doc.guides.find(g => g.axis === 'vertical' ? Math.abs(view.toScreen(g.position, 0)[0] - screen[0]) <= 5 * hitSlop() : Math.abs(view.toScreen(0, g.position)[1] - screen[1]) <= 5 * hitSlop())
 }
 
 let dragging: { id: string; axis: Guide['axis']; isNew: boolean } | null = null

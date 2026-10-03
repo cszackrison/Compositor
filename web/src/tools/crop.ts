@@ -1,6 +1,6 @@
 import { store } from '../editor/store'
 import { bounds } from '../model/selection'
-import { requestOverlay, view } from '../ui/canvasState'
+import { requestOverlay, view, hitSlop } from '../ui/canvasState'
 import { clearSnap, snapPoint } from './snap'
 import type { ToolHandler } from './tool'
 
@@ -45,7 +45,7 @@ let drag: { kind: 'new' | 'move' | 'resize'; start: [number, number]; original: 
 
 function edgeAt(screen: [number, number], rect: Rect): Edge | null {
   const [x0, y0] = view.toScreen(rect.x, rect.y), [x1, y1] = view.toScreen(rect.x + rect.w, rect.y + rect.h)
-  const [px, py] = screen, near = 10
+  const [px, py] = screen, near = 10 * hitSlop()
   const insideX = px > x0 - near && px < x1 + near, insideY = py > y0 - near && py < y1 + near
   if (!insideX || !insideY) return null
   const edge: Edge = { left: Math.abs(px - x0) <= near, right: Math.abs(px - x1) <= near, top: Math.abs(py - y0) <= near, bottom: Math.abs(py - y1) <= near }

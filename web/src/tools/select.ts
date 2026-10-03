@@ -2,7 +2,7 @@ import { store } from '../editor/store'
 import { beginPixelMove } from '../editor/clipboard'
 import { bounds, offsetSelection, shapeCoverage, wand, type SelectionMode } from '../model/selection'
 import type { Raster } from '../model/raster'
-import { requestOverlay, samplePixels, view } from '../ui/canvasState'
+import { requestOverlay, samplePixels, view, hitSlop } from '../ui/canvasState'
 import { clearSnap, snapMove, snapPoint } from './snap'
 import { dashedPath, type Pointer, type ToolHandler } from './tool'
 
@@ -82,7 +82,7 @@ export const lasso: ToolHandler = {
       if (!polygon) polygon = { points: [p.point], hover: null, mode: modeFor(p) }
       else {
         const [sx, sy] = view.toScreen(...polygon.points[0]), [px, py] = view.toScreen(...p.point)
-        if (Math.hypot(sx - px, sy - py) < 8 || p.clicks >= 2) finishPolygon()
+        if (Math.hypot(sx - px, sy - py) < 8 * hitSlop() || p.clicks >= 2) finishPolygon()
         else polygon.points.push(p.point)
       }
       requestOverlay()

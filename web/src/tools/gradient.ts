@@ -4,7 +4,7 @@ import { grownTransform, placeOnGrid } from '../editor/filters'
 import { padMask } from '../editor/floating'
 import { growMaskToCanvas } from './paint'
 import { apply, invert } from '../render/gl'
-import { requestOverlay, requestRender, view } from '../ui/canvasState'
+import { requestOverlay, requestRender, view, hitSlop } from '../ui/canvasState'
 import { Raster } from '../model/raster'
 import { call, withBuffers } from '../kernels'
 import type { ToolHandler } from './tool'
@@ -120,7 +120,7 @@ export function refreshGradient() { if (pending && Math.hypot(pending.end[0] - p
 export const gradient: ToolHandler = {
   down(p) {
     if (pending) {
-      const near = (q: [number, number]) => { const [a, b] = view.toScreen(...q); return Math.hypot(a - p.screen[0], b - p.screen[1]) <= 10 }
+      const near = (q: [number, number]) => { const [a, b] = view.toScreen(...q); return Math.hypot(a - p.screen[0], b - p.screen[1]) <= 10 * hitSlop() }
       if (near(pending.end)) { dragging = 'end'; return }
       if (near(pending.start)) { dragging = 'start'; return }
       if (store.active?.id === pending.layerId && store.state.editingMask === pending.isMask) {

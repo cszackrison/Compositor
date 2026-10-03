@@ -209,3 +209,8 @@ kbd { font: inherit; color: var(--muted); }
 .app.phone .color-picker .sb { width: min(300px, calc(100vw - 96px)); height: min(220px, calc(100vw - 150px)); }
 .app.phone .color-picker .hue { height: min(220px, calc(100vw - 150px)); width: 28px; margin: 0; }
 .app.phone .color-picker .picker-controls { width: 100% !important; }
+
+.modifier-pad { position: absolute; left: max(8px, env(safe-area-inset-left)); top: 50%; transform: translateY(-50%); z-index: 5; display: flex; flex-direction: column; gap: 8px; }
+.modifier-pad button { min-width: 46px; min-height: 46px; padding: 0 6px; border-radius: 12px; background: rgba(38,38,40,0.85); border: 1px solid var(--line); font-size: 15px; backdrop-filter: blur(6px); }
+.modifier-pad button.once { border-color: var(--accent); color: #9cc3ff; }
+.modifier-pad button.locked { background: var(--accent); border-color: var(--accent); color: white; }

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { useEditor } from './hooks'
 import { Store, store, type Tool } from '../editor/store'
 import { prefs, subscribePrefs, gridLines } from '../editor/prefs'
@@ -9,7 +9,8 @@ import { ContextMenu, type MenuItem } from './Menu'
 import { copyMerged } from '../editor/actions'
 import { copyLayersInto, paste } from '../editor/clipboard'
 import { draggedFromOtherProject, takeDraggedLayers } from './Tabs'
-import { actualSize, canvasDrag, canvasPicker, compositor, fit, onFrame, renderFull, renderScaleFor, requestRender, setCompositor, snapLines, view, viewChanged } from './canvasState'
+import { actualSize, canvasDrag, canvasPicker, compositor, fit, onFrame, renderFull, renderScaleFor, requestRender, setCompositor, snapLines, view, viewChanged, modifierHeld, releaseOnceModifiers, subscribeModifiers, tapModifier, touchModifiers, type ModifierKey } from './canvasState'
+import { useCoarse } from './layout'
 import type { Pointer, ToolHandler } from '../tools/tool'
 import { eyedropper, paint } from '../tools/paint'
 import { smear } from '../tools/smear'
@@ -207,6 +208,7 @@ export function Stage() {
   const [menu, setMenu] = useState<{ x: number; y: number; items: MenuItem[] } | null>(null)
   const closeMenu = useCallback(() => setMenu(null), [])
   const state = useEditor()
+  const coarse = useCoarse()
 
   useEffect(() => {
     try { setCompositor(new Compositor(canvasRef.current!)) } catch (e) { setError((e as Error).message); return }
@@ -263,7 +265,7 @@ export function Stage() {
     const screen: [number, number] = [event.clientX - box.left, event.clientY - box.top]
     const native = event.nativeEvent
     const points = coalesced && 'getCoalescedEvents' in native ? native.getCoalescedEvents().map(e => view.toDocument(e.clientX - box.left, e.clientY - box.top)) : []
-    return { point: view.toDocument(...screen), screen, shift: event.shiftKey, alt: event.altKey, command: isMac ? event.metaKey : event.ctrlKey, control: isMac && event.ctrlKey, button: event.button, clicks: event.detail, coalesced: points }
+    return { point: view.toDocument(...screen), screen, shift: event.shiftKey || modifierHeld('shift'), alt: event.altKey || modifierHeld('alt'), command: (isMac ? event.metaKey : event.ctrlKey) || modifierHeld('command'), control: isMac && event.ctrlKey, button: event.button, clicks: event.detail, coalesced: points }
   }
 
   // The cursor follows hover without a React render per pointer move.
@@ -356,9 +358,12 @@ export function Stage() {
       const t = touch.current
       if (t) clearTimeout(t.timer)
       if (touches.current.size === 0) touch.current = null
+      // A finger's brush circle shouldn't stay behind once it lifts.
+      if (touches.current.size === 0) queueMicrotask(() => { activeHandler().leave?.(); requestRender(false) })
       if (!t || t.dead) return
     }
     const p = pointerFrom(event)
+    releaseOnceModifiers()
     if (pan.current) { pan.current = null; updateCursor(); return }
     if (guideGesture.current) { guideGesture.current = false; endGuideDrag(p); return }
     if (canvasDrag.current) { canvasDrag.current.up(); return }
@@ -401,7 +406,7 @@ export function Stage() {
   useLayoutEffect(updateCursor)
   return (
     <div ref={ref} className="stage" tabIndex={0} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerUp}
-      onPointerLeave={() => { lastPointer.current = null; if (statusRef.current) statusRef.current.textContent = `${state.doc.width} × ${state.doc.height}  ·  ${Math.round(view.zoom * 100)}%`; requestRender(false) }}
+      onPointerLeave={() => { lastPointer.current = null; activeHandler().leave?.(); if (statusRef.current) statusRef.current.textContent = `${state.doc.width} × ${state.doc.height}  ·  ${Math.round(view.zoom * 100)}%`; requestRender(false) }}
       onDragOver={e => { if (draggedFromOtherProject()) { e.preventDefault(); e.stopPropagation() } }}
       onDrop={e => {
         if (!draggedFromOtherProject()) return
@@ -414,7 +419,19 @@ export function Stage() {
       <canvas ref={overlayRef} style={{ pointerEvents: 'none' }} />
       {store.hasDocument && <div ref={statusRef} className="status">{`${state.doc.width} × ${state.doc.height}  ·  ${Math.round(view.zoom * 100)}%`}</div>}
       {menu && <ContextMenu x={menu.x} y={menu.y} items={menu.items} onClose={closeMenu} />}
+      {coarse && store.hasDocument && <ModifierPad />}
       {error && <div className="welcome"><div className="card"><h1>Can’t start the canvas</h1><p className="muted">{error}</p></div></div>}
+    </div>
+  )
+}
+
+// Shift, Option and Command for fingers, along the canvas's left edge.
+function ModifierPad() {
+  const held = useSyncExternalStore(subscribeModifiers, touchModifiers)
+  const labels: Record<ModifierKey, string> = isMac ? { shift: '⇧', alt: '⌥', command: '⌘' } : { shift: 'Shift', alt: 'Alt', command: 'Ctrl' }
+  return (
+    <div className="modifier-pad" onPointerDown={e => e.stopPropagation()} onPointerUp={e => e.stopPropagation()} onPointerMove={e => e.stopPropagation()}>
+      {(['shift', 'alt', 'command'] as const).map(key => <button key={key} className={held[key]} title={`${labels[key]}: tap holds it for the next touch, tap again to lock it`} onClick={() => tapModifier(key)}>{labels[key]}</button>)}
     </div>
   )
 }
