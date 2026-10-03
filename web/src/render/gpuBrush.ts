@@ -7,7 +7,8 @@ import type { Raster } from '../model/raster'
 // works every pixel under the brush on the CPU and uploads them. BrushStroke still lays out the dabs (curve, spacing, tail,
 // pressure); here each dab is a quad blended into a float coverage texture (lighten for a hard tip, screen for a soft one, the
 // CPU code's formulas), and each frame a pass lays the color (or the clone source) over the untouched original at coverage ×
-// opacity, through the selection. The pixels come back to the raster when the stroke ends, or as it goes for a layer with effects.
+// opacity, through the selection. The pixels come back to the raster when the stroke ends, or when something needs them before
+// then (the effects worker, see Compositor.readBack).
 
 export type GPUSource = { kind: 'layer'; shift: [number, number] } | { kind: 'composite'; image: Raster; offset: [number, number] }
 
@@ -121,6 +122,8 @@ export class GPUBrush {
   private tail: { texture: WebGLTexture; framebuffer: WebGLFramebuffer; width: number; height: number } | null = null
   private selectionTexture: WebGLTexture | null = null
   private sourceTexture: WebGLTexture | null = null
+  // What the stroke has written to the layer's texture and not yet brought back.
+  private written: Rect | null = null
 
   static create(compositor: Compositor | null, raster: Raster, options: { erasing: boolean; color: [number, number, number]; opacity: number; toDocument: Mat3; selection: Raster | null; source?: GPUSource }): GPUBrush | null {
     if (!compositor) return null
@@ -150,6 +153,7 @@ export class GPUBrush {
     if (options.selection) this.selectionTexture = upload(options.selection)
     if (options.source?.kind === 'composite') this.sourceTexture = upload(options.source.image)
     this.done()
+    compositor.readBack.set(raster, () => { if (this.written) this.read(this.written) })
   }
 
   private texture(width: number, height: number, format: number) {
@@ -264,14 +268,17 @@ export class GPUBrush {
     this.draw()
     this.done()
     this.compositor.markCurrent(raster, rect)
+    const w = this.written
+    this.written = w ? { x0: Math.min(w.x0, rect.x0), y0: Math.min(w.y0, rect.y0), x1: Math.max(w.x1, rect.x1), y1: Math.max(w.y1, rect.y1) } : { ...rect }
   }
 
-  // Brings `rect` of the layer's texture back into the raster's bytes.
+  // Brings `rect` of the layer's texture back into the raster's bytes, without counting as a change to them.
   read(rect: Rect) {
     const gl = this.gl, { raster } = this
     const x0 = Math.max(0, rect.x0), y0 = Math.max(0, rect.y0), x1 = Math.min(raster.width, rect.x1), y1 = Math.min(raster.height, rect.y1)
     if (x0 >= x1 || y0 >= y1) return
     gl.bindFramebuffer(gl.READ_FRAMEBUFFER, this.layerFramebuffer)
+    this.written = null
     gl.pixelStorei(gl.PACK_ALIGNMENT, 1)
     if (raster.channels === 4) {
       gl.pixelStorei(gl.PACK_ROW_LENGTH, raster.width)
@@ -283,12 +290,13 @@ export class GPUBrush {
       gl.readPixels(x0, y0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, rgba)
       for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) raster.data[(y + y0) * raster.width + x + x0] = rgba[(y * w + x) * 4]
     }
+    // The texture already counts as current (composite marked it); the bytes now match it.
     this.done()
-    this.compositor.markCurrent(raster)
   }
 
   dispose() {
     const gl = this.gl
+    if (this.compositor.readBack.get(this.raster)) this.compositor.readBack.delete(this.raster)
     this.framebuffers.forEach(f => gl.deleteFramebuffer(f))
     this.textures.forEach(t => gl.deleteTexture(t))
     if (this.tail) { gl.deleteTexture(this.tail.texture); gl.deleteFramebuffer(this.tail.framebuffer) }

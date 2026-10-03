@@ -7,7 +7,6 @@ import { call, withBuffers } from '../kernels'
 import { apply, invert, type Mat3 } from '../render/gl'
 import { pixelToDocument } from '../render/compositor'
 import { GPUBrush } from '../render/gpuBrush'
-import { hasVisibleEffects } from '../render/effects'
 import { grownTransform, placeOnGrid } from '../editor/filters'
 import { padMask } from '../editor/floating'
 import { compositor, requestOverlay, requestRender, samplePixels, view } from '../ui/canvasState'
@@ -180,7 +179,6 @@ export const paint: ToolHandler = {
     // Brush, Eraser and Clone Stamp run on the GPU where they can; Spot Healing and the Blur smear need their pixels on the CPU.
     if (mode.kind === 'paint' || (mode.kind === 'source' && mode.gpu)) {
       stroke.gpu = GPUBrush.create(compositor, raster, { erasing: settings.erasing, color, opacity: settings.opacity, toDocument: toDoc, selection: store.state.selection, source: mode.kind === 'source' ? mode.gpu : undefined })
-      stroke.readEachMove = !target.isMask && hasVisibleEffects(layer.effects)
     }
     stroke.stringLength = settings.smoothing / Math.max(0.01, view.zoom)
     const same = lastEnd && lastEnd.layerId === layer.id && lastEnd.isMask === target.isMask

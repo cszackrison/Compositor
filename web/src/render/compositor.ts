@@ -181,8 +181,10 @@ export class Compositor {
       const visible = !layer.isGroup || !!layer.mask
       if (layer.adjustment && (layer.adjustment.kind === 'Gaussian Blur' || layer.adjustment.kind === 'Motion Blur') && layer.visible) return 'all'
       if (layer.image && hasVisibleEffects(layer.effects)) {
-        const cached = this.effectsCache.get(layer.id), mask = layer.mask && layer.maskEnabled ? layer.mask : null
-        if (!cached || cached !== this.drawnEffects.get(layer.id) || cached.key !== `${layer.image.version}:${mask?.version}:${JSON.stringify(layer.effects)}`) return 'all'
+        // A new result, or a switch between drawing it as is and drawing a waiting one under the layer, redraws everything; while
+        // one waits, the layer's own pixels change in known places like any other layer's.
+        const cached = this.effectsCache.get(layer.id)
+        if (!cached || cached !== this.drawnEffects.get(layer.id) || this.staleEffects(layer, cached) !== this.drawnStale.get(layer.id)) return 'all'
       }
       if (!visible) continue
       const owned: [Raster | null | undefined, Transform][] = [[layer.image, layer.transform], [layer.mask, layer.maskPlacement && !layer.isGroup && !layer.adjustment ? layer.maskPlacement : layer.transform]]
@@ -332,11 +334,13 @@ export class Compositor {
   // Exports and merges (not the live view) always make them here, so they're current.
   private effects(layer: Layer) {
     const mask = layer.mask && layer.maskEnabled ? layer.mask : null
-    const key = `${layer.image!.version}:${mask?.version}:${JSON.stringify(layer.effects)}`
+    const key = this.effectsKey(layer)
     const cached = this.effectsCache.get(layer.id)
     if (cached?.key === key) return cached
     if (cached && this.live && this.requestEffects(layer, key)) return cached
     if (cached && cached.raster !== layer.image) this.forget(cached.raster)
+    this.readBack.get(layer.image!)?.()
+    if (mask) this.readBack.get(mask)?.()
     const rendered = { key, made: this.nextId++, from: { width: layer.image!.width, height: layer.image!.height, transform: layer.transform }, ...renderEffects(layer.image!, mask, layer.effects!) }
     this.effectsCache.set(layer.id, rendered)
     return rendered
@@ -358,8 +362,13 @@ export class Compositor {
   }
 
   private effectsIds = new Map<number, { layerId: string; key: string; made: number; from: { width: number; height: number; transform: Transform } }>()
+  // Rasters whose newest pixels are on the GPU (a brush stroke in progress), with how to bring them back before anything reads them.
+  readBack = new Map<Raster, () => void>()
+
   private startEffects(layer: Layer, key: string) {
     const id = this.nextId++, mask = layer.mask && layer.maskEnabled ? layer.mask : null
+    this.readBack.get(layer.image!)?.()
+    if (mask) this.readBack.get(mask)?.()
     const pixels = (r: Raster) => ({ width: r.width, height: r.height, channels: r.channels, data: r.data.slice() })
     const image = pixels(layer.image!), maskPixels = mask ? pixels(mask) : null
     this.effectsJobs.set(layer.id, { running: key, next: null })
@@ -381,6 +390,15 @@ export class Compositor {
     if (waiting?.next) this.startEffects(waiting.next.layer, waiting.next.key)
     this.onStale?.()
   }
+  private effectsKey(layer: Layer) {
+    const mask = layer.mask && layer.maskEnabled ? layer.mask : null
+    return `${layer.image!.version}:${mask?.version}:${JSON.stringify(layer.effects)}`
+  }
+  // Whether this frame draws a layer's effects from a result made for older pixels or settings (the live view, while the worker
+  // redoes them); `drawnStale` is how each layer was drawn last frame, as switching redraws the whole canvas.
+  private staleEffects(layer: Layer, effects: { key: string }) { return this.live && effects.key !== this.effectsKey(layer) }
+  private drawnStale = new Map<string, boolean>()
+
   // Called when something drawn from a stale cache is ready to be redone.
   onStale: (() => void) | null = null
 
@@ -394,12 +412,21 @@ export class Compositor {
     if (hasVisibleEffects(layer.effects)) {
       const effects = this.effects(layer), { raster, inset } = effects
       this.drawnEffects.set(layer.id, effects)
+      this.drawnStale.set(layer.id, this.staleEffects(layer, effects))
       // Effects still being redone for a layer whose grid has since changed size (a stroke grows it to the canvas, the end of one
       // trims it back) are drawn where they were made, not stretched over the new grid.
       const same = effects.from.width === layer.image.width && effects.from.height === layer.image.height
       const t = same ? layer.transform : effects.from.transform, sx = raster.width / (raster.width - 2 * inset), sy = raster.height / (raster.height - 2 * inset)
       const grown: Transform = { ...t, origin: [t.origin[0] + t.size[0] / 2 - t.size[0] * sx / 2, t.origin[1] + t.size[1] / 2 - t.size[1] * sy / 2], size: [t.size[0] * sx, t.size[1] * sy] }
-      this.draw(target, { texture: this.texture(raster), raster, width: raster.width, height: raster.height, unitToDoc: unitToDocument(grown), sampling: t.sampling, rotation: t.rotation }, { opacity, blendMode, clip: options.clip, coverage: options.coverage })
+      const withEffects: Source = { texture: this.texture(raster), raster, width: raster.width, height: raster.height, unitToDoc: unitToDocument(grown), sampling: t.sampling, rotation: t.rotation }
+      if (!this.staleEffects(layer, effects)) { this.draw(target, withEffects, { opacity, blendMode, clip: options.clip, coverage: options.coverage }); return }
+      // Effects still being redone (a stroke on the layer): the last result with the layer's pixels as they are now over it, so the
+      // stroke shows at once; the new result replaces it when the worker has it.
+      const { width, height } = target, both = this.pool.take(width, height), lt = layer.transform
+      this.draw(both, withEffects, { opacity: 1, blendMode: 'Normal' })
+      this.draw(both, { texture: this.texture(layer.image), raster: layer.image, width: layer.image.width, height: layer.image.height, unitToDoc: unitToDocument(lt), sampling: lt.sampling, rotation: lt.rotation }, { opacity: 1, blendMode: 'Normal', mask: this.layerMask(layer) })
+      this.draw(target, { texture: both.texture, width, height, unitToDoc: unitToDocument({ origin: [0, 0], size: [width / this.renderScale, height / this.renderScale], rotation: 0, flipX: false, flipY: false, sampling: 'Nearest' }), sampling: 'Exact', rotation: 0 }, { opacity, blendMode, clip: options.clip, coverage: options.coverage })
+      this.pool.give(both)
       return
     }
     const t = layer.transform

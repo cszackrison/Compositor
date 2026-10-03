@@ -33,10 +33,8 @@ export class BrushStroke {
   private carry = 0
   // A pen's pressure (0–1) for the dabs being laid now; it scales the tip, and stays 1 without a pen or with pressure off.
   pressure = 1
-  // The coverage and the pixels live on the GPU when it can take the stroke (see gpuBrush.ts); `readEachMove` brings the pixels
-  // back after every move, for a layer whose effects are worked out from them.
+  // The coverage and the pixels live on the GPU when it can take the stroke (see gpuBrush.ts).
   gpu: GPUBrush | null = null
-  readEachMove = false
 
   constructor(readonly raster: Raster, readonly pixelToDocument: Mat3, readonly settings: BrushSettings, readonly color: [number, number, number], readonly selection: Raster | null, readonly mode: StrokeMode = { kind: 'paint' }) {
     this.coverage = new Float32Array(raster.width * raster.height)
@@ -216,7 +214,6 @@ export class BrushStroke {
     this.dirty = null
     if (this.gpu) {
       this.gpu.composite(dirty)
-      if (this.readEachMove) this.gpu.read(dirty)
       return { x: dirty.x0, y: dirty.y0, w: dirty.x1 - dirty.x0, h: dirty.y1 - dirty.y0 }
     }
     const { raster, coverage, original, selection, settings } = this
@@ -294,7 +291,7 @@ export class BrushStroke {
     if (this.samples.length > 1 || this.tail) this.settle()
     if (this.mode.kind !== 'wash') this.render()
     const t = this.touched
-    if (this.gpu) { if (t && !this.readEachMove) this.gpu.read(t); this.gpu.dispose(); this.gpu = null }
+    if (this.gpu) { if (t) this.gpu.read(t); this.gpu.dispose(); this.gpu = null }
     if (!t) return null
     const { raster, original } = this
     const x = t.x0, y = t.y0, w = t.x1 - t.x0, h = t.y1 - t.y0, c = raster.channels
