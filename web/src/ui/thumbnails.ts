@@ -2,11 +2,24 @@ import type { Raster } from '../model/raster'
 
 const cache = new WeakMap<Raster, { version: number; url: string }>()
 const size = 64
+// By layer: while its pixels keep changing (a filter preview, a stroke), the last thumbnail stays for a moment and is redone once
+// they pause, rather than on every change.
+const byLayer = new Map<string, { url: string; at: number }>()
+const hold = 300
+let timer = 0, version = 0
+const listeners = new Set<() => void>()
+export const thumbnailsVersion = () => version
+export function subscribeThumbnails(listener: () => void) { listeners.add(listener); return () => { listeners.delete(listener) } }
 
-// A small data URL of a raster, refreshed when its pixels change.
-export function thumbnail(raster: Raster): string {
+// A small data URL of a raster, refreshed when its pixels change; `key` names the layer (and image or mask) it belongs to.
+export function thumbnail(raster: Raster, key?: string): string {
   const cached = cache.get(raster)
   if (cached?.version === raster.version) return cached.url
+  const kept = key ? byLayer.get(key) : undefined, now = performance.now()
+  if (kept && now - kept.at < hold) {
+    if (!timer) timer = window.setTimeout(() => { timer = 0; version++; listeners.forEach(l => l()) }, hold + 20)
+    return kept.url
+  }
   const fit = Math.min(1, size / Math.max(raster.width, raster.height))
   const w = Math.max(1, Math.round(raster.width * fit)), h = Math.max(1, Math.round(raster.height * fit))
   const canvas = document.createElement('canvas')
@@ -24,5 +37,6 @@ export function thumbnail(raster: Raster): string {
   context.putImageData(image, 0, 0)
   const url = canvas.toDataURL()
   cache.set(raster, { version: raster.version, url })
+  if (key) byLayer.set(key, { url, at: now })
   return url
 }

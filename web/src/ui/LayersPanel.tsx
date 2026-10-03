@@ -1,8 +1,8 @@
-import { Fragment, useCallback, useRef, useState, type DragEvent } from 'react'
+import { Fragment, useCallback, useRef, useState, useSyncExternalStore, type DragEvent } from 'react'
 import { useEditor } from './hooks'
 import { store } from '../editor/store'
 import { type Layer, adjustmentKinds, blendModeGroups, effectKinds, effectNames, type BlendMode, type EffectKind } from '../model/types'
-import { thumbnail } from './thumbnails'
+import { subscribeThumbnails, thumbnail, thumbnailsVersion } from './thumbnails'
 import { Icon } from './icons'
 import { defaultEffect } from './Inspector'
 import { ContextMenu, type MenuItem } from './Menu'
@@ -65,6 +65,7 @@ function Popup({ label, icon, items, disabled }: { label: string; icon: string; 
 
 export function LayersPanel() {
   const state = useEditor()
+  useSyncExternalStore(subscribeThumbnails, thumbnailsVersion)
   const [collapsed, setCollapsed] = useState(new Set<string>())
   const [renaming, setRenaming] = useState<string | null>(null)
   const [drop, setDrop] = useState<{ id: string; where: 'above' | 'below' | 'into' } | null>(null)
@@ -176,8 +177,8 @@ export function LayersPanel() {
               {layer.isGroup ? <span className="chevron" onClick={() => { const next = new Set(collapsed); next.has(layer.id) ? next.delete(layer.id) : next.add(layer.id); setCollapsed(next) }}><Icon name={collapsed.has(layer.id) ? 'chevronRight' : 'chevronDown'} size={12} /></span> : <span className="clip" title={layer.clipTo ? 'Clipped to the layer below' : undefined}>{layer.clipTo ? '↳' : ''}</span>}
               {layer.isGroup ? <span className="thumb" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'none' }}><Icon name="folder" size={20} /></span>
                 : layer.adjustment ? <span className="thumb" title={layer.adjustment.kind} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'none' }} onClick={() => store.set({ inspector: layer.id })}><Icon name="adjust" size={20} /></span>
-                : layer.image ? <img className={`thumb ${isActive && !editingMask ? 'target' : ''}`} src={thumbnail(layer.image)} alt="" title={`${command}-click loads the layer’s pixels as a selection`} onClick={e => { if (commandKey(e)) store.loadSelection(layer.id, false, e.altKey ? 'subtract' : e.shiftKey ? 'add' : 'replace'); else store.set({ editingMask: false }) }} /> : <span className="thumb" />}
-              {layer.mask && <img className={`thumb mask ${editingMask ? 'target' : ''} ${layer.maskEnabled ? '' : 'disabled'}`} src={thumbnail(layer.mask)} alt="" title={`Layer mask: click to edit, Shift-click to disable, ${command}-click selects its black areas`} onClick={e => { if (commandKey(e)) store.loadSelection(layer.id, true, e.altKey ? 'subtract' : e.shiftKey ? 'add' : 'replace'); else if (e.shiftKey) store.updateLayer(layer.id, { maskEnabled: !layer.maskEnabled }, layer.maskEnabled ? 'Disable Mask' : 'Enable Mask'); else { store.setActive(layer.id); store.set({ editingMask: true }) } }} />}
+                : layer.image ? <img className={`thumb ${isActive && !editingMask ? 'target' : ''}`} src={thumbnail(layer.image, `${layer.id}:image`)} alt="" title={`${command}-click loads the layer’s pixels as a selection`} onClick={e => { if (commandKey(e)) store.loadSelection(layer.id, false, e.altKey ? 'subtract' : e.shiftKey ? 'add' : 'replace'); else store.set({ editingMask: false }) }} /> : <span className="thumb" />}
+              {layer.mask && <img className={`thumb mask ${editingMask ? 'target' : ''} ${layer.maskEnabled ? '' : 'disabled'}`} src={thumbnail(layer.mask, `${layer.id}:mask`)} alt="" title={`Layer mask: click to edit, Shift-click to disable, ${command}-click selects its black areas`} onClick={e => { if (commandKey(e)) store.loadSelection(layer.id, true, e.altKey ? 'subtract' : e.shiftKey ? 'add' : 'replace'); else if (e.shiftKey) store.updateLayer(layer.id, { maskEnabled: !layer.maskEnabled }, layer.maskEnabled ? 'Disable Mask' : 'Enable Mask'); else { store.setActive(layer.id); store.set({ editingMask: true }) } }} />}
               <span className="name">{renaming === layer.id ? <input autoFocus defaultValue={layer.name} onBlur={e => { const name = e.target.value.trim(); if (name && name !== layer.name) store.updateLayer(layer.id, { name }, 'Rename Layer'); setRenaming(null) }} onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); if (e.key === 'Escape') setRenaming(null); e.stopPropagation() }} /> : layer.name}</span>
               {layer.effects && Object.values(layer.effects).some(Boolean) && <span className="badge" title="Layer effects">fx</span>}
               {layer.blendMode !== 'Normal' && !layer.isGroup && <span className="badge" title={layer.blendMode}>◐</span>}

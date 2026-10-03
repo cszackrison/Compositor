@@ -40,13 +40,18 @@ function filterWorker(): Worker | null {
 }
 
 // Runs a filter job in the worker, or here where workers can't start. The input's pixels move to the worker.
-function runJob(j: FilterJob, input: FilterInput): Promise<FilterOutput> {
+// The filters whose settings are in pixels, by which arguments: a preview of a large layer scales those with the copy it runs on.
+const previewLimit = 2048
+const pixelSettings: Partial<Record<keyof typeof kinds, number[]>> = { gaussianBlur: [0], motionBlur: [1], bloom: [1], tonalContrast: [4] }
+const previewScale = (j: FilterJob, input: FilterInput) => pixelSettings[j.job] ? Math.min(1, previewLimit / Math.max(input.pixels.width, input.pixels.height)) : 1
+
+function runJob(j: FilterJob, input: FilterInput, scale = 1): Promise<FilterOutput> {
   const w = filterWorker()
   if (!w) { try { return Promise.resolve(onMainThread(j, input)) } catch (error) { return Promise.reject(error) } }
   const id = nextId++, { pixels, ...rest } = input
   return new Promise((resolve, reject) => {
     waiting.set(id, { resolve, reject })
-    w.postMessage({ id, name: j.job, args: j.args, input: { ...rest, pixels: { width: pixels.width, height: pixels.height, channels: pixels.channels, data: pixels.data } } }, [pixels.data.buffer])
+    w.postMessage({ id, name: j.job, args: j.args, scale, scaled: pixelSettings[j.job] ?? [], input: { ...rest, pixels: { width: pixels.width, height: pixels.height, channels: pixels.channels, data: pixels.data } } }, [pixels.data.buffer])
   })
 }
 
@@ -84,6 +89,10 @@ export class FilterSession {
   private running: Promise<void> | null = null
   private closed = false
   private failed = false
+  // The job last shown, and whether it was a reduced preview that OK has to run again at full size.
+  private shownJob: FilterJob | null = null
+  private shownReduced = false
+  private finalRun = false
   onError?: (message: string | null) => void
   onBusy?: (busy: boolean) => void
 
@@ -121,8 +130,9 @@ export class FilterSession {
     this.queuedJob = null
     if (!next) { this.onBusy?.(false); return }
     this.onBusy?.(true)
-    this.running = runJob(next, this.input())
-      .then(out => { if (!this.closed) { this.failed = false; this.applyResult(out); this.onError?.(null) } }, (error: Error) => { if (!this.closed) { this.failed = true; this.onError?.(error.message) } })
+    const input = this.input(), scale = this.finalRun ? 1 : previewScale(next, input)
+    this.running = runJob(next, input, scale)
+      .then(out => { if (!this.closed) { this.failed = false; this.applyResult(out); this.shownJob = next; this.shownReduced = scale < 1; this.onError?.(null) } }, (error: Error) => { if (!this.closed) { this.failed = true; this.onError?.(error.message) } })
       .finally(() => { this.running = null; this.pump() })
   }
 
@@ -177,7 +187,10 @@ export class FilterSession {
   // spread past the layer to the pixels it has, as blurs and Bloom do.
   async commit(name: string, run?: FilterRun | FilterJob, trim = false): Promise<boolean> {
     cancelAnimationFrame(this.pending)
-    const next = run ?? this.queuedJob ?? this.queued
+    this.finalRun = true
+    // A preview made from a reduced copy is run again at full size.
+    while (this.running) await this.running
+    const next = run ?? this.queuedJob ?? this.queued ?? (this.shownReduced ? this.shownJob : null)
     this.queued = null
     if (isJob(next)) { this.queuedJob = next; this.pump() }
     else if (next) this.applyNow(next)
