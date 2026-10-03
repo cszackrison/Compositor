@@ -6,9 +6,11 @@ import { lazyBlur } from '../model/pixels'
 import { call, withBuffers } from '../kernels'
 import { apply, invert, type Mat3 } from '../render/gl'
 import { pixelToDocument } from '../render/compositor'
+import { GPUBrush } from '../render/gpuBrush'
+import { hasVisibleEffects } from '../render/effects'
 import { grownTransform, placeOnGrid } from '../editor/filters'
 import { padMask } from '../editor/floating'
-import { requestOverlay, requestRender, samplePixels, view } from '../ui/canvasState'
+import { compositor, requestOverlay, requestRender, samplePixels, view } from '../ui/canvasState'
 import type { ToolHandler } from './tool'
 
 type Stroke = { stroke: BrushStroke; layerId: string; isMask: boolean; heal: boolean; kept: { x: number; y: number; w: number; h: number } | null; maskKept: { x: number; y: number; w: number; h: number } | null; axis: 'x' | 'y' | null; anchor: [number, number] }
@@ -122,11 +124,11 @@ function strokeMode(tool: string, raster: Raster, toDoc: Mat3, isMask: boolean, 
     store.set({ clone: { ...store.state.clone, offset } })
     if (store.state.clone.sampleAll) {
       const composite = samplePixels(true)!
-      return { kind: 'source', sample: (x, y, out) => bilinear(composite, composite.width, composite.height, 4, toDoc[0] * (x + 0.5) + toDoc[3] * (y + 0.5) + toDoc[6] + offset[0], toDoc[1] * (x + 0.5) + toDoc[4] * (y + 0.5) + toDoc[7] + offset[1], out) }
+      return { kind: 'source', sample: (x, y, out) => bilinear(composite, composite.width, composite.height, 4, toDoc[0] * (x + 0.5) + toDoc[3] * (y + 0.5) + toDoc[6] + offset[0], toDoc[1] * (x + 0.5) + toDoc[4] * (y + 0.5) + toDoc[7] + offset[1], out), gpu: { kind: 'composite', image: composite, offset } }
     }
     const toPixel = invert(toDoc), [ox, oy] = apply(toPixel, 0, 0), [qx, qy] = apply(toPixel, offset[0], offset[1])
     const lx = qx - ox, ly = qy - oy
-    return { kind: 'source', sample: (x, y, out) => bilinear(original, raster.width, raster.height, raster.channels, x + 0.5 + lx, y + 0.5 + ly, out) }
+    return { kind: 'source', sample: (x, y, out) => bilinear(original, raster.width, raster.height, raster.channels, x + 0.5 + lx, y + 0.5 + ly, out), gpu: { kind: 'layer', shift: [lx, ly] } }
   }
   return { kind: 'paint' }
 }
@@ -175,6 +177,11 @@ export const paint: ToolHandler = {
     const settings = { ...store.state.brush, erasing: tool === 'eraser', smoothing: tool === 'brush' || tool === 'eraser' ? store.state.brush.smoothing : 0 }
     const color = store.paletteColor('foreground')
     const stroke = new BrushStroke(raster, toDoc, settings, color, store.state.selection, mode)
+    // Brush, Eraser and Clone Stamp run on the GPU where they can; Spot Healing and the Blur smear need their pixels on the CPU.
+    if (mode.kind === 'paint' || (mode.kind === 'source' && mode.gpu)) {
+      stroke.gpu = GPUBrush.create(compositor, raster, { erasing: settings.erasing, color, opacity: settings.opacity, toDocument: toDoc, selection: store.state.selection, source: mode.kind === 'source' ? mode.gpu : undefined })
+      stroke.readEachMove = !target.isMask && hasVisibleEffects(layer.effects)
+    }
     stroke.stringLength = settings.smoothing / Math.max(0.01, view.zoom)
     const same = lastEnd && lastEnd.layerId === layer.id && lastEnd.isMask === target.isMask
     if (prefs.penPressure && p.pressure !== undefined) stroke.pressure = p.pressure

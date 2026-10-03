@@ -1,11 +1,13 @@
 import type { Raster } from '../model/raster'
 import type { PixelPatch } from '../model/history'
 import { type Mat3, apply, invert } from '../render/gl'
+import type { GPUBrush, GPUSource } from '../render/gpuBrush'
 
 export type BrushSettings = { diameter: number; hardness: number; opacity: number; smoothing: number; erasing: boolean }
 // Where a stroke's color comes from: the brush color, or another image sampled at each pixel of the raster's grid (Clone Stamp,
 // Blur). `wash` shows the original under a dark wash while Spot Healing gathers its coverage.
-export type StrokeMode = { kind: 'paint' } | { kind: 'source'; sample: (x: number, y: number, out: Float32Array) => void } | { kind: 'wash' }
+// A source the GPU can sample itself carries `gpu`.
+export type StrokeMode = { kind: 'paint' } | { kind: 'source'; sample: (x: number, y: number, out: Float32Array) => void; gpu?: GPUSource } | { kind: 'wash' }
 
 type Rect = { x0: number; y0: number; x1: number; y1: number }
 
@@ -31,6 +33,10 @@ export class BrushStroke {
   private carry = 0
   // A pen's pressure (0–1) for the dabs being laid now; it scales the tip, and stays 1 without a pen or with pressure off.
   pressure = 1
+  // The coverage and the pixels live on the GPU when it can take the stroke (see gpuBrush.ts); `readEachMove` brings the pixels
+  // back after every move, for a layer whose effects are worked out from them.
+  gpu: GPUBrush | null = null
+  readEachMove = false
 
   constructor(readonly raster: Raster, readonly pixelToDocument: Mat3, readonly settings: BrushSettings, readonly color: [number, number, number], readonly selection: Raster | null, readonly mode: StrokeMode = { kind: 'paint' }) {
     this.coverage = new Float32Array(raster.width * raster.height)
@@ -75,8 +81,9 @@ export class BrushStroke {
     const pixels = [from, ...points].map(p => apply(this.toPixel, ...p))
     const xs = pixels.map(p => p[0]), ys = pixels.map(p => p[1])
     const rect = { x0: Math.max(0, Math.floor(Math.min(...xs) - r)), y0: Math.max(0, Math.floor(Math.min(...ys) - r)), x1: Math.min(width, Math.ceil(Math.max(...xs) + r)), y1: Math.min(height, Math.ceil(Math.max(...ys) + r)) }
-    const w = Math.max(0, rect.x1 - rect.x0), h = Math.max(0, rect.y1 - rect.y0), data = new Float32Array(w * h)
-    for (let y = 0; y < h; y++) data.set(this.coverage.subarray((y + rect.y0) * width + rect.x0, (y + rect.y0) * width + rect.x0 + w), y * w)
+    const w = Math.max(0, rect.x1 - rect.x0), h = Math.max(0, rect.y1 - rect.y0), data = this.gpu ? new Float32Array(0) : new Float32Array(w * h)
+    if (this.gpu) this.gpu.saveTail(rect)
+    else for (let y = 0; y < h; y++) data.set(this.coverage.subarray((y + rect.y0) * width + rect.x0, (y + rect.y0) * width + rect.x0 + w), y * w)
     this.tail = { last: this.last, carry: this.carry, rect, data }
     for (const p of points) this.lineTo(p[0], p[1])
     this.last = this.tail.last
@@ -97,7 +104,8 @@ export class BrushStroke {
     if (!tail) return
     this.tail = null
     const { rect, data } = tail, w = rect.x1 - rect.x0, width = this.raster.width
-    for (let y = 0; y < rect.y1 - rect.y0; y++) this.coverage.set(data.subarray(y * w, (y + 1) * w), (y + rect.y0) * width + rect.x0)
+    if (this.gpu) this.gpu.restoreTail(rect)
+    else for (let y = 0; y < rect.y1 - rect.y0; y++) this.coverage.set(data.subarray(y * w, (y + 1) * w), (y + rect.y0) * width + rect.x0)
     if (w > 0 && rect.y1 > rect.y0) this.include(rect)
   }
 
@@ -161,6 +169,7 @@ export class BrushStroke {
     const x0 = Math.max(0, Math.floor(cx - radius - 1)), y0 = Math.max(0, Math.floor(cy - radius - 1))
     const x1 = Math.min(width, Math.ceil(cx + radius + 1)), y1 = Math.min(height, Math.ceil(cy + radius + 1))
     if (x0 >= x1 || y0 >= y1) return
+    if (this.gpu) { this.gpu.dab(cx, cy, radius, this.settings.hardness, { x0, y0, x1, y1 }); this.include({ x0, y0, x1, y1 }); return }
     const hard = this.settings.hardness >= 1, inner = radius * this.settings.hardness, band = Math.max(1e-6, radius - inner)
     const coverage = this.coverage, outer = radius + 0.5, outer2 = outer * outer, solid = Math.max(0, radius - 0.5), solid2 = solid * solid, inner2 = inner * inner
     const lutScale = falloffSteps / band
@@ -205,6 +214,11 @@ export class BrushStroke {
     const dirty = this.dirty
     if (!dirty) return null
     this.dirty = null
+    if (this.gpu) {
+      this.gpu.composite(dirty)
+      if (this.readEachMove) this.gpu.read(dirty)
+      return { x: dirty.x0, y: dirty.y0, w: dirty.x1 - dirty.x0, h: dirty.y1 - dirty.y0 }
+    }
     const { raster, coverage, original, selection, settings } = this
     const { width, data, channels } = raster
     const opacity = this.mode.kind === 'wash' ? 0.45 : settings.opacity, [r, g, b] = this.color
@@ -280,6 +294,7 @@ export class BrushStroke {
     if (this.samples.length > 1 || this.tail) this.settle()
     if (this.mode.kind !== 'wash') this.render()
     const t = this.touched
+    if (this.gpu) { if (t && !this.readEachMove) this.gpu.read(t); this.gpu.dispose(); this.gpu = null }
     if (!t) return null
     const { raster, original } = this
     const x = t.x0, y = t.y0, w = t.x1 - t.x0, h = t.y1 - t.y0, c = raster.channels
@@ -289,6 +304,8 @@ export class BrushStroke {
   }
 
   cancel() {
+    this.gpu?.dispose()
+    this.gpu = null
     this.raster.data.set(this.original)
     this.raster.touch()
   }
