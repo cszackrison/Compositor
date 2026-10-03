@@ -1,5 +1,9 @@
 # Compositor
 
+> **This fork adds a web version.** It's [robbietilton/Compositor](https://github.com/robbietilton/Compositor), the macOS editor, plus [`web/`](web/): Compositor rebuilt to run in the browser with TypeScript, React and WebGL 2, on desktops, tablets and phones. It reads and writes the same `.comp` projects, and the Mac app's C pixel kernels are compiled to WebAssembly so filters and adjustments match it. The Mac app itself is unchanged from upstream.
+>
+> To run the web version: `cd web && npm install && npm run dev`. See [web/README.md](web/README.md) for what it covers and where it differs from the Mac app, and [web/TODO.md](web/TODO.md) for what's left.
+
 Adobe Photoshop costs too much and tools like GIMP don’t feel familiar enough for me to stay in flow. That’s why I built Compositor.
 
 The goal was to create a full-featured image editor that is completely free and open source. I used to use Photoshop for compositing and post-processing, so Compositor is built around that workflow - with the tools needed to create a pixel-perfect final image.
