@@ -21,6 +21,9 @@ import { brushKey } from '../tools/paint'
 import { beginTransformSelection } from '../editor/floating'
 import { clearGuides } from '../tools/guides'
 import { requestRender } from './canvasState'
+import { useCompact } from './layout'
+import { PhoneMenu, Sheet } from './Phone'
+import { Icon } from './icons'
 
 const open = (panel: string) => () => store.set({ panel })
 const has = () => store.hasDocument
@@ -139,6 +142,9 @@ export function App() {
   const [, setShortcutVersion] = useState(0)
   useEffect(() => subscribeShortcuts(() => setShortcutVersion(v => v + 1)), [])
   const [dragging, setDragging] = useState(false)
+  const compact = useCompact()
+  const [phoneMenu, setPhoneMenu] = useState(false)
+  const [sheet, setSheet] = useState(false)
   const active = store.active
   const doc = has()
   const sc = (title: string) => shortcutText(title)
@@ -294,8 +300,46 @@ export function App() {
     if (images.length) await placeImages(images)
   }
 
+  const dropProps = { onDragOver: (e: React.DragEvent) => { if (e.dataTransfer.types.includes('Files')) { e.preventDefault(); setDragging(true) } }, onDragLeave: (e: React.DragEvent) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragging(false) }, onDrop }
+  const canvas = (
+    <main className="workspace">
+      <TabBar />
+      <div style={{ flex: 1, position: 'relative' }}>
+        <Stage />
+        {!doc && <Welcome />}
+        {dragging && <div className="drop" />}
+      </div>
+    </main>
+  )
+  const panels = <div className="panels"><LayersPanel /><Inspector /></div>
+  const hosts = <>
+    <DialogHost />
+    <ColorPickerHost />
+    <FilterHost />
+    {state.message && <div className={`toast ${state.message.kind}`}>{state.message.text}</div>}
+  </>
+
+  if (compact) return (
+    <div className="app phone" {...dropProps}>
+      <header className="phonebar">
+        <button className="icon" title="Menu" onClick={() => setPhoneMenu(true)}>☰</button>
+        <button className="icon" title="Undo" disabled={!commands.Undo.enabled!()} onClick={() => { store.undo(); requestRender(false) }}>↶</button>
+        <button className="icon" title="Redo" disabled={!commands.Redo.enabled!()} onClick={() => { store.redo(); requestRender(false) }}>↷</button>
+        <span className="doc">{doc ? `${documentName()}${state.saved ? '' : ' •'}` : 'Compositor'}</span>
+        {doc && <button className="icon" title="Fit canvas" onClick={fit}>⤢</button>}
+        <button className={`icon ${sheet ? 'on' : ''}`} title="Layers" disabled={!doc} onClick={() => setSheet(!sheet)}><Icon name="folder" size={18} /></button>
+      </header>
+      {canvas}
+      {doc && <ToolHeader />}
+      <ToolRail />
+      {sheet && doc && <Sheet onClose={() => setSheet(false)}>{panels}</Sheet>}
+      {phoneMenu && <PhoneMenu menus={menus} onClose={() => setPhoneMenu(false)} />}
+      {hosts}
+    </div>
+  )
+
   return (
-    <div className="app" onDragOver={e => { if (e.dataTransfer.types.includes('Files')) { e.preventDefault(); setDragging(true) } }} onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragging(false) }} onDrop={onDrop}>
+    <div className="app" {...dropProps}>
       <header className="menubar">
         <span className="title"><img src="./icon.png" alt="" />Compositor</span>
         <MenuBar menus={menus} />
@@ -303,22 +347,9 @@ export function App() {
       </header>
       <ToolHeader />
       <ToolRail />
-      <main style={{ gridRow: 3, gridColumn: 2, position: 'relative', minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
-        <TabBar />
-        <div style={{ flex: 1, position: 'relative' }}>
-          <Stage />
-          {!doc && <Welcome />}
-          {dragging && <div className="drop" />}
-        </div>
-      </main>
-      <div style={{ gridRow: 3, gridColumn: 3, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-        <LayersPanel />
-        <Inspector />
-      </div>
-      <DialogHost />
-      <ColorPickerHost />
-      <FilterHost />
-      {state.message && <div className={`toast ${state.message.kind}`}>{state.message.text}</div>}
+      {canvas}
+      {panels}
+      {hosts}
     </div>
   )
 }
