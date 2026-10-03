@@ -80,11 +80,10 @@ export class FilterSession {
     const selection = store.state.selection
     const [m0, m1, , m3, m4, , m6, m7] = toDocument, src = base.data, dst = out.data, next = pixels.data
     for (let y = 0; y < pixels.height; y++) {
-      let qx = m3 * (y + origin[1] + 0.5) + m0 * (origin[0] + 0.5) + m6, qy = m4 * (y + origin[1] + 0.5) + m1 * (origin[0] + 0.5) + m7
-      for (let x = 0, i = y * pixels.width; x < pixels.width; x++, i++, qx += m0, qy += m1) {
+      for (let x = 0, i = y * pixels.width; x < pixels.width; x++, i++) {
         let k = 1
         if (selection) {
-          const sx = Math.floor(qx), sy = Math.floor(qy)
+          const px = x + origin[0] + 0.5, py = y + origin[1] + 0.5, sx = Math.floor(m0 * px + m3 * py + m6), sy = Math.floor(m1 * px + m4 * py + m7)
           k = sx >= 0 && sy >= 0 && sx < selection.width && sy < selection.height ? selection.data[sy * selection.width + sx] / 255 : 0
         }
         const o = i * channels, n = i * 4

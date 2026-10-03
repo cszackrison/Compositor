@@ -14,8 +14,8 @@ export function falloff(u: number) {
   const k = 2.5
   return Math.max(0, (Math.exp(-k * u * u) - Math.exp(-k)) / (1 - Math.exp(-k)))
 }
-// The same, tabulated, for the inner loop of every dab.
-const falloffTable = Float32Array.from({ length: 2049 }, (_, i) => falloff(i / 2048))
+// The same, tabulated finely and read with linear interpolation (within about a millionth), for the inner loop of every dab.
+const falloffSteps = 16384, falloffTable = Float64Array.from({ length: falloffSteps + 2 }, (_, i) => falloff(Math.min(1, i / falloffSteps)))
 
 // One brush stroke on a layer's pixels or mask. Dabs build coverage (lighten for a hard tip, screen for a soft one), and the
 // stroke's color is laid over the untouched original at coverage × opacity, so overlapping dabs never pass the stroke's opacity.
@@ -149,7 +149,7 @@ export class BrushStroke {
     if (x0 >= x1 || y0 >= y1) return
     const hard = this.settings.hardness >= 1, inner = radius * this.settings.hardness, band = Math.max(1e-6, radius - inner)
     const coverage = this.coverage, outer = radius + 0.5, outer2 = outer * outer, solid = Math.max(0, radius - 0.5), solid2 = solid * solid, inner2 = inner * inner
-    const lutScale = (falloffTable.length - 1) / band
+    const lutScale = falloffSteps / band
     for (let y = y0; y < y1; y++) {
       const dy = y + 0.5 - cy, dy2 = dy * dy
       if (dy2 >= outer2) continue
@@ -169,7 +169,8 @@ export class BrushStroke {
           if (v > c) coverage[i] = v
         } else {
           if (d2 >= radius * radius) continue
-          v = d2 <= inner2 ? 1 : falloffTable[((Math.sqrt(d2) - inner) * lutScale) | 0]
+          if (d2 <= inner2) v = 1
+          else { const t = (Math.sqrt(d2) - inner) * lutScale, j = t | 0; v = falloffTable[j] + (falloffTable[j + 1] - falloffTable[j]) * (t - j) }
           if (v <= 0) continue
           const c = coverage[i]
           coverage[i] = c + v - c * v
