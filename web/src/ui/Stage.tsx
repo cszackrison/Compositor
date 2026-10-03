@@ -9,7 +9,7 @@ import { ContextMenu, type MenuItem } from './Menu'
 import { copyMerged } from '../editor/actions'
 import { copyLayersInto, paste } from '../editor/clipboard'
 import { draggedFromOtherProject, takeDraggedLayers } from './Tabs'
-import { actualSize, canvasDrag, canvasPicker, compositor, fit, onFrame, renderFull, requestRender, setCompositor, snapLines, view, viewChanged, modifierHeld, releaseOnceModifiers, liveScaleFor, setGesture, subscribeModifiers, tapModifier, touchModifiers, type ModifierKey } from './canvasState'
+import { actualSize, canvasDrag, canvasPicker, compositor, fit, onFrame, renderFull, renderScaleFor, requestRender, setCompositor, snapLines, view, viewChanged, modifierHeld, releaseOnceModifiers, subscribeModifiers, tapModifier, touchModifiers, type ModifierKey } from './canvasState'
 import { useCoarse } from './layout'
 import type { Pointer, ToolHandler } from '../tools/tool'
 import { eyedropper, paint } from '../tools/paint'
@@ -51,7 +51,7 @@ function frame(contentDirty: boolean) {
   if (!compositor || !stageCanvas) return
   const { doc } = store.state
   const dpr = window.devicePixelRatio || 1
-  if (store.hasDocument && contentDirty) { compositor.live = true; compositor.render(doc, liveScaleFor(doc, compositor.maxSize)); compositor.live = false }
+  if (store.hasDocument && contentDirty) { compositor.live = true; compositor.render(doc, renderScaleFor(doc, compositor.maxSize)); compositor.live = false }
   const rgb = canvasColor()
   if (store.hasDocument) compositor.present([view.zoom * dpr, 0, 0, 0, view.zoom * dpr, 0, view.offsetX * dpr, view.offsetY * dpr, 1], stageCanvas.width, stageCanvas.height, rgb)
   else { const gl = compositor.gl; gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.clearColor(...rgb, 1); gl.clear(gl.COLOR_BUFFER_BIT) }
@@ -322,7 +322,6 @@ export function Stage() {
     }
     ref.current!.focus()
     ;(event.target as Element).setPointerCapture(event.pointerId)
-    if (event.pointerType === 'touch') setGesture(true)
     const p = pointerFrom(event)
     lastPointer.current = p
     if (space || store.state.tool === 'hand' || event.button === 1) { pan.current = { x: event.clientX, y: event.clientY, offsetX: view.offsetX, offsetY: view.offsetY }; updateCursor(); return }
@@ -368,7 +367,7 @@ export function Stage() {
       if (touches.current.size < 2) pinch.current = null
       const t = touch.current
       if (t) clearTimeout(t.timer)
-      if (touches.current.size === 0) { touch.current = null; setGesture(false) }
+      if (touches.current.size === 0) touch.current = null
       // A finger's brush circle shouldn't stay behind once it lifts.
       if (touches.current.size === 0) queueMicrotask(() => { activeHandler().leave?.(); requestRender(false) })
       if (!t || t.dead) return

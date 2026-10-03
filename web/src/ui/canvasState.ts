@@ -19,21 +19,6 @@ export function renderScaleFor(doc: Doc, maxSize: number) {
   return Math.min(1, maxSize / Math.max(doc.width, doc.height), Math.sqrt(pixelBudget / (doc.width * doc.height)))
 }
 
-// While a finger is on the canvas of a touch screen, the live view composites at about the resolution the screen shows (a power
-// of two at or above it, never more than full), then at full resolution once it lifts. Zoomed out on a phone that's a fraction
-// of the pixels, which keeps transforms and big edits smooth.
-let gesture = false
-export function setGesture(active: boolean) {
-  if (gesture === active) return
-  gesture = active
-  if (!active) requestRender()
-}
-export function liveScaleFor(doc: Doc, maxSize: number) {
-  const full = renderScaleFor(doc, maxSize)
-  if (!gesture || !isCoarse()) return full
-  const shown = view.zoom * (window.devicePixelRatio || 1)
-  return Math.min(full, Math.max(1 / 8, 2 ** Math.ceil(Math.log2(shown))))
-}
 
 // Composites `doc` at full size and reads it back, for export, merging and sampling. The live view redraws afterwards.
 export function renderFull(doc: Doc): Raster {
