@@ -1,5 +1,5 @@
 import { decodePNG, encodePNG } from '../model/raster'
-import { type Adjustment, type BlendMode, type ColorRange, type Doc, type Layer, type Transform, blendModes, formatVersion, maxSide, adjustmentKinds } from '../model/types'
+import { type Adjustment, type BlendMode, type ColorRange, type Doc, type Layer, type Transform, blendModes, formatVersion, maxSide, adjustmentKinds, uuid } from '../model/types'
 import type { PackageFiles } from './files'
 
 const known = new Set(['id', 'name', 'isVisible', 'transform', 'imageFile', 'parentID', 'isGroup', 'opacity', 'blendMode', 'maskFile', 'maskEnabled', 'maskSourceID', 'adjustment', 'maskPlacement', 'maskLinked', 'shape', 'effects', 'text'])
@@ -76,7 +76,7 @@ export async function readProject(files: PackageFiles): Promise<{ doc: Doc; acti
   }
   const activeId = manifest.activeLayerID ? String(manifest.activeLayerID).toUpperCase() : null
   return {
-    doc: { id: String(manifest.documentID ?? crypto.randomUUID()).toUpperCase(), width: manifest.width, height: manifest.height, resolution: manifest.resolution ?? 72, layers, guides: manifest.guides ?? [], extra: Object.fromEntries(Object.entries(manifest).filter(([key]) => !knownTop.has(key))) },
+    doc: { id: String(manifest.documentID ?? uuid()).toUpperCase(), width: manifest.width, height: manifest.height, resolution: manifest.resolution ?? 72, layers, guides: manifest.guides ?? [], extra: Object.fromEntries(Object.entries(manifest).filter(([key]) => !knownTop.has(key))) },
     activeId: activeId && ids.has(activeId) ? activeId : layers.at(-1)?.id ?? null,
   }
 }

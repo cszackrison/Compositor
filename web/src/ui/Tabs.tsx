@@ -5,7 +5,7 @@ import { closeProject, documentName, openFiles, placeImages } from '../editor/ac
 import { readDrop } from '../io/files'
 import { useTabs } from './hooks'
 import { ContextMenu, type MenuItem } from './Menu'
-import type { Layer } from '../model/types'
+import { type Layer, uuid } from '../model/types'
 
 // Layers being dragged from the Layers panel, so another project's tab (or canvas) can take a copy (Copy Layers from Project).
 let dragged: { from: Store; ids: string[] } | null = null
@@ -122,6 +122,6 @@ function tabForNewCopy(layers: Layer[]): Store | null {
   const source = dragged?.from ?? tabs.find(t => t.doc.layers.some(l => l.id === layers[0]?.id)) ?? store
   const { width, height } = source.doc
   const next = tabForOpening()
-  next.open({ id: crypto.randomUUID().toUpperCase(), width, height, resolution: source.doc.resolution, layers: [], guides: [], extra: {} }, null, null)
+  next.open({ id: uuid(), width, height, resolution: source.doc.resolution, layers: [], guides: [], extra: {} }, null, null)
   return next
 }

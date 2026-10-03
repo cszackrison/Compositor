@@ -89,7 +89,15 @@ export type Doc = {
   extra: Record<string, unknown>
 }
 
-export const uuid = () => crypto.randomUUID().toUpperCase()
+// crypto.randomUUID only exists in secure contexts (https or localhost); a phone opening the dev server by its network address
+// has getRandomValues alone.
+export const uuid = () => {
+  if (typeof crypto.randomUUID === 'function') return crypto.randomUUID().toUpperCase()
+  const b = crypto.getRandomValues(new Uint8Array(16))
+  b[6] = (b[6] & 0x0f) | 0x40; b[8] = (b[8] & 0x3f) | 0x80
+  const h = [...b].map(v => v.toString(16).padStart(2, '0')).join('')
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`.toUpperCase()
+}
 
 export function fullTransform(width: number, height: number, x = 0, y = 0): Transform {
   return { origin: [x, y], size: [width, height], rotation: 0, flipX: false, flipY: false, sampling: 'High quality' }
