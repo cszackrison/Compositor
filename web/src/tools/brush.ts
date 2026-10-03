@@ -246,11 +246,12 @@ export class BrushStroke {
   // Replaces what the stroke drew in `rect` (raster pixels) with `pixels`, clipped by the selection, before `finish`.
   replace(rect: { x: number; y: number; w: number; h: number }, pixels: Uint8Array) {
     const { raster, selection, original } = this, c = raster.channels
+    const m = this.pixelToDocument
     for (let y = 0; y < rect.h; y++) for (let x = 0; x < rect.w; x++) {
       const gx = x + rect.x, gy = y + rect.y, i = gy * raster.width + gx
       let k = 1
       if (selection) {
-        const [dx, dy] = apply(this.pixelToDocument, gx + 0.5, gy + 0.5), sx = Math.floor(dx), sy = Math.floor(dy)
+        const sx = Math.floor(m[0] * (gx + 0.5) + m[3] * (gy + 0.5) + m[6]), sy = Math.floor(m[1] * (gx + 0.5) + m[4] * (gy + 0.5) + m[7])
         k = sx >= 0 && sy >= 0 && sx < selection.width && sy < selection.height ? selection.data[sy * selection.width + sx] / 255 : 0
       }
       for (let ch = 0; ch < c; ch++) raster.data[i * c + ch] = Math.round(original[i * c + ch] + (pixels[(y * rect.w + x) * c + ch] - original[i * c + ch]) * k)

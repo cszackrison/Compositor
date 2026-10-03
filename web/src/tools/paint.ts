@@ -91,7 +91,9 @@ function bilinear(raster: Raster | Uint8Array, width: number, height: number, ch
   const data = raster instanceof Raster ? raster.data : raster
   const fx = x - 0.5, fy = y - 0.5, x0 = Math.floor(fx), y0 = Math.floor(fy), tx = fx - x0, ty = fy - y0
   out.fill(0)
-  for (const [ix, iy, w] of [[x0, y0, (1 - tx) * (1 - ty)], [x0 + 1, y0, tx * (1 - ty)], [x0, y0 + 1, (1 - tx) * ty], [x0 + 1, y0 + 1, tx * ty]]) {
+  // The four neighbors in turn, no arrays: Clone Stamp calls this for every pixel it paints.
+  for (let n = 0; n < 4; n++) {
+    const ix = x0 + (n & 1), iy = y0 + (n >> 1), w = (n & 1 ? tx : 1 - tx) * (n >> 1 ? ty : 1 - ty)
     if (ix < 0 || iy < 0 || ix >= width || iy >= height || w <= 0) continue
     const p = (iy * width + ix) * channels
     for (let c = 0; c < channels; c++) out[c] += data[p + c] * w
@@ -119,7 +121,7 @@ function strokeMode(tool: string, raster: Raster, toDoc: Mat3, isMask: boolean, 
     store.set({ clone: { ...store.state.clone, offset } })
     if (store.state.clone.sampleAll) {
       const composite = samplePixels(true)!
-      return { kind: 'source', sample: (x, y, out) => { const [dx, dy] = apply(toDoc, x + 0.5, y + 0.5); bilinear(composite, composite.width, composite.height, 4, dx + offset[0], dy + offset[1], out) } }
+      return { kind: 'source', sample: (x, y, out) => bilinear(composite, composite.width, composite.height, 4, toDoc[0] * (x + 0.5) + toDoc[3] * (y + 0.5) + toDoc[6] + offset[0], toDoc[1] * (x + 0.5) + toDoc[4] * (y + 0.5) + toDoc[7] + offset[1], out) }
     }
     const toPixel = invert(toDoc), [ox, oy] = apply(toPixel, 0, 0), [qx, qy] = apply(toPixel, offset[0], offset[1])
     const lx = qx - ox, ly = qy - oy
