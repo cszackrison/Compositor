@@ -29,6 +29,8 @@ existing features were.
   - [ ] Core Graphics high-quality resampling (Catmull-Rom here)
   - [ ] `CIMotionBlur`
   - [ ] `CIBloom` (Bloom / Glow)
+- [ ] Smudge with large brushes is slow (about 70 ms per 40 px at 300 px): it lays a dab every 0.5% of the diameter, as the Mac
+  does. The Mac runs it on Metal (`MetalWarp.swift`); a WebGL version would fix it.
 - [ ] Filter previews run at full size; the Mac caps most at 2048 px. Worth matching if large layers feel slow.
 
 ## Smaller differences

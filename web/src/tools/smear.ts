@@ -165,11 +165,15 @@ export const smear: ToolHandler = {
     // The selection limits what changes, applied when the stroke ends.
     const selection = store.state.selection, toDoc = invert(w.toPixel)
     const x0 = Math.max(0, d.x0), y0 = Math.max(0, d.y0), x1 = Math.min(w.raster.width, d.x1), y1 = Math.min(w.raster.height, d.y1)
-    if (selection) for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) {
-      const [dx, dy] = apply(toDoc, x + 0.5, y + 0.5), sx = Math.floor(dx), sy = Math.floor(dy)
-      const k = sx >= 0 && sy >= 0 && sx < selection.width && sy < selection.height ? selection.data[sy * selection.width + sx] / 255 : 0
-      const i = (y * w.raster.width + x) * 4
-      for (let c = 0; c < 4; c++) w.raster.data[i + c] = Math.round(w.original[i + c] + (w.raster.data[i + c] - w.original[i + c]) * k)
+    const [m0, m1, , m3, m4, , m6, m7] = toDoc, data = w.raster.data, original = w.original
+    if (selection) for (let y = y0; y < y1; y++) {
+      let qx = m0 * (x0 + 0.5) + m3 * (y + 0.5) + m6, qy = m1 * (x0 + 0.5) + m4 * (y + 0.5) + m7
+      for (let x = x0, i = (y * w.raster.width + x0) * 4; x < x1; x++, i += 4, qx += m0, qy += m1) {
+        const sx = Math.floor(qx), sy = Math.floor(qy)
+        const k = sx >= 0 && sy >= 0 && sx < selection.width && sy < selection.height ? selection.data[sy * selection.width + sx] / 255 : 0
+        if (k >= 1) continue
+        for (let c = i; c < i + 4; c++) data[c] = Math.round(original[c] + (data[c] - original[c]) * k)
+      }
     }
     w.raster.touch()
     const width = x1 - x0, height = y1 - y0, before = new Uint8Array(width * height * 4)

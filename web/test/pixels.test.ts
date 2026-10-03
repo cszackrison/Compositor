@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { blurFloats } from '../src/model/pixels'
+import { blurFloats, blurRaster, lazyBlur } from '../src/model/pixels'
+import { Raster } from '../src/model/raster'
 
 // The straightforward version the fast pass replaced, for comparison.
 function reference(source: Float32Array, width: number, height: number, sigma: number, clamp: boolean) {
@@ -32,6 +33,15 @@ describe('blur', () => {
     for (const clamp of [false, true]) {
       const fast = blurFloats(source, width, height, 1, 3, clamp), slow = reference(source, width, height, 3, clamp)
       for (let i = 0; i < fast.length; i++) expect(fast[i]).toBeCloseTo(slow[i], 3)
+    }
+  })
+
+  it('blurs a tile at a time to the same pixels as the whole image', () => {
+    const raster = new Raster(300, 200, 4)
+    for (let i = 0; i < raster.data.length; i++) raster.data[i] = (i * 53 + (i >> 9) * 17) % 256
+    for (const clamp of [false, true]) for (const sigma of [2, 9]) {
+      const whole = blurRaster(raster, sigma, clamp), tiled = lazyBlur(raster, sigma, clamp)
+      for (let y = 0; y < raster.height; y += 3) for (let x = 0; x < raster.width; x += 2) { const out = [0, 0, 0, 0]; tiled(x, y, out); expect(out).toEqual([...whole.data.subarray((y * raster.width + x) * 4, (y * raster.width + x) * 4 + 4)]) }
     }
   })
 })

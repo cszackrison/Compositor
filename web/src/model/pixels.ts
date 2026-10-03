@@ -53,6 +53,33 @@ export function blurRaster(raster: Raster, sigma: number, clamp = false): Raster
   return out
 }
 
+// A Gaussian blur worked out a tile at a time, the first time something reads it. Each tile blurs with a margin as wide as the
+// three box passes reach, so it matches blurRaster exactly; a stroke only pays for the area it touches.
+export function lazyBlur(raster: Raster, sigma: number, clamp = false) {
+  const { width, height, channels } = raster
+  const reach = sigma < 0.3 ? 0 : boxes(sigma).reduce((sum, size) => sum + (size - 1) / 2, 0)
+  const tile = Math.max(128, Math.min(512, reach * 2)), across = Math.ceil(width / tile)
+  const tiles = new Map<number, { data: Float32Array; x0: number; y0: number; w: number }>()
+  function blurTile(tx: number, ty: number) {
+    const x0 = Math.max(0, tx * tile - reach), y0 = Math.max(0, ty * tile - reach)
+    const x1 = Math.min(width, (tx + 1) * tile + reach), y1 = Math.min(height, (ty + 1) * tile + reach), w = x1 - x0, h = y1 - y0
+    const region = new Float32Array(w * h * channels)
+    for (let y = 0; y < h; y++) { const from = ((y + y0) * width + x0) * channels; for (let i = 0; i < w * channels; i++) region[y * w * channels + i] = raster.data[from + i] }
+    // Region edges inside the image sit a full reach from the tile, so how they're treated never reaches it.
+    const entry = { data: blurFloats(region, w, h, channels, sigma, clamp), x0, y0, w }
+    tiles.set(ty * across + tx, entry)
+    return entry
+  }
+  // Fills `out` with the blurred pixel at (x, y), rounded like blurRaster. Strokes read neighbors, so the last tile is kept at hand.
+  let last = -1, current: { data: Float32Array; x0: number; y0: number; w: number } | undefined
+  return (x: number, y: number, out: ArrayLike<number> & { [i: number]: number }) => {
+    const tx = (x / tile) | 0, ty = (y / tile) | 0, key = ty * across + tx
+    if (key !== last) { current = tiles.get(key) ?? blurTile(tx, ty); last = key }
+    const t = current!, i = ((y - t.y0) * t.w + x - t.x0) * channels
+    for (let c = 0; c < channels; c++) out[c] = Math.round(t.data[i + c])
+  }
+}
+
 // Runs a C kernel that works in place on premultiplied RGBA (`rgba, width, height, stride, ...rest`).
 export function kernelInPlace(raster: Raster, name: string, ...rest: (number | { data: ArrayBufferView })[]) {
   const buffers = [{ data: raster.data, out: true }, ...rest.filter((r): r is { data: ArrayBufferView } => typeof r === 'object')]

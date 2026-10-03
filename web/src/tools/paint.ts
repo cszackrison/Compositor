@@ -1,7 +1,7 @@
 import { store, tipFamily } from '../editor/store'
 import { BrushStroke, type StrokeMode } from './brush'
 import { Raster } from '../model/raster'
-import { blurRaster } from '../model/pixels'
+import { lazyBlur } from '../model/pixels'
 import { call, withBuffers } from '../kernels'
 import { apply, invert, type Mat3 } from '../render/gl'
 import { pixelToDocument } from '../render/compositor'
@@ -111,8 +111,8 @@ function strokeMode(tool: string, raster: Raster, toDoc: Mat3, isMask: boolean, 
     // The Smear tool's Blur: a Gaussian of the layer as the stroke found it, painted back through the tip.
     const perPixel = Math.sqrt(Math.abs(toDoc[0] * toDoc[4] - toDoc[1] * toDoc[3]))
     const sigma = Math.min(Math.min(50, Math.max(0.5, store.state.blurRadius)) / perPixel, Math.max(raster.width, raster.height) / 2)
-    const blurred = blurRaster(new Raster(raster.width, raster.height, raster.channels, original), sigma, isMask)
-    return { kind: 'source', sample: (x, y, out) => { const i = (y * raster.width + x) * raster.channels; for (let c = 0; c < raster.channels; c++) out[c] = blurred.data[i + c]; if (raster.channels === 1) out[3] = 255 } }
+    const blurred = lazyBlur(new Raster(raster.width, raster.height, raster.channels, original), sigma, isMask)
+    return { kind: 'source', sample: raster.channels === 1 ? (x, y, out) => { blurred(x, y, out); out[3] = 255 } : blurred }
   }
   if (tool === 'clone') {
     const offset = cloneOffset(point)!
