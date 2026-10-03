@@ -26,6 +26,7 @@ import { requestRender } from './canvasState'
 import { useCompact } from './layout'
 import { PhoneMenu, Sheet } from './Phone'
 import { Icon } from './icons'
+import { TouchTooltip } from './TouchTooltip'
 
 const open = (panel: string) => () => store.set({ panel })
 const has = () => store.hasDocument
@@ -329,6 +330,7 @@ export function App() {
     <DialogHost />
     <ColorPickerHost />
     <FilterHost />
+    <TouchTooltip />
     {state.message && <div className={`toast ${state.message.kind}`}>{state.message.text}</div>}
   </>
 

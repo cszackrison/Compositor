@@ -218,3 +218,6 @@ kbd { font: inherit; color: var(--muted); }
 /* Added to a home screen, iOS draws its status bar over the page. */
 .app:not(.phone) { padding-top: env(safe-area-inset-top); grid-template-rows: 36px 40px 1fr; box-sizing: border-box; }
 .welcome .actions .muted { margin-top: 6px; }
+
+.touch-tooltip { position: fixed; z-index: 300; transform: translate(-50%, calc(-100% - 10px)); white-space: nowrap; padding: 6px 10px; border-radius: 8px; background: #f2f2f4; color: #1e1e20; font-size: 13px; font-weight: 500; text-align: center; pointer-events: none; box-shadow: 0 6px 20px rgba(0,0,0,0.4); }
+@media (pointer: coarse) { button { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; } }
