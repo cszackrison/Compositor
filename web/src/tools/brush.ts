@@ -67,17 +67,29 @@ export class BrushStroke {
     }
   }
 
-  private drawTail(from: [number, number], to: [number, number]) {
+  // The provisional tail: straight lines from the last settled sample through `points` (the newest sample, and where the pointer
+  // is predicted to be next), with the coverage under them saved so it can be taken back.
+  private drawTail(from: [number, number], ...points: [number, number][]) {
     const { width, height } = this.raster
     const r = this.settings.diameter / 2 * this.pixelScale + 2
-    const [ax, ay] = apply(this.toPixel, ...from), [bx, by] = apply(this.toPixel, ...to)
-    const rect = { x0: Math.max(0, Math.floor(Math.min(ax, bx) - r)), y0: Math.max(0, Math.floor(Math.min(ay, by) - r)), x1: Math.min(width, Math.ceil(Math.max(ax, bx) + r)), y1: Math.min(height, Math.ceil(Math.max(ay, by) + r)) }
+    const pixels = [from, ...points].map(p => apply(this.toPixel, ...p))
+    const xs = pixels.map(p => p[0]), ys = pixels.map(p => p[1])
+    const rect = { x0: Math.max(0, Math.floor(Math.min(...xs) - r)), y0: Math.max(0, Math.floor(Math.min(...ys) - r)), x1: Math.min(width, Math.ceil(Math.max(...xs) + r)), y1: Math.min(height, Math.ceil(Math.max(...ys) + r)) }
     const w = Math.max(0, rect.x1 - rect.x0), h = Math.max(0, rect.y1 - rect.y0), data = new Float32Array(w * h)
     for (let y = 0; y < h; y++) data.set(this.coverage.subarray((y + rect.y0) * width + rect.x0, (y + rect.y0) * width + rect.x0 + w), y * w)
     this.tail = { last: this.last, carry: this.carry, rect, data }
-    this.lineTo(to[0], to[1])
+    for (const p of points) this.lineTo(p[0], p[1])
     this.last = this.tail.last
     this.carry = this.tail.carry
+  }
+
+  // Runs the provisional tail on to where the pointer is predicted to be, so the stroke keeps up with a fast finger or pen. The
+  // next sample takes it back like any tail, so the finished stroke never includes it. Not with smoothing, which trails on purpose.
+  predict(ahead: [number, number]) {
+    const s = this.samples, n = s.length
+    if (!this.tail || this.stringLength > 0 || n < 2 || !Number.isFinite(ahead[0]) || !Number.isFinite(ahead[1])) return
+    this.removeTail()
+    this.drawTail(s[n - 2], s[n - 1], ahead)
   }
 
   private removeTail() {
@@ -199,16 +211,18 @@ export class BrushStroke {
     const gray = Math.round(0.299 * r + 0.587 * g + 0.114 * b)
     const toDoc = this.pixelToDocument
     const mode = this.mode, sample = new Float32Array(4), washed = Math.round(0.12 * 255)
+    const restore = channels === 1 ? (i: number) => { data[i] = original[i] } : (i: number) => { const p = i * 4; data[p] = original[p]; data[p + 1] = original[p + 1]; data[p + 2] = original[p + 2]; data[p + 3] = original[p + 3] }
     for (let y = dirty.y0; y < dirty.y1; y++) {
       for (let x = dirty.x0; x < dirty.x1; x++) {
         const i = y * width + x
         let a = coverage[i] * opacity
-        if (a <= 0) continue
+        // Nothing here (any more: a provisional tail taken back leaves none), so the pixel is as the stroke found it.
+        if (a <= 0) { restore(i); continue }
         if (selection) {
           const px = x + 0.5, py = y + 0.5
           const sx = Math.floor(toDoc[0] * px + toDoc[3] * py + toDoc[6]), sy = Math.floor(toDoc[1] * px + toDoc[4] * py + toDoc[7])
           a *= sx >= 0 && sy >= 0 && sx < selection.width && sy < selection.height ? selection.data[sy * selection.width + sx] / 255 : 0
-          if (a <= 0) continue
+          if (a <= 0) { restore(i); continue }
         }
         if (mode.kind === 'source') {
           mode.sample(x, y, sample)

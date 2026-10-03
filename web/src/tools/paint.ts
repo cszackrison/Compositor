@@ -201,6 +201,7 @@ export const paint: ToolHandler = {
     }
     if (prefs.penPressure && p.pressure !== undefined) current.stroke.pressure = p.pressure
     for (const q of p.coalesced.length ? p.coalesced : [p.point]) current.stroke.moveTo(...lock(q))
+    if (p.predicted && !p.shift) current.stroke.predict(p.predicted)
     current.stroke.render()
     requestRender()
   },

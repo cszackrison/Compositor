@@ -265,7 +265,8 @@ export function Stage() {
     const screen: [number, number] = [event.clientX - box.left, event.clientY - box.top]
     const native = event.nativeEvent
     const points = coalesced && 'getCoalescedEvents' in native ? native.getCoalescedEvents().map(e => view.toDocument(e.clientX - box.left, e.clientY - box.top)) : []
-    return { point: view.toDocument(...screen), screen, shift: event.shiftKey || modifierHeld('shift'), alt: event.altKey || modifierHeld('alt'), command: (isMac ? event.metaKey : event.ctrlKey) || modifierHeld('command'), control: isMac && event.ctrlKey, button: event.button, clicks: event.detail, coalesced: points, pressure: event.pointerType === 'pen' ? event.pressure : undefined }
+    const ahead = coalesced && 'getPredictedEvents' in native ? native.getPredictedEvents().at(-1) : undefined
+    return { point: view.toDocument(...screen), screen, shift: event.shiftKey || modifierHeld('shift'), alt: event.altKey || modifierHeld('alt'), command: (isMac ? event.metaKey : event.ctrlKey) || modifierHeld('command'), control: isMac && event.ctrlKey, button: event.button, clicks: event.detail, coalesced: points, pressure: event.pointerType === 'pen' ? event.pressure : undefined, predicted: ahead ? view.toDocument(ahead.clientX - box.left, ahead.clientY - box.top) : undefined }
   }
 
   // The cursor follows hover without a React render per pointer move.

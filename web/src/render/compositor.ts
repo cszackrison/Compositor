@@ -87,7 +87,9 @@ export class Compositor {
   private height = 0
 
   constructor(readonly canvas: HTMLCanvasElement | OffscreenCanvas) {
-    const gl = canvas.getContext('webgl2', { premultipliedAlpha: true, alpha: false, antialias: false, preserveDrawingBuffer: false }) as WebGL2RenderingContext | null
+    // `desynchronized` lets Chrome show frames without waiting on the page's compositor, cutting the delay between a finger and the
+    // stroke under it.
+    const gl = canvas.getContext('webgl2', { premultipliedAlpha: true, alpha: false, antialias: false, preserveDrawingBuffer: false, desynchronized: true } as WebGLContextAttributes) as WebGL2RenderingContext | null
     if (!gl) throw new Error('This browser does not support WebGL 2, which Compositor needs.')
     this.gl = gl
     gl.getExtension('EXT_color_buffer_float')

@@ -1,6 +1,6 @@
 // A pointer event on the canvas, in document pixels and stage (CSS) pixels, with the Mac's modifier names. On Windows and Linux,
 // Control plays Command's part, as browsers expect, so `command` is Control there and `control` stays false.
-export type Pointer = { point: [number, number]; screen: [number, number]; shift: boolean; alt: boolean; command: boolean; control: boolean; button: number; clicks: number; coalesced: [number, number][]; pressure?: number }
+export type Pointer = { point: [number, number]; screen: [number, number]; shift: boolean; alt: boolean; command: boolean; control: boolean; button: number; clicks: number; coalesced: [number, number][]; pressure?: number; predicted?: [number, number] }
 
 // What a canvas tool does. Stage routes pointer and key events to the active tool and asks it to draw its overlay.
 export interface ToolHandler {
