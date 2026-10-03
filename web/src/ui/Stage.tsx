@@ -9,7 +9,7 @@ import { ContextMenu, type MenuItem } from './Menu'
 import { copyMerged } from '../editor/actions'
 import { copyLayersInto, paste } from '../editor/clipboard'
 import { draggedFromOtherProject, takeDraggedLayers } from './Tabs'
-import { actualSize, canvasDrag, canvasPicker, compositor, fit, onFrame, renderFull, renderScaleFor, requestRender, setCompositor, snapLines, view, viewChanged, modifierHeld, releaseOnceModifiers, subscribeModifiers, tapModifier, touchModifiers, type ModifierKey } from './canvasState'
+import { actualSize, canvasDrag, canvasPicker, compositor, fit, onFrame, renderFull, requestRender, setCompositor, snapLines, view, viewChanged, modifierHeld, releaseOnceModifiers, liveScaleFor, setGesture, subscribeModifiers, tapModifier, touchModifiers, type ModifierKey } from './canvasState'
 import { useCoarse } from './layout'
 import type { Pointer, ToolHandler } from '../tools/tool'
 import { eyedropper, paint } from '../tools/paint'
@@ -37,13 +37,22 @@ let overlayCanvas: HTMLCanvasElement | null = null
 let antsFor: { selection: Raster | null; loops: Int32Array[] | null } = { selection: null, loops: null }
 
 // The composite, then everything drawn over it: grid, guides, snap lines, the selection's marching ants, the tool's own marks, rulers.
+// The canvas's background, from the stylesheet: read once, not every frame.
+let canvasRGB: [number, number, number] | null = null
+function canvasColor() {
+  if (!canvasRGB) {
+    const style = getComputedStyle(document.documentElement).getPropertyValue('--canvas').trim() || '#161617'
+    canvasRGB = [1, 3, 5].map(i => parseInt(style.slice(i, i + 2), 16) / 255) as [number, number, number]
+  }
+  return canvasRGB
+}
+
 function frame(contentDirty: boolean) {
   if (!compositor || !stageCanvas) return
   const { doc } = store.state
   const dpr = window.devicePixelRatio || 1
-  if (store.hasDocument && contentDirty) { compositor.live = true; compositor.render(doc, renderScaleFor(doc, compositor.maxSize)); compositor.live = false }
-  const style = getComputedStyle(document.documentElement).getPropertyValue('--canvas').trim() || '#161617'
-  const rgb = [1, 3, 5].map(i => parseInt(style.slice(i, i + 2), 16) / 255) as [number, number, number]
+  if (store.hasDocument && contentDirty) { compositor.live = true; compositor.render(doc, liveScaleFor(doc, compositor.maxSize)); compositor.live = false }
+  const rgb = canvasColor()
   if (store.hasDocument) compositor.present([view.zoom * dpr, 0, 0, 0, view.zoom * dpr, 0, view.offsetX * dpr, view.offsetY * dpr, 1], stageCanvas.width, stageCanvas.height, rgb)
   else { const gl = compositor.gl; gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.clearColor(...rgb, 1); gl.clear(gl.COLOR_BUFFER_BIT) }
   drawOverlay()
@@ -313,6 +322,7 @@ export function Stage() {
     }
     ref.current!.focus()
     ;(event.target as Element).setPointerCapture(event.pointerId)
+    if (event.pointerType === 'touch') setGesture(true)
     const p = pointerFrom(event)
     lastPointer.current = p
     if (space || store.state.tool === 'hand' || event.button === 1) { pan.current = { x: event.clientX, y: event.clientY, offsetX: view.offsetX, offsetY: view.offsetY }; updateCursor(); return }
@@ -358,7 +368,7 @@ export function Stage() {
       if (touches.current.size < 2) pinch.current = null
       const t = touch.current
       if (t) clearTimeout(t.timer)
-      if (touches.current.size === 0) touch.current = null
+      if (touches.current.size === 0) { touch.current = null; setGesture(false) }
       // A finger's brush circle shouldn't stay behind once it lifts.
       if (touches.current.size === 0) queueMicrotask(() => { activeHandler().leave?.(); requestRender(false) })
       if (!t || t.dead) return

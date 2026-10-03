@@ -31,7 +31,8 @@ existing features were.
   - [ ] `CIBloom` (Bloom / Glow)
 - [ ] Filter previews run at full size (in a worker now, so the page stays responsive); the Mac caps most at 2048 px. Worth
   matching if large layers still feel slow on phones.
-- [ ] The Blur smear mode and the brush tools still paint on the CPU; they could move to the GPU like Smudge and Liquify.
+- [ ] Spot Healing and the Blur smear mode still paint on the CPU (Brush, Eraser, Clone Stamp, Smudge and Liquify run on the GPU).
+- [ ] The touch-gesture resolution drop and the low-latency canvas were only checked in desktop Chrome; try them on a phone.
 
 ## Smaller differences
 
