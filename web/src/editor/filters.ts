@@ -4,12 +4,51 @@ import { apply, type Mat3 } from '../render/gl'
 import type { Transform } from '../model/types'
 import { call, withBuffers } from '../kernels'
 import { pixelToDocument } from '../render/compositor'
+import * as kinds from './filterKinds'
 
 export type FilterInput = { pixels: Raster; isMask: boolean; toDocument: Mat3; layerId: string; transform: Transform }
 // A filter's result: pixels on the layer's own grid, or on a grown one whose top-left sits at `origin` in the original's pixels.
 export type FilterOutput = Raster | { pixels: Raster; origin: [number, number] } | null
 // Works on premultiplied RGBA (a mask arrives as opaque gray) and returns the result.
 export type FilterRun = (input: FilterInput) => FilterOutput
+
+// A filter to run in the worker (filterWorker.ts): a function of filterKinds by name, and its arguments after the input.
+export type FilterJob = { job: keyof typeof kinds; args: unknown[] }
+export const job = (name: keyof typeof kinds, ...args: unknown[]): FilterJob => ({ job: name, args })
+export const isJob = (run: FilterRun | FilterJob | undefined | null): run is FilterJob => !!run && typeof run === 'object' && 'job' in run
+
+let worker: Worker | null | undefined
+let nextId = 1
+const waiting = new Map<number, { resolve: (out: FilterOutput) => void; reject: (error: Error) => void }>()
+const onMainThread = (j: FilterJob, input: FilterInput) => (kinds[j.job] as unknown as (input: FilterInput, ...args: unknown[]) => FilterOutput)(input, ...j.args)
+
+function filterWorker(): Worker | null {
+  if (worker !== undefined) return worker
+  try {
+    worker = new Worker(new URL('./filterWorker.ts', import.meta.url), { type: 'module' })
+    worker.onmessage = (event: MessageEvent<{ id: number; error?: string; result?: { width: number; height: number; channels: 1 | 4; data: Uint8Array; origin: [number, number] | null } | null }>) => {
+      const { id, error, result } = event.data, pending = waiting.get(id)
+      waiting.delete(id)
+      if (!pending) return
+      if (error) pending.reject(new Error(error))
+      else if (!result) pending.resolve(null)
+      else { const raster = new Raster(result.width, result.height, result.channels, result.data); pending.resolve(result.origin ? { pixels: raster, origin: result.origin } : raster) }
+    }
+    worker.onerror = () => { waiting.forEach(p => p.reject(new Error('The filter stopped unexpectedly.'))); waiting.clear() }
+  } catch { worker = null }
+  return worker
+}
+
+// Runs a filter job in the worker, or here where workers can't start. The input's pixels move to the worker.
+function runJob(j: FilterJob, input: FilterInput): Promise<FilterOutput> {
+  const w = filterWorker()
+  if (!w) { try { return Promise.resolve(onMainThread(j, input)) } catch (error) { return Promise.reject(error) } }
+  const id = nextId++, { pixels, ...rest } = input
+  return new Promise((resolve, reject) => {
+    waiting.set(id, { resolve, reject })
+    w.postMessage({ id, name: j.job, args: j.args, input: { ...rest, pixels: { width: pixels.width, height: pixels.height, channels: pixels.channels, data: pixels.data } } }, [pixels.data.buffer])
+  })
+}
 
 function maskToRGBA(mask: Raster) {
   const out = new Raster(mask.width, mask.height, 4)
@@ -40,6 +79,13 @@ export class FilterSession {
   private queued: FilterRun | null = null
   private shown: Raster | null = null
   private last: { raster: Raster; transform: Transform } | null = null
+  // Worker jobs: the newest waiting to run, the one running, and whether the session is over.
+  private queuedJob: FilterJob | null = null
+  private running: Promise<void> | null = null
+  private closed = false
+  private failed = false
+  onError?: (message: string | null) => void
+  onBusy?: (busy: boolean) => void
 
   // Filters work on a layer's own pixels; only Invert also takes a mask. An empty layer gets a canvas-sized grid when `growEmpty`.
   static start(options: { masks?: boolean; growEmpty?: boolean } = {}): FilterSession | null {
@@ -59,22 +105,40 @@ export class FilterSession {
     return { pixels, isMask: this.isMask, toDocument: this.toDocument, layerId: this.layerId, transform: this.transform }
   }
 
-  // Runs on the next frame, so dragging a slider filters only as often as the screen draws.
-  preview(run: FilterRun) {
+  // Runs on the next frame, so dragging a slider filters only as often as the screen draws. A worker job runs as soon as the one
+  // before it finishes; only the newest waits, so a slow filter never builds a backlog.
+  preview(run: FilterRun | FilterJob) {
     cancelAnimationFrame(this.pending)
+    if (isJob(run)) { this.queued = null; this.queuedJob = run; this.pump(); return }
+    this.queuedJob = null
     this.queued = run
     this.pending = requestAnimationFrame(() => { this.queued = null; this.applyNow(run) })
   }
 
-  applyNow(run: FilterRun) {
-    const result = run(this.input())
+  private pump() {
+    if (this.running || this.closed) return
+    const next = this.queuedJob
+    this.queuedJob = null
+    if (!next) { this.onBusy?.(false); return }
+    this.onBusy?.(true)
+    this.running = runJob(next, this.input())
+      .then(out => { if (!this.closed) { this.failed = false; this.applyResult(out); this.onError?.(null) } }, (error: Error) => { if (!this.closed) { this.failed = true; this.onError?.(error.message) } })
+      .finally(() => { this.running = null; this.pump() })
+  }
+
+  applyNow(run: FilterRun) { this.applyResult(run(this.input())) }
+
+  private applyResult(result: FilterOutput) {
     if (!result) { this.show(this.original, this.transform); return }
     const pixels = result instanceof Raster ? result : result.pixels
     const origin: [number, number] = result instanceof Raster ? [0, 0] : result.origin
     const { original, toDocument } = this
     const grown = origin[0] !== 0 || origin[1] !== 0 || pixels.width !== original.width || pixels.height !== original.height
-    const base = grown ? placeOnGrid(original, origin, pixels.width, pixels.height) : original
     const channels = original.channels
+    const transformFor = () => grown && !this.isMask ? grownTransform(this.transform, toDocument, original.width, original.height, origin, pixels.width, pixels.height) : this.transform
+    // Without a selection every pixel takes the filter's result, so a layer's result is shown as it came.
+    if (!store.state.selection && channels === 4) { pixels.touch(); this.show(pixels, transformFor()); return }
+    const base = grown ? placeOnGrid(original, origin, pixels.width, pixels.height) : original
     const reuse = this.shown && this.shown !== original && this.shown.width === pixels.width && this.shown.height === pixels.height
     const out = reuse ? this.shown! : new Raster(pixels.width, pixels.height, channels)
     const selection = store.state.selection
@@ -93,8 +157,7 @@ export class FilterSession {
       }
     }
     out.touch()
-    const transform = grown && !this.isMask ? grownTransform(this.transform, toDocument, original.width, original.height, origin, pixels.width, pixels.height) : this.transform
-    this.show(out, transform)
+    this.show(out, transformFor())
   }
 
   private show(raster: Raster, transform: Transform) {
@@ -110,18 +173,24 @@ export class FilterSession {
     store.pixelsChanged()
   }
 
-  // Keeps the result. `trim` crops a result that spread past the layer to the pixels it has, as blurs and Bloom do.
-  commit(name: string, run?: FilterRun, trim = false) {
+  // Keeps the result, once any worker job still running has finished; false when the filter failed. `trim` crops a result that
+  // spread past the layer to the pixels it has, as blurs and Bloom do.
+  async commit(name: string, run?: FilterRun | FilterJob, trim = false): Promise<boolean> {
     cancelAnimationFrame(this.pending)
-    const next = run ?? this.queued
+    const next = run ?? this.queuedJob ?? this.queued
     this.queued = null
-    if (next) this.applyNow(next)
-    if (!this.last || this.last.raster === this.original) { store.cancelGesture(); return }
+    if (isJob(next)) { this.queuedJob = next; this.pump() }
+    else if (next) this.applyNow(next)
+    while (this.running) await this.running
+    this.closed = true
+    if (this.failed) { store.cancelGesture(); store.pixelsChanged(); return false }
+    if (!this.last || this.last.raster === this.original) { store.cancelGesture(); return true }
     if (trim && !this.isMask) this.trim()
     if (!this.isMask) store.updateLayerLive(this.layerId, { text: undefined, shape: undefined })
     store.endGesture()
     store.history.renameLast(name)
     store.pixelsChanged()
+    return true
   }
 
   private trim() {
@@ -137,6 +206,8 @@ export class FilterSession {
 
   cancel() {
     cancelAnimationFrame(this.pending)
+    this.closed = true
+    this.queuedJob = null
     store.cancelGesture()
     store.pixelsChanged()
   }

@@ -1,7 +1,6 @@
 import { Raster } from '../model/raster'
 import { blurFloats, blurRaster, kernelInPlace } from '../model/pixels'
 import { call, floats, withBuffers } from '../kernels'
-import { store } from './store'
 import { apply, invert } from '../render/gl'
 import type { FilterInput, FilterOutput } from './filters'
 import type { Adjustment } from '../model/types'
@@ -53,8 +52,8 @@ export function addNoise(input: FilterInput, amount: number, gaussian: boolean, 
   return kernelInPlace(input.pixels, 'noise_add', amount, gaussian ? 1 : 0, monochromatic ? 1 : 0, seed >>> 0)
 }
 
-export function contentAwareFill(input: FilterInput): FilterOutput {
-  const selection = store.state.selection
+// Takes the selection as an argument (not from the store) so it can run in the filter worker.
+export function contentAwareFill(input: FilterInput, selection: { width: number; height: number; data: Uint8Array } | null): FilterOutput {
   if (!selection) throw new Error('Make a selection to fill.')
   // Grow to cover the selection's bounds on the canvas, then fill whatever the selection touches.
   const toPixel = invert(input.toDocument)

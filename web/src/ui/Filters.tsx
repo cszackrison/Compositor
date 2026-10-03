@@ -3,7 +3,8 @@ import { store } from '../editor/store'
 import { FilterDialog } from './FilterDialog'
 import { Slider, AdjustmentEditor } from './Inspector'
 import { useEditor } from './hooks'
-import { addNoise, adjustPixels, bloom, contentAwareFill, defaultDither, dither, ditherGroups, ditherStyles, ditherUses, gaussianBlur, lensCorrection, motionBlur, tonalContrast, vignette, type DitherSettings, type VignetteSettings } from '../editor/filterKinds'
+import { defaultDither, ditherGroups, ditherStyles, ditherUses, type DitherSettings, type VignetteSettings } from '../editor/filterKinds'
+import { job } from '../editor/filters'
 import { type Adjustment, type AdjustmentKind, type LevelRange, newAdjustment, identityRange } from '../model/types'
 import { applyRange } from '../model/adjustments'
 import { call, withBuffers } from '../kernels'
@@ -24,11 +25,11 @@ function Simple<P extends object>({ name, initial, run, trim, children, masks }:
 }
 
 function GaussianBlurDialog() {
-  return <Simple name="Gaussian Blur" initial={{ radius: 1 }} trim run={p => input => gaussianBlur(input, p.radius)}>{(p, set) => <Slider label="Radius" value={p.radius} min={0.1} max={250} digits={1} log onChange={radius => set({ radius })} />}</Simple>
+  return <Simple name="Gaussian Blur" initial={{ radius: 1 }} trim run={p => job('gaussianBlur', p.radius)}>{(p, set) => <Slider label="Radius" value={p.radius} min={0.1} max={250} digits={1} log onChange={radius => set({ radius })} />}</Simple>
 }
 
 function MotionBlurDialog() {
-  return <Simple name="Motion Blur" initial={{ angle: 0, distance: 10 }} trim run={p => input => motionBlur(input, p.angle, p.distance)}>{(p, set) => <>
+  return <Simple name="Motion Blur" initial={{ angle: 0, distance: 10 }} trim run={p => job('motionBlur', p.angle, p.distance)}>{(p, set) => <>
     <Slider label="Angle" value={p.angle} min={-90} max={90} onChange={angle => set({ angle })} />
     <Slider label="Distance" value={p.distance} min={1} max={2000} log onChange={distance => set({ distance })} />
   </>}</Simple>
@@ -36,7 +37,7 @@ function MotionBlurDialog() {
 
 function AddNoiseDialog() {
   const noiseSeed = useMemo(seed, [])
-  return <Simple name="Add Noise" initial={{ amount: 10, gaussian: false, monochromatic: false }} run={p => input => addNoise(input, p.amount, p.gaussian, p.monochromatic, noiseSeed)}>{(p, set) => <>
+  return <Simple name="Add Noise" initial={{ amount: 10, gaussian: false, monochromatic: false }} run={p => job('addNoise', p.amount, p.gaussian, p.monochromatic, noiseSeed)}>{(p, set) => <>
     <Slider label="Amount" value={p.amount} min={0.1} max={400} digits={1} onChange={amount => set({ amount })} />
     <div className="row"><span className="muted">Distribution</span><select value={p.gaussian ? 'g' : 'u'} onChange={e => set({ gaussian: e.target.value === 'g' })}><option value="u">Uniform</option><option value="g">Gaussian</option></select><span /></div>
     <label><input type="checkbox" checked={p.monochromatic} onChange={e => set({ monochromatic: e.target.checked })} /> Monochromatic</label>
@@ -46,7 +47,7 @@ function AddNoiseDialog() {
 function VignetteDialog() {
   const fillsClear = useMemo(() => !store.active?.image, [])
   const initial: VignetteSettings = { color: [0, 0, 0], amount: 35, midpoint: 50, roundness: 100, feather: 60, highlights: 25 }
-  return <FilterDialog title="Vignette" initial={recall('Vignette', initial)} growEmpty onClose={close} onCommit={p => remembered.set('Vignette', p)} run={p => input => vignette(input, p, fillsClear)}>{(p, set) => <>
+  return <FilterDialog title="Vignette" initial={recall('Vignette', initial)} growEmpty onClose={close} onCommit={p => remembered.set('Vignette', p)} run={p => job('vignette', p, fillsClear)}>{(p, set) => <>
     <div className="row"><span className="muted">Color</span><ColorSwatch title="Vignette Color" value={p.color} onChange={color => set({ color })} /><span /></div>
     <Slider label="Amount" value={p.amount} min={0} max={100} onChange={amount => set({ amount })} />
     <Slider label="Midpoint" value={p.midpoint} min={0} max={100} onChange={midpoint => set({ midpoint })} />
@@ -57,14 +58,14 @@ function VignetteDialog() {
 }
 
 function BloomDialog() {
-  return <Simple name="Bloom / Glow" initial={{ amount: 40, radius: 24 }} trim run={p => input => bloom(input, p.amount, p.radius)}>{(p, set) => <>
+  return <Simple name="Bloom / Glow" initial={{ amount: 40, radius: 24 }} trim run={p => job('bloom', p.amount, p.radius)}>{(p, set) => <>
     <Slider label="Amount" value={p.amount} min={0} max={100} onChange={amount => set({ amount })} />
     <Slider label="Radius" value={p.radius} min={1} max={150} log onChange={radius => set({ radius })} />
   </>}</Simple>
 }
 
 function TonalContrastDialog() {
-  return <Simple name="Tonal Contrast" initial={{ amount: 50, shadows: 40, midtones: 60, highlights: 30, radius: 16 }} run={p => input => tonalContrast(input, p.amount, p.shadows, p.midtones, p.highlights, p.radius)}>{(p, set) => <>
+  return <Simple name="Tonal Contrast" initial={{ amount: 50, shadows: 40, midtones: 60, highlights: 30, radius: 16 }} run={p => job('tonalContrast', p.amount, p.shadows, p.midtones, p.highlights, p.radius)}>{(p, set) => <>
     <Slider label="Amount" value={p.amount} min={0} max={100} onChange={amount => set({ amount })} />
     <Slider label="Shadows" value={p.shadows} min={-100} max={100} onChange={shadows => set({ shadows })} />
     <Slider label="Midtones" value={p.midtones} min={-100} max={100} onChange={midtones => set({ midtones })} />
@@ -74,21 +75,21 @@ function TonalContrastDialog() {
 }
 
 function LensDialog() {
-  return <Simple name="Lens Correction" initial={{ distortion: 0 }} run={p => input => lensCorrection(input, p.distortion)}>{(p, set) => <>
+  return <Simple name="Lens Correction" initial={{ distortion: 0 }} run={p => job('lensCorrection', p.distortion)}>{(p, set) => <>
     <Slider label="Remove Distortion" value={p.distortion} min={-100} max={100} onChange={distortion => set({ distortion })} />
     <span className="muted">Positive straightens lines that bow outward (barrel); negative, lines that bow inward (pincushion).</span>
   </>}</Simple>
 }
 
 function ContentAwareDialog() {
-  return <FilterDialog title="Content-Aware Fill" initial={{}} onClose={close} run={() => input => contentAwareFill(input)}>{() => <>
+  return <FilterDialog title="Content-Aware Fill" initial={{}} onClose={close} run={() => job('contentAwareFill', store.state.selection)}>{() => <>
     <span>Fill the selection using surrounding pixels from this layer.</span>
     <span className="muted">Limited to the selection.</span>
   </>}</FilterDialog>
 }
 
 function DitherDialog() {
-  return <Simple name="Dither" initial={defaultDither} run={p => input => dither(input, p)}>{(p, set) => {
+  return <Simple name="Dither" initial={defaultDither} run={p => job('dither', p)}>{(p, set) => {
     const uses = ditherUses(p)
     return <>
       <div className="row"><span className="muted">Style</span>
@@ -126,7 +127,7 @@ function AdjustmentFilterDialog({ kind }: { kind: AdjustmentKind }) {
     return a
   }, [])
   const source = useMemo(() => store.active?.image ?? null, [])
-  return <FilterDialog title={kind} initial={{ adjustment: initial }} onClose={close} onCommit={p => remembered.set(kind, p.adjustment)} run={p => input => adjustPixels(input, p.adjustment)}>{(p, set) => <>
+  return <FilterDialog title={kind} initial={{ adjustment: initial }} onClose={close} onCommit={p => remembered.set(kind, p.adjustment)} run={p => job('adjustPixels', p.adjustment)}>{(p, set) => <>
     <AdjustmentEditor adjustment={p.adjustment} onChange={adjustment => set({ adjustment })} />
     {kind === 'Levels' && source && <LevelsTools source={source} toSource={point => apply(invert(pixelToDocument(store.active!.transform, source.width, source.height)), ...point)} adjustment={p.adjustment} onChange={adjustment => set({ adjustment })} />}
   </>}</FilterDialog>
