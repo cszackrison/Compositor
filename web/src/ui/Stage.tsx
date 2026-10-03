@@ -197,6 +197,12 @@ export function Stage() {
   const lastPointer = useRef<Pointer | null>(null)
   const [space, setSpace] = useState(false)
   const statusRef = useRef<HTMLDivElement>(null)
+  // Touch: fingers on the stage, a two-finger pinch (zoom and pan around the document point first under the fingers), and the
+  // one-finger gesture so far — whether it reached the tool, and `dead` once a second finger or a long press took it over.
+  const touches = useRef(new Map<number, [number, number]>())
+  const pinch = useRef<{ doc: [number, number]; distance: number; zoom: number } | null>(null)
+  const touch = useRef<{ tool: boolean; dead: boolean; start: [number, number]; timer: number } | null>(null)
+  const lastPointerType = useRef('mouse')
   const [error, setError] = useState<string | null>(null)
   const [menu, setMenu] = useState<{ x: number; y: number; items: MenuItem[] } | null>(null)
   const closeMenu = useCallback(() => setMenu(null), [])
@@ -263,8 +269,45 @@ export function Stage() {
   // The cursor follows hover without a React render per pointer move.
   function updateCursor() { if (ref.current) { const next = cursorFor(); if (ref.current.style.cursor !== next) ref.current.style.cursor = next } }
 
+  const fingers = () => {
+    const box = ref.current!.getBoundingClientRect(), [a, b] = [...touches.current.values()]
+    return { mid: [(a[0] + b[0]) / 2 - box.left, (a[1] + b[1]) / 2 - box.top] as [number, number], distance: Math.max(1, Math.hypot(a[0] - b[0], a[1] - b[1])) }
+  }
+
+  // A second finger or a long press takes over: whatever the first finger started is undone.
+  function abandonTouch() {
+    const t = touch.current
+    if (!t || t.dead) return
+    clearTimeout(t.timer)
+    t.dead = true
+    if (t.tool) activeHandler().key?.(new KeyboardEvent('keydown', { key: 'Escape' }))
+    if (guideGesture.current) { cancelGuideDrag(); guideGesture.current = false }
+    if (canvasDrag.current) canvasDrag.current.up()
+    pan.current = null
+    requestRender()
+  }
+
+  function longPress() {
+    const t = touch.current
+    if (!t || t.dead || brushTools.has(store.state.tool)) return
+    abandonTouch()
+    const box = ref.current!.getBoundingClientRect()
+    setMenu({ x: t.start[0], y: t.start[1], items: canvasMenu(view.toDocument(t.start[0] - box.left, t.start[1] - box.top)) })
+  }
+
   const onPointerDown = (event: React.PointerEvent) => {
     if (!store.hasDocument || menu) return
+    lastPointerType.current = event.pointerType
+    if (event.pointerType === 'touch') {
+      touches.current.set(event.pointerId, [event.clientX, event.clientY])
+      if (touches.current.size > 1) {
+        ;(event.target as Element).setPointerCapture(event.pointerId)
+        abandonTouch()
+        if (touches.current.size === 2) { const { mid, distance } = fingers(); pinch.current = { doc: view.toDocument(...mid), distance, zoom: view.zoom } }
+        return
+      }
+      touch.current = { tool: false, dead: false, start: [event.clientX, event.clientY], timer: window.setTimeout(longPress, 550) }
+    }
     ref.current!.focus()
     ;(event.target as Element).setPointerCapture(event.pointerId)
     const p = pointerFrom(event)
@@ -277,10 +320,24 @@ export function Stage() {
     if (canvasPicker.current && event.button === 0) { canvasPicker.current(p.point, p.shift, p.alt); canvasDrag.startX = event.clientX; return }
     if (event.button === 2 && !brushTools.has(store.state.tool)) return
     activeHandler().down?.(p)
+    if (touch.current) touch.current.tool = true
     guideGesture.current = !!guideDrag()
   }
 
   const onPointerMove = (event: React.PointerEvent) => {
+    if (event.pointerType === 'touch' && touches.current.has(event.pointerId)) {
+      touches.current.set(event.pointerId, [event.clientX, event.clientY])
+      if (pinch.current && touches.current.size === 2) {
+        const { mid, distance } = fingers(), start = pinch.current
+        view.zoom = Math.min(64, Math.max(0.01, start.zoom * distance / start.distance))
+        view.offsetX = mid[0] - start.doc[0] * view.zoom; view.offsetY = mid[1] - start.doc[1] * view.zoom
+        viewChanged(); requestRender(false)
+        return
+      }
+      const t = touch.current
+      if (!t || t.dead) return
+      if (Math.hypot(event.clientX - t.start[0], event.clientY - t.start[1]) > 10) clearTimeout(t.timer)
+    }
     const p = pointerFrom(event, true)
     lastPointer.current = p
     // Straight to the DOM: re-rendering the canvas component on every pointer move just for this costs more than it shows.
@@ -293,6 +350,14 @@ export function Stage() {
   }
 
   const onPointerUp = (event: React.PointerEvent) => {
+    if (event.pointerType === 'touch' && touches.current.has(event.pointerId)) {
+      touches.current.delete(event.pointerId)
+      if (touches.current.size < 2) pinch.current = null
+      const t = touch.current
+      if (t) clearTimeout(t.timer)
+      if (touches.current.size === 0) touch.current = null
+      if (!t || t.dead) return
+    }
     const p = pointerFrom(event)
     if (pan.current) { pan.current = null; updateCursor(); return }
     if (guideGesture.current) { guideGesture.current = false; endGuideDrag(p); return }
@@ -312,6 +377,9 @@ export function Stage() {
       requestRender(false)
     }
     element.addEventListener('wheel', wheel, { passive: false })
+    // Safari's own pinch would zoom the page instead of the canvas.
+    const gesture = (event: Event) => event.preventDefault()
+    element.addEventListener('gesturestart', gesture)
     const typing = (event: KeyboardEvent) => event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement || event.target instanceof HTMLSelectElement
     const down = (event: KeyboardEvent) => {
       if (typing(event)) return
@@ -325,7 +393,7 @@ export function Stage() {
     }
     window.addEventListener('keydown', down)
     window.addEventListener('keyup', up)
-    return () => { element.removeEventListener('wheel', wheel); window.removeEventListener('keydown', down); window.removeEventListener('keyup', up) }
+    return () => { element.removeEventListener('wheel', wheel); element.removeEventListener('gesturestart', gesture); window.removeEventListener('keydown', down); window.removeEventListener('keyup', up) }
   }, [])
 
   const handler = activeHandler()
@@ -341,7 +409,7 @@ export function Stage() {
         const box = ref.current!.getBoundingClientRect(), layers = takeDraggedLayers()
         if (layers?.length) copyLayersInto(store, layers, 'Copy Layers from Project', view.toDocument(e.clientX - box.left, e.clientY - box.top))
       }}
-      onContextMenu={e => { e.preventDefault(); if (store.hasDocument && !handler.busy?.() && !brushTools.has(state.tool)) { const box = ref.current!.getBoundingClientRect(); setMenu({ x: e.clientX, y: e.clientY, items: canvasMenu(view.toDocument(e.clientX - box.left, e.clientY - box.top)) }) } }}>
+      onContextMenu={e => { e.preventDefault(); if (lastPointerType.current !== 'touch' && store.hasDocument && !handler.busy?.() && !brushTools.has(state.tool)) { const box = ref.current!.getBoundingClientRect(); setMenu({ x: e.clientX, y: e.clientY, items: canvasMenu(view.toDocument(e.clientX - box.left, e.clientY - box.top)) }) } }}>
       <canvas ref={canvasRef} />
       <canvas ref={overlayRef} style={{ pointerEvents: 'none' }} />
       {store.hasDocument && <div ref={statusRef} className="status">{`${state.doc.width} × ${state.doc.height}  ·  ${Math.round(view.zoom * 100)}%`}</div>}

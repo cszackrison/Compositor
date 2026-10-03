@@ -42,6 +42,15 @@ existing features were.
 - [ ] Each change in the effect editor coalesces into one undo step; the Mac records every change.
 - [ ] Ctrl+R (Show Rulers) on Windows and Linux couldn't be confirmed; browsers may keep it for reload.
 
+## Touch and phones
+
+- [x] Canvas touch: one finger uses the tool, two fingers pinch to zoom and pan (a stroke the first finger started is undone),
+  and a long press opens the canvas menu (except with the brush tools, where holding still keeps painting).
+- [ ] Modifier stand-ins for touch: an on-screen Option/Shift button (Clone Stamp source, eyedropper, straight lines).
+- [ ] Phone layout: the sidebar as a pull-up sheet and the tools as a bottom bar at narrow widths.
+- [ ] Pen pressure from pointer events (Apple Pencil, Wacom).
+- [ ] Try it on a real iPad and Android phone; touch was only exercised with synthetic events.
+
 ## Untested by hand
 
 Automation couldn't hold modifier keys during drags, so these were only exercised in code:
