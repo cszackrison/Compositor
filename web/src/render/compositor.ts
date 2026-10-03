@@ -66,6 +66,11 @@ export class Compositor {
   private white: WebGLTexture
   output: Target | null = null
   renderScale = 1
+  // Redrawing only what changed: the area this frame is limited to (target pixels; null redraws everything), the document as
+  // last drawn, and areas GPU work changed in rasters whose textures are already current (gpuWarp.ts).
+  private region: { x: number; y: number; w: number; h: number } | null = null
+  private previous: { doc: Doc; width: number; height: number; scale: number } | null = null
+  private gpuChanges = new Map<Raster, { x0: number; y0: number; x1: number; y1: number }>()
   private width = 0
   private height = 0
 
@@ -133,10 +138,66 @@ export class Compositor {
 
   // A raster whose texture the GPU has just drawn into (Smudge and Liquify, see gpuWarp.ts), with its bytes brought back to match:
   // the texture is current, so it isn't uploaded again, though its mipmaps need making afresh.
-  markCurrent(raster: Raster) {
+  markCurrent(raster: Raster, rect?: { x0: number; y0: number; x1: number; y1: number }) {
     raster.touch()
     const record = this.textures.get(raster)
     if (record) record.version = raster.version
+    if (rect) { const d = this.gpuChanges.get(raster); this.gpuChanges.set(raster, d ? { x0: Math.min(d.x0, rect.x0), y0: Math.min(d.y0, rect.y0), x1: Math.max(d.x1, rect.x1), y1: Math.max(d.y1, rect.y1) } : rect) }
+  }
+
+  // What changed since the last frame, in target pixels, when all that changed is some layers' pixels in known places (null if
+  // nothing did); 'all' otherwise. Blur adjustment layers read their neighbors, so a document with one redraws it all.
+  private changes(doc: Doc, entries: Entry[]): { x0: number; y0: number; x1: number; y1: number } | 'all' | null {
+    const previous = this.previous
+    if (!previous || previous.width !== this.width || previous.height !== this.height || previous.scale !== this.renderScale) return 'all'
+    const before = previous.doc.layers
+    if (before.length !== doc.layers.length || doc.layers.some((layer, i) => layer !== before[i])) return 'all'
+    let area: { x0: number; y0: number; x1: number; y1: number } | null = null
+    const add = (raster: Raster, transform: Transform, rect: { x0: number; y0: number; x1: number; y1: number }) => {
+      // Two texels of filtering reach on every side, then three target pixels for antialiasing and mipmaps.
+      const m = multiply(this.docToTarget, pixelToDocument(transform, raster.width, raster.height))
+      const corners = [[rect.x0 - 2, rect.y0 - 2], [rect.x1 + 2, rect.y0 - 2], [rect.x1 + 2, rect.y1 + 2], [rect.x0 - 2, rect.y1 + 2]].map(([x, y]) => apply(m, x, y))
+      const x0 = Math.floor(Math.min(...corners.map(c => c[0]))) - 3, y0 = Math.floor(Math.min(...corners.map(c => c[1]))) - 3
+      const x1 = Math.ceil(Math.max(...corners.map(c => c[0]))) + 3, y1 = Math.ceil(Math.max(...corners.map(c => c[1]))) + 3
+      area = area ? { x0: Math.min(area.x0, x0), y0: Math.min(area.y0, y0), x1: Math.max(area.x1, x1), y1: Math.max(area.y1, y1) } : { x0, y0, x1, y1 }
+    }
+    for (const { layer } of entries) {
+      const visible = !layer.isGroup || !!layer.mask
+      if (layer.adjustment && (layer.adjustment.kind === 'Gaussian Blur' || layer.adjustment.kind === 'Motion Blur') && layer.visible) return 'all'
+      if (layer.image && hasVisibleEffects(layer.effects)) {
+        const cached = this.effectsCache.get(layer.id), mask = layer.mask && layer.maskEnabled ? layer.mask : null
+        if (!cached || cached.key !== `${layer.image.version}:${mask?.version}:${JSON.stringify(layer.effects)}`) return 'all'
+      }
+      if (!visible) continue
+      const owned: [Raster | null | undefined, Transform][] = [[layer.image, layer.transform], [layer.mask, layer.maskPlacement && !layer.isGroup && !layer.adjustment ? layer.maskPlacement : layer.transform]]
+      for (const [raster, transform] of owned) {
+        if (!raster) continue
+        const gpu = this.gpuChanges.get(raster)
+        if (gpu) add(raster, transform, gpu)
+        // A raster never drawn (a hidden layer, a disabled mask) isn't in the picture; showing it changes its layer.
+        const record = this.textures.get(raster)
+        if (!record || record.version === raster.version) continue
+        const dirty = raster.dirty && raster.dirtyFrom <= record.version ? raster.dirty : null
+        if (!dirty) return 'all'
+        add(raster, transform, { x0: dirty.x, y0: dirty.y, x1: dirty.x + dirty.w, y1: dirty.y + dirty.h })
+      }
+    }
+    return area
+  }
+
+  // Scissors to a layer's bounds within this frame's region; false when they don't meet.
+  private limit(x0: number, y0: number, x1: number, y1: number) {
+    const r = this.region
+    if (r) { x0 = Math.max(x0, r.x); y0 = Math.max(y0, r.y); x1 = Math.min(x1, r.x + r.w); y1 = Math.min(y1, r.y + r.h) }
+    if (x1 <= x0 || y1 <= y0) return false
+    this.gl.enable(this.gl.SCISSOR_TEST)
+    this.gl.scissor(x0, y0, x1 - x0, y1 - y0)
+    return true
+  }
+  // Back to the frame's region (or no scissor at all).
+  private unlimit() {
+    const gl = this.gl, r = this.region
+    if (r) { gl.enable(gl.SCISSOR_TEST); gl.scissor(r.x, r.y, r.w, r.h) } else gl.disable(gl.SCISSOR_TEST)
   }
 
   get quadArray() { return this.quad }
@@ -187,6 +248,8 @@ export class Compositor {
     const x0 = Math.max(0, Math.floor(Math.min(...corners.map(c => c[0])))), y0 = Math.max(0, Math.floor(Math.min(...corners.map(c => c[1]))))
     const x1 = Math.min(target.width, Math.ceil(Math.max(...corners.map(c => c[0])))), y1 = Math.min(target.height, Math.ceil(Math.max(...corners.map(c => c[1]))))
     if (x1 <= x0 || y1 <= y0) return
+    if (!this.limit(x0, y0, x1, y1)) { this.unlimit(); return }
+    this.unlimit()
     const mode = blendModes.indexOf(options.blendMode)
     let backdrop: Target | null = null
     if (mode !== 0) {
@@ -196,8 +259,7 @@ export class Compositor {
       gl.blitFramebuffer(x0, y0, x1, y1, x0, y0, x1, y1, gl.COLOR_BUFFER_BIT, gl.NEAREST)
     }
     target.bind()
-    gl.enable(gl.SCISSOR_TEST)
-    gl.scissor(x0, y0, x1 - x0, y1 - y0)
+    this.limit(x0, y0, x1, y1)
     if (mode === 0) { gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA) } else gl.disable(gl.BLEND)
     const mask = options.mask ?? { mode: 0 }
     if (mask.mode !== 0) { gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, mask.texture); setSampling(gl, gl.LINEAR) }
@@ -212,7 +274,7 @@ export class Compositor {
     })
     this.bindQuad()
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4)
-    gl.disable(gl.SCISSOR_TEST)
+    this.unlimit()
     gl.disable(gl.BLEND)
     if (backdrop) this.pool.give(backdrop)
   }
@@ -284,6 +346,8 @@ export class Compositor {
     used.add(key)
     const cached = this.clipCache.get(key)
     if (cached) return cached
+    // Cached and reused by later frames, so made whole whatever this frame's region.
+    this.gl.disable(this.gl.SCISSOR_TEST)
     const target = new Target(this.gl, this.width, this.height, 'rgba8')
     target.bind()
     this.gl.clearColor(1, 1, 1, 1)
@@ -294,6 +358,7 @@ export class Compositor {
       this.pass(target, this.clipProgram, { mask: { texture, unit: 0 }, targetToMask: invert(multiply(this.docToTarget, unitToDocument(folder.transform))), targetSize: [this.width, this.height] }, 'multiply')
     }
     this.clipCache.set(key, target)
+    this.unlimit()
     return target
   }
 
@@ -421,8 +486,20 @@ export class Compositor {
       this.width = width; this.height = height
     }
     const canvas = this.output!
-    canvas.bind(true)
     const entries = drawOrder(doc)
+    const changed = this.changes(doc, entries)
+    this.gpuChanges.clear()
+    this.previous = { doc, width, height, scale: renderScale }
+    if (changed === null) return canvas
+    this.region = null
+    if (changed !== 'all') {
+      const x = Math.max(0, changed.x0), y = Math.max(0, changed.y0), w = Math.min(width, changed.x1) - x, h = Math.min(height, changed.y1) - y
+      if (w <= 0 || h <= 0) return canvas
+      // Worth it only when it's well short of the whole canvas.
+      if (w * h < width * height * 0.6) this.region = { x, y, w, h }
+    }
+    this.unlimit()
+    canvas.bind(true)
     const byId = new Map(entries.map(e => [e.layer.id, e]))
     const drawn = entries.filter(e => effectivelyVisible(e) && !e.layer.isGroup)
     const stacks = new Map<string, Entry[]>(), stacked = new Set<string>()
@@ -458,6 +535,8 @@ export class Compositor {
     coverages.forEach(t => this.pool.give(t))
     for (const [key, target] of this.clipCache) if (!used.has(key)) { target.dispose(); this.clipCache.delete(key) }
     for (const id of this.effectsCache.keys()) if (!byId.has(id)) this.effectsCache.delete(id)
+    this.region = null
+    gl.disable(gl.SCISSOR_TEST)
     gl.bindTexture(gl.TEXTURE_2D, canvas.texture)
     gl.generateMipmap(gl.TEXTURE_2D)
     return canvas

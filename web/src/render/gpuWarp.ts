@@ -264,7 +264,7 @@ export class GPUWarp {
       gl.pixelStorei(gl.PACK_ROW_LENGTH, 0)
       this.done()
     }
-    this.compositor.markCurrent(raster)
+    this.compositor.markCurrent(raster, { x0, y0, x1, y1 })
   }
 
   dispose() {
