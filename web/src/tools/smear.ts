@@ -1,7 +1,8 @@
 import { store } from '../editor/store'
 import { apply, invert, type Mat3 } from '../render/gl'
 import { pixelToDocument } from '../render/compositor'
-import { requestRender, view } from '../ui/canvasState'
+import { compositor, requestRender, view } from '../ui/canvasState'
+import { GPUWarp } from '../render/gpuWarp'
 import { paint } from './paint'
 import type { Raster } from '../model/raster'
 import type { ToolHandler } from './tool'
@@ -12,6 +13,8 @@ type Warp = {
   kind: 'Liquify' | 'Smudge'; layerId: string; raster: Raster; original: Uint8Array; toPixel: Mat3; scale: number
   offsets: Float32Array | null; carried: Float32Array | null; last: [number, number] | null; dirty: { x0: number; y0: number; x1: number; y1: number } | null
   tip?: { diameter: number; hardness: number; strength: number; radius: number }; scratch?: Float32Array
+  // The dabs run on the GPU when it can (see gpuWarp.ts); `moved` is what this pointer move touched, to read back.
+  gpu: GPUWarp | null; moved: { x0: number; y0: number; x1: number; y1: number } | null
 }
 let warp: Warp | null = null
 let pointer: [number, number] | null = null
@@ -25,15 +28,18 @@ function settings(w: Warp) {
   return (w.tip = { diameter, hardness: Math.min(0.98, Math.max(0, brush.hardness)), strength: Math.min(1, Math.max(0.01, brush.opacity)), radius: Math.ceil(diameter / 2) })
 }
 
+const union = (d: Warp['dirty'], x0: number, y0: number, x1: number, y1: number) => d ? { x0: Math.min(d.x0, x0), y0: Math.min(d.y0, y0), x1: Math.max(d.x1, x1), y1: Math.max(d.y1, y1) } : { x0, y0, x1, y1 }
+
 function include(w: Warp, x0: number, y0: number, x1: number, y1: number) {
-  const d = w.dirty
-  w.dirty = d ? { x0: Math.min(d.x0, x0), y0: Math.min(d.y0, y0), x1: Math.max(d.x1, x1), y1: Math.max(d.y1, y1) } : { x0, y0, x1, y1 }
+  w.dirty = union(w.dirty, x0, y0, x1, y1)
+  w.moved = union(w.moved, x0, y0, x1, y1)
 }
 
 // One Liquify dab from a to b: every pixel within the tip takes the offset field (and so the original pixels) from where the push
 // came from, weighted by the tip. Tight loops: these run for every pixel of every dab.
 function liquifyDab(w: Warp, a: [number, number], b: [number, number]) {
   const { diameter, hardness, strength, radius } = settings(w)
+  if (w.gpu) { const rect = w.gpu.push(a, b, radius, 1 / (diameter / 2), hardness, strength); if (rect) include(w, rect.x0, rect.y0, rect.x1, rect.y1); return }
   const { raster, original } = w, width = raster.width, height = raster.height, offsets = w.offsets!, data = raster.data
   const mx = (b[0] - a[0]) * strength, my = (b[1] - a[1]) * strength
   const margin = Math.ceil(Math.max(Math.abs(mx), Math.abs(my))) + 2
@@ -75,6 +81,12 @@ function smudgeDab(w: Warp, b: [number, number], pickUp: boolean) {
   const { diameter, hardness, strength, radius } = settings(w)
   const { raster } = w, width = raster.width, height = raster.height, data = raster.data
   const cx = Math.round(b[0]), cy = Math.round(b[1]), size = radius * 2 + 1
+  if (w.gpu) {
+    if (pickUp) { w.gpu.pickUp(cx, cy, radius); return }
+    const rect = w.gpu.smudge(cx, cy, radius, 1 / (diameter / 2), hardness, strength)
+    if (rect) include(w, rect.x0, rect.y0, rect.x1, rect.y1)
+    return
+  }
   if (pickUp || !w.carried) {
     w.carried = new Float32Array(size * size * 4)
     for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
@@ -116,6 +128,7 @@ function moveTo(w: Warp, doc: [number, number]) {
     prev = q
   }
   w.last = prev
+  if (w.gpu) { if (w.moved) w.gpu.sync(w.moved); w.moved = null; return }
   const d = w.dirty
   if (d) { const x0 = Math.max(0, d.x0), y0 = Math.max(0, d.y0); w.raster.markDirty({ x: x0, y: y0, w: Math.min(w.raster.width, d.x1) - x0, h: Math.min(w.raster.height, d.y1) - y0 }) }
 }
@@ -133,7 +146,8 @@ export const smear: ToolHandler = {
     const raster = target.raster
     const toDoc = pixelToDocument(target.layer.transform, raster.width, raster.height)
     const scale = 1 / Math.sqrt(Math.abs(toDoc[0] * toDoc[4] - toDoc[1] * toDoc[3]))
-    warp = { kind: mode, layerId: target.layer.id, raster, original: raster.data.slice(), toPixel: invert(toDoc), scale, offsets: mode === 'Liquify' ? new Float32Array(raster.width * raster.height * 2) : null, carried: null, last: null, dirty: null }
+    warp = { kind: mode, layerId: target.layer.id, raster, original: raster.data.slice(), toPixel: invert(toDoc), scale, offsets: null, carried: null, last: null, dirty: null, gpu: GPUWarp.create(compositor, raster), moved: null }
+    if (!warp.gpu && mode === 'Liquify') warp.offsets = new Float32Array(raster.width * raster.height * 2)
     moveTo(warp, p.point)
   },
   move(p) {
@@ -146,6 +160,7 @@ export const smear: ToolHandler = {
     if (!warp) { paint.up!(p); return }
     const w = warp
     warp = null
+    w.gpu?.dispose()
     const d = w.dirty
     if (!d) { store.cancelGesture(); return }
     // The selection limits what changes, applied when the stroke ends.
@@ -170,7 +185,7 @@ export const smear: ToolHandler = {
   hover(p) { pointer = p.point; paint.hover!(p) },
   leave() { if (!warp) pointer = null; paint.leave!() },
   key(event) {
-    if (event.key === 'Escape' && warp) { warp.raster.data.set(warp.original); warp.raster.touch(); warp = null; store.cancelGesture(); requestRender(); return true }
+    if (event.key === 'Escape' && warp) { warp.gpu?.dispose(); warp.raster.data.set(warp.original); warp.raster.touch(); warp = null; store.cancelGesture(); requestRender(); return true }
     return paint.key!(event)
   },
   busy: () => !!warp || !!paint.busy!(),

@@ -131,6 +131,16 @@ export class Compositor {
     return record.texture
   }
 
+  // A raster whose texture the GPU has just drawn into (Smudge and Liquify, see gpuWarp.ts), with its bytes brought back to match:
+  // the texture is current, so it isn't uploaded again, though its mipmaps need making afresh.
+  markCurrent(raster: Raster) {
+    raster.touch()
+    const record = this.textures.get(raster)
+    if (record) record.version = raster.version
+  }
+
+  get quadArray() { return this.quad }
+
   forget(raster: Raster) {
     const record = this.textures.get(raster)
     if (record) { this.released.unregister(record); this.gl.deleteTexture(record.texture); this.textures.delete(raster) }
