@@ -5,6 +5,7 @@ import { Slider, AdjustmentEditor } from './Inspector'
 import { useEditor } from './hooks'
 import { defaultDither, ditherGroups, ditherStyles, ditherUses, type DitherSettings, type VignetteSettings } from '../editor/filterKinds'
 import { job } from '../editor/filters'
+import { RemoveBackgroundDialog } from '../ai/RemoveBackground'
 import { type Adjustment, type AdjustmentKind, type LevelRange, newAdjustment, identityRange } from '../model/types'
 import { applyRange } from '../model/adjustments'
 import { call, withBuffers } from '../kernels'
@@ -252,7 +253,7 @@ export function LevelsTools({ source, toSource, adjustment, onChange }: { source
 export const filterPanels: Record<string, () => React.ReactNode> = {
   'Gaussian Blur': () => <GaussianBlurDialog />, 'Motion Blur': () => <MotionBlurDialog />, 'Add Noise': () => <AddNoiseDialog />, Vignette: () => <VignetteDialog />,
   'Bloom / Glow': () => <BloomDialog />, Dither: () => <DitherDialog />, 'Tonal Contrast': () => <TonalContrastDialog />, 'Lens Correction': () => <LensDialog />,
-  'Content-Aware Fill': () => <ContentAwareDialog />,
+  'Content-Aware Fill': () => <ContentAwareDialog />, 'Remove Background': () => <RemoveBackgroundDialog />,
   ...Object.fromEntries((['Curves', 'Levels', 'Hue/Saturation', 'Black & White', 'Color Balance', 'Exposure', 'Gradient Map', 'Grain'] as AdjustmentKind[]).map(kind => [kind, () => <AdjustmentFilterDialog kind={kind} />])),
 }
 

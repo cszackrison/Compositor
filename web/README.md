@@ -65,12 +65,14 @@ Fields the web app doesn't edit (text and shape metadata, unknown keys from newe
   - Optional pen pressure for brush size (off by default, as the Mac app has none).
   - Add to Home Screen for a full-screen app. Without folder access, Save keeps projects in the browser.
 
+- **Select Subject and Remove Background** use [ormbg](https://huggingface.co/onnx-community/ormbg-ONNX) (Apache-2.0) through ONNX Runtime Web instead of Apple's Vision framework. The model downloads from Hugging Face the first time either is used (88 MB with WebGPU, 44 MB without) and is cached by the browser; images never leave the device. The masks differ from the Mac app's, since it's a different model; Remove Background's Refine, Contrast and Shift Edge follow the Mac's arithmetic.
+
 ## Not yet ported
 
 - **Type tool:** text layers render from their saved PNG, but can't be edited.
 - **Camera Raw:** its C kernels are already in `kernels.wasm`; only the panel is missing.
 - **Import:** PSD/PSB and camera RAW.
-- **Select Subject, Object selection and Remove Background:** these use Apple's Vision framework, so the web would need its own segmentation model.
+- **Object selection (the Magic tool):** the Mac uses Apple's Vision framework; the web would need a click-to-select model such as MobileSAM.
 
 ## Differences from the Mac app
 

@@ -24,6 +24,7 @@ import { beginTransformSelection } from '../editor/floating'
 import { clearGuides } from '../tools/guides'
 import { requestRender } from './canvasState'
 import { useCompact } from './layout'
+import { selectSubject } from '../ai/RemoveBackground'
 import { PhoneMenu, Sheet } from './Phone'
 import { Icon } from './icons'
 import { TouchTooltip } from './TouchTooltip'
@@ -60,6 +61,7 @@ const commands: Record<string, { run: () => void; enabled?: () => boolean }> = {
   'Select All': { run: () => store.selectAll(), enabled: has },
   Deselect: { run: () => store.deselect(), enabled: () => !!store.state.selection },
   'Inverse Selection': { run: () => store.invertSelection(), enabled: has },
+  'Select Subject': { run: () => { selectSubject() }, enabled: has },
   Curves: { run: open('Curves'), enabled: filterable },
   Levels: { run: open('Levels'), enabled: filterable },
   'Hue/Saturation': { run: open('Hue/Saturation'), enabled: filterable },
@@ -201,6 +203,7 @@ export function App() {
     ] },
     { title: 'Select', items: [
       item('All', 'Select All'), item('Deselect', 'Deselect'), item('Inverse', 'Inverse Selection'),
+      item('Subject', 'Select Subject'),
       { label: 'Layer’s Pixels', action: () => active && store.loadSelection(active.id, false), disabled: !active?.image || active.isGroup },
       { label: 'Color Range…', action: open('Color Range'), disabled: !doc },
       { label: 'Mask’s Black Areas', action: () => active && store.loadSelection(active.id, true), disabled: !active?.mask },
@@ -223,7 +226,7 @@ export function App() {
     ] },
     { title: 'Filter', items: ['Gaussian Blur', 'Motion Blur', 'Add Noise'].map(filter).concat([
       { label: 'Vignette…', action: open('Vignette'), disabled: !doc || !active || active.isGroup || !!active.adjustment || state.editingMask },
-      ...['Bloom / Glow', 'Dither', 'Tonal Contrast', 'Lens Correction'].map(filter),
+      ...['Bloom / Glow', 'Dither', 'Tonal Contrast', 'Lens Correction', 'Remove Background'].map(filter),
     ]) },
     { title: 'Layer', items: [
       { label: 'New Adjustment Layer', disabled: !doc, submenu: adjustmentKinds.map(kind => ({ label: kind === 'Invert' ? kind : `${kind}…`, action: () => store.addAdjustment(kind) })) },

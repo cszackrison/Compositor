@@ -47,7 +47,7 @@ export const definitions: ShortcutDefinition[] = ([
   ['Menus', 'Close Project', c('w', 3)], ['Menus', 'Fit Canvas', c('0', 1)], ['Menus', 'Actual Pixels', c('1', 1)], ['Menus', 'Zoom In', c('=', 1)],
   ['Menus', 'Zoom Out', c('-', 1)], ['Menus', 'Show Transform Controls', c('h', 1)], ['Menus', 'Cut', c('x', 1)], ['Menus', 'Copy', c('c', 1)],
   ['Menus', 'Copy Merged', c('c', 9)], ['Menus', 'Paste', c('v', 1)], ['Menus', 'Fill with Foreground', c('\u007f', 2)], ['Menus', 'Fill with Background', c('\u007f', 1)],
-  ['Menus', 'Content-Aware Fill', c('\u007f', 8)], ['Menus', 'Select All', c('a', 1)], ['Menus', 'Deselect', c('d', 1)], ['Menus', 'Inverse Selection', c('i', 9)],
+  ['Menus', 'Content-Aware Fill', c('\u007f', 8)], ['Menus', 'Select All', c('a', 1)], ['Menus', 'Deselect', c('d', 1)], ['Menus', 'Inverse Selection', c('i', 9)], ['Menus', 'Select Subject', c('a', 3)],
   ['Menus', 'Curves', c('m', 1)], ['Menus', 'Levels', c('l', 1)], ['Menus', 'Hue/Saturation', c('u', 1)], ['Menus', 'Invert Pixels / Mask', c('i', 1)],
   ['Menus', 'Canvas Size', c('c', 3)], ['Menus', 'Image Size', c('i', 3)], ['Menus', 'Transform Layer / Selection', c('t', 3)], ['Menus', 'Duplicate / Layer via Copy', c('j', 1)],
   ['Menus', 'Toggle Clipping Mask', c('g', 3)], ['Menus', 'Group Layers', c('g', 1)], ['Menus', 'Ungroup Layers', c('g', 9)], ['Menus', 'New Blank Layer', c('n', 11)],

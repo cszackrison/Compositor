@@ -15,8 +15,11 @@ existing features were.
 - [ ] **PSD/PSB import**, with the conversion report (about 1,500 lines of Swift in `Compositor/IO/PSD`).
 - [ ] **Camera RAW import** and its develop step. Needs a wasm decoder (LibRaw or similar).
 - [ ] **HEIC, TIFF and SVG import.** HEIC and TIFF only work where the browser decodes them; SVG is easy.
-- [ ] **Select Subject, Object selection (Magic tool) and Remove Background.** The Mac uses Apple's Vision framework, so these
-  need an in-browser segmentation model (ONNX or WebGPU, SAM- or RMBG-style).
+- [x] **Select Subject and Remove Background**, with the ormbg model (Apache-2.0) in the browser instead of Apple's Vision:
+  downloaded from Hugging Face on first use (88 MB on WebGPU, 44 MB on the CPU) and cached. Results differ from the Mac's.
+- [ ] **Object selection (Magic tool)**: a click-to-select model (MobileSAM or SlimSAM) on the same runtime.
+- [ ] Try Select Subject and Remove Background on phones (WebGPU in Chrome on Android and Safari on iOS 26).
+- [ ] Remove Background's full-size refine (Advanced) runs on the main thread; a large layer pauses for a moment on OK.
 - [ ] **Live reload when the project changes on disk** (an AI agent or script writing the `.comp`). Browsers can't watch folders,
   so this would mean polling the directory handle in Chrome and Edge.
 
