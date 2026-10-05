@@ -4,6 +4,7 @@ import { renderEffects, hasVisibleEffects } from './effects'
 import { channelTables, hueSaturationCube, kernelCube, cubeSize } from '../model/adjustments'
 import { type Adjustment, type Doc, type Layer, type Transform, blendModes } from '../model/types'
 import { Raster } from '../model/raster'
+import { layerToMask, maskOnGrid } from '../model/masks'
 
 // Layer unit square (0…1 on both axes, row 0 at the top) to document pixels: about the center, clockwise rotation, flips inside the box.
 export function unitToDocument(t: Transform): Mat3 {
@@ -350,7 +351,7 @@ export class Compositor {
   // settings change, the live view keeps drawing the last result and the worker makes the new one, redrawing when it's ready.
   // Exports and merges (not the live view) always make them here, so they're current.
   private effects(layer: Layer) {
-    const mask = layer.mask && layer.maskEnabled ? layer.mask : null
+    const mask = this.effectsMask(layer)
     const key = this.effectsKey(layer)
     const cached = this.effectsCache.get(layer.id)
     if (cached?.key === key) return cached
@@ -383,9 +384,10 @@ export class Compositor {
   readBack = new Map<Raster, () => void>()
 
   private startEffects(layer: Layer, key: string) {
-    const id = this.nextId++, mask = layer.mask && layer.maskEnabled ? layer.mask : null
+    const id = this.nextId++
     this.readBack.get(layer.image!)?.()
-    if (mask) this.readBack.get(mask)?.()
+    if (layer.mask) this.readBack.get(layer.mask)?.()
+    const mask = this.effectsMask(layer)
     const pixels = (r: Raster) => ({ width: r.width, height: r.height, channels: r.channels, data: r.data.slice() })
     const image = pixels(layer.image!), maskPixels = mask ? pixels(mask) : null
     this.effectsJobs.set(layer.id, { running: key, next: null })
@@ -407,9 +409,28 @@ export class Compositor {
     if (waiting?.next) this.startEffects(waiting.next.layer, waiting.next.key)
     this.onStale?.()
   }
+  // Where a placed mask sits relative to its layer: moving both together leaves it, and the effects, as they are.
+  private maskRelation(layer: Layer) {
+    if (!layer.mask || !layer.maskEnabled || !layer.maskPlacement || layer.isGroup || layer.adjustment) return ''
+    return layerToMask(layer.mask, layer.maskPlacement, layer.transform, layer.image!.width, layer.image!.height).map(v => Math.round(v * 1e4) / 1e4).join(',')
+  }
   private effectsKey(layer: Layer) {
     const mask = layer.mask && layer.maskEnabled ? layer.mask : null
-    return `${layer.image!.version}:${mask?.version}:${JSON.stringify(layer.effects)}`
+    return `${layer.image!.version}:${mask?.version}:${this.maskRelation(layer)}:${JSON.stringify(layer.effects)}`
+  }
+  // The mask effects are worked out with, on the layer's own grid: a placed mask is read onto it first (kept until it moves).
+  private gridMasks = new WeakMap<Raster, { key: string; raster: Raster }>()
+  private effectsMask(layer: Layer): Raster | null {
+    const mask = layer.mask && layer.maskEnabled ? layer.mask : null
+    if (!mask || !layer.maskPlacement || layer.isGroup || layer.adjustment) return mask
+    const key = `${mask.version}:${this.maskRelation(layer)}`, cached = this.gridMasks.get(mask)
+    if (cached?.key === key) return cached.raster
+    this.readBack.get(mask)?.()
+    const { width, height } = layer.image!, levels = maskOnGrid(mask, layer.maskPlacement, layer.transform, width, height)
+    const raster = new Raster(width, height, 1)
+    for (let i = 0; i < levels.length; i++) raster.data[i] = Math.round(levels[i] * 255)
+    this.gridMasks.set(mask, { key, raster })
+    return raster
   }
   // Whether this frame draws a layer's effects from a result made for older pixels or settings (the live view, while the worker
   // redoes them); `drawnStale` is how each layer was drawn last frame, as switching redraws the whole canvas.

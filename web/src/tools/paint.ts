@@ -7,7 +7,7 @@ import { call, withBuffers } from '../kernels'
 import { apply, invert, type Mat3 } from '../render/gl'
 import { pixelToDocument } from '../render/compositor'
 import { GPUBrush } from '../render/gpuBrush'
-import { grownTransform, placeOnGrid } from '../editor/filters'
+import { croppedLayer, grownTransform, placeOnGrid } from '../editor/filters'
 import { padMask } from '../editor/floating'
 import { compositor, requestOverlay, requestRender, samplePixels, view } from '../ui/canvasState'
 import type { ToolHandler } from './tool'
@@ -85,8 +85,8 @@ function trimToPainted(layerId: string, kept: { x: number; y: number; w: number;
   const x0 = Math.min(kept.x, empty ? kept.x : bounds[0]), y0 = Math.min(kept.y, empty ? kept.y : bounds[1])
   const x1 = Math.max(kept.x + kept.w, empty ? 0 : bounds[2]), y1 = Math.max(kept.y + kept.h, empty ? 0 : bounds[3])
   if (x0 === 0 && y0 === 0 && x1 === image.width && y1 === image.height) return
-  const cropped = new Raster(x1 - x0, y1 - y0, 4, image.read(x0, y0, x1 - x0, y1 - y0))
-  store.updateLayerLive(layerId, { image: cropped, transform: grownTransform(layer.transform, pixelToDocument(layer.transform, image.width, image.height), image.width, image.height, [x0, y0], cropped.width, cropped.height) })
+  // A mask on the layer's own grid grew with it (growToCanvas), so it's cropped the same way.
+  store.updateLayerLive(layerId, croppedLayer(layer, x0, y0, x1 - x0, y1 - y0))
 }
 
 function bilinear(raster: Raster | Uint8Array, width: number, height: number, channels: number, x: number, y: number, out: Float32Array) {

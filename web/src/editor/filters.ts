@@ -1,7 +1,7 @@
 import { store } from './store'
 import { Raster } from '../model/raster'
 import { apply, type Mat3 } from '../render/gl'
-import type { Transform } from '../model/types'
+import type { Layer, Transform } from '../model/types'
 import { call, withBuffers } from '../kernels'
 import { pixelToDocument } from '../render/compositor'
 import * as kinds from './filterKinds'
@@ -66,6 +66,18 @@ export function grownTransform(t: Transform, toDocument: Mat3, oldWidth: number,
   const [cx, cy] = apply(toDocument, origin[0] + width / 2, origin[1] + height / 2)
   const w = width * t.size[0] / oldWidth, h = height * t.size[1] / oldHeight
   return { ...t, origin: [cx - w / 2, cy - h / 2], size: [w, h] }
+}
+
+// A layer's pixels cut down to `w`×`h` at (x, y) of its grid, with the transform that keeps them in place. A mask on the layer's
+// own grid (the same size as its pixels) is cut the same way, so it stays lined up.
+export function croppedLayer(layer: Layer, x: number, y: number, w: number, h: number): Pick<Layer, 'image' | 'mask' | 'transform'> {
+  const image = layer.image!, cropped = new Raster(w, h, 4, image.read(x, y, w, h))
+  const onGrid = layer.mask && !layer.maskPlacement && layer.mask.width === image.width && layer.mask.height === image.height
+  return {
+    image: cropped,
+    mask: onGrid ? new Raster(w, h, 1, layer.mask!.read(x, y, w, h)) : layer.mask,
+    transform: grownTransform(layer.transform, pixelToDocument(layer.transform, image.width, image.height), image.width, image.height, [x, y], w, h),
+  }
 }
 
 // Copies `source` into a transparent grid of `width`×`height` with its corner at `origin` (negative when the grid is larger).
@@ -212,9 +224,7 @@ export class FilterSession {
     withBuffers([{ data: raster.data }, { data: bounds, out: true }], ([pixels, out]) => call('brush_alpha_bounds', pixels, raster.width, raster.height, raster.width * 4, out))
     const [x0, y0, x1, y1] = bounds
     if (x1 <= x0 || y1 <= y0 || (x0 === 0 && y0 === 0 && x1 === raster.width && y1 === raster.height)) return
-    const cropped = new Raster(x1 - x0, y1 - y0, 4, raster.read(x0, y0, x1 - x0, y1 - y0))
-    const toDocument = pixelToDocument(transform, raster.width, raster.height)
-    store.updateLayerLive(this.layerId, { image: cropped, transform: grownTransform(transform, toDocument, raster.width, raster.height, [x0, y0], cropped.width, cropped.height) })
+    store.updateLayerLive(this.layerId, croppedLayer({ ...store.layer(this.layerId)!, image: raster, transform }, x0, y0, x1 - x0, y1 - y0))
   }
 
   cancel() {

@@ -64,7 +64,8 @@ export function RemoveBackgroundDialog() {
     const layer = store.active
     if (!layer?.image || layer.isGroup || layer.adjustment || store.state.editingMask) { store.notify('Remove Background works on a layer’s pixels.'); store.set({ panel: null }); return }
     store.beginGesture('Remove Background')
-    const base = layer.mask && !layer.maskPlacement && layer.maskEnabled && layer.mask.width === layer.image.width && layer.mask.height === layer.image.height ? layer.mask : null
+    // As on the Mac, an existing mask on the layer's grid is kept (multiplied) whether or not it's switched on.
+    const base = layer.mask && !layer.maskPlacement && layer.mask.width === layer.image.width && layer.mask.height === layer.image.height ? layer.mask : null
     session.current = { layerId: layer.id, image: layer.image, base, transform: layer.transform, found: null }
     let alive = true
     findSubject(layer.image, s => alive && setStatus(describe(s))).then(found => {

@@ -7,6 +7,7 @@ import type { PackageTarget } from '../io/files'
 import type { BrushSettings } from '../tools/brush'
 import { drawOrder, effectivelyVisible, following, pixelToDocument, transformCorners } from '../render/compositor'
 import { apply, invert } from '../render/gl'
+import { maskOnGrid } from '../model/masks'
 
 export type Tool = 'move' | 'marquee' | 'lasso' | 'wand' | 'brush' | 'eraser' | 'heal' | 'clone' | 'smear' | 'gradient' | 'shape' | 'crop' | 'eyedropper' | 'hand' | 'zoom'
 export type HealMode = 'Content-Aware' | 'Create Texture' | 'Proximity Match'
@@ -464,8 +465,10 @@ export class Store {
     if (applyIt && image) {
       image = image.clone()
       const mask = layer.mask
+      // A mask with a placement of its own is read where it sits on the canvas; one on the layer's grid pixel for pixel.
+      const placed = layer.maskPlacement && !layer.isGroup && !layer.adjustment ? maskOnGrid(mask, layer.maskPlacement, layer.transform, image.width, image.height) : null
       for (let y = 0; y < image.height; y++) for (let x = 0; x < image.width; x++) {
-        const m = mask.data[Math.min(mask.height - 1, Math.floor((y + 0.5) * mask.height / image.height)) * mask.width + Math.min(mask.width - 1, Math.floor((x + 0.5) * mask.width / image.width))] / 255
+        const m = placed ? placed[y * image.width + x] : mask.data[Math.min(mask.height - 1, Math.floor((y + 0.5) * mask.height / image.height)) * mask.width + Math.min(mask.width - 1, Math.floor((x + 0.5) * mask.width / image.width))] / 255
         const p = (y * image.width + x) * 4
         for (let c = 0; c < 4; c++) image.data[p + c] = Math.round(image.data[p + c] * m)
       }
@@ -596,6 +599,15 @@ export class Store {
     const below = siblings[siblings.findIndex(l => l.id === layer.id) - 1]
     if (!below || below.isGroup) { this.notify('There is no layer below to merge into.'); return }
     this.merge([below.id, layer.id], 'Merge Down')
+  }
+
+  // A new transform for a layer from the Move tool's fields: a linked mask with a placement of its own goes with it, an unlinked
+  // one stays where it is (as dragging does).
+  setTransform(id: string, transform: Transform, name: string, coalesce?: string) {
+    const layer = this.layer(id)
+    if (!layer) return
+    const maskPlacement = !layer.mask ? layer.maskPlacement : layer.maskLinked ? (layer.maskPlacement ? following(layer.maskPlacement, layer.transform, transform) : null) : layer.maskPlacement ?? layer.transform
+    this.updateLayer(id, { transform, maskPlacement }, name, coalesce)
   }
 
   // Flips the selected layer about its own middle, or several selected layers (or a folder's contents) about the middle of the

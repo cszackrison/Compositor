@@ -1,6 +1,6 @@
 import { store } from '../editor/store'
 import { pixelToDocument } from '../render/compositor'
-import { grownTransform, placeOnGrid } from '../editor/filters'
+import { croppedLayer, grownTransform, placeOnGrid } from '../editor/filters'
 import { padMask } from '../editor/floating'
 import { growMaskToCanvas } from './paint'
 import { apply, invert } from '../render/gl'
@@ -97,8 +97,7 @@ export function applyGradient() {
     const box = new Uint32Array(4)
     withBuffers([{ data: image.data }, { data: box, out: true }], ([px, b]) => call('brush_alpha_bounds', px, image.width, image.height, image.width * 4, b))
     if (box[2] > box[0] && (box[0] || box[1] || box[2] !== image.width || box[3] !== image.height)) {
-      const cropped = new Raster(box[2] - box[0], box[3] - box[1], 4, image.read(box[0], box[1], box[2] - box[0], box[3] - box[1]))
-      store.updateLayerLive(p.layerId, { image: cropped, transform: grownTransform(layer.transform, pixelToDocument(layer.transform, image.width, image.height), image.width, image.height, [box[0], box[1]], cropped.width, cropped.height) })
+      store.updateLayerLive(p.layerId, croppedLayer(layer, box[0], box[1], box[2] - box[0], box[3] - box[1]))
     }
     store.updateLayerLive(p.layerId, { text: undefined, shape: undefined })
   }
