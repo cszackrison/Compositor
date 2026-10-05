@@ -167,7 +167,7 @@ export const pasteImage = guard(async () => {
 })
 
 export const openSample = guard(async () => {
-  const bytes = new Uint8Array(await (await fetch(`${import.meta.env.BASE_URL}samples/Sample.comp.zip`)).arrayBuffer())
+  const bytes = new Uint8Array(await (await fetch(`${import.meta.env.BASE_URL}samples/Sample.comp.bin`)).arrayBuffer())
   await openFiles(unzipPackage(bytes), { kind: 'download', name: 'Sample' })
 })
 

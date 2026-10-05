@@ -7,7 +7,8 @@
     "dev": "npm run wasm && vite",
     "build": "npm run wasm && tsc --noEmit && vite build",
     "preview": "vite preview",
-    "test": "vitest run"
+    "test": "vitest run",
+    "deploy": "sh scripts/deploy.sh"
   },
   "devDependencies": {
     "@types/node": "^26.6.4",

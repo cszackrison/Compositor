@@ -4,7 +4,7 @@ import { writeProject } from '../src/io/project'
 import { zipPackage } from '../src/io/files'
 import { fullTransform, newAdjustment, newLayer, type Doc } from '../src/model/types'
 
-// Builds public/samples/Sample.comp.zip, a small project that exercises folders, masks, clipping, blend modes, effects and adjustments.
+// Builds public/samples/Sample.comp.bin (a zipped .comp; not named .zip, which servers' scanner filters often ban on sight), a small project that exercises folders, masks, clipping, blend modes, effects and adjustments.
 const W = 1600, H = 1000
 
 function paint(width: number, height: number, color: (x: number, y: number) => [number, number, number, number]) {
@@ -51,5 +51,5 @@ const doc: Doc = {
   ],
 }
 mkdirSync(new URL('../public/samples', import.meta.url), { recursive: true })
-writeFileSync(new URL('../public/samples/Sample.comp.zip', import.meta.url), zipPackage('Sample', writeProject(doc, cardLayer.id)))
-console.log('wrote public/samples/Sample.comp.zip')
+writeFileSync(new URL('../public/samples/Sample.comp.bin', import.meta.url), zipPackage('Sample', writeProject(doc, cardLayer.id)))
+console.log('wrote public/samples/Sample.comp.bin')

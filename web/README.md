@@ -67,6 +67,11 @@ Fields the web app doesn't edit (text and shape metadata, unknown keys from newe
 
 - **Select Subject and Remove Background** use [ormbg](https://huggingface.co/onnx-community/ormbg-ONNX) (Apache-2.0) through ONNX Runtime Web instead of Apple's Vision framework. The model downloads from Hugging Face the first time either is used (88 MB with WebGPU, 44 MB without) and is cached by the browser; images never leave the device. The masks differ from the Mac app's, since it's a different model; Remove Background's Refine, Contrast and Shift Edge follow the Mac's arithmetic.
 
+## Deploying
+
+It's live at [compositor.fyi](https://compositor.fyi). `npm run deploy` builds and uploads `dist/` to the server, where nginx
+serves it as static files over HTTPS (needed for WebGPU, folder access and the clipboard).
+
 ## Not yet ported
 
 - **Type tool:** text layers render from their saved PNG, but can't be edited.
