@@ -5,7 +5,7 @@ import { combine, contractSelection, coverageFromRaster, expandSelection, feathe
 import { blurRaster } from '../model/pixels'
 import type { PackageTarget } from '../io/files'
 import type { BrushSettings } from '../tools/brush'
-import { drawOrder, effectivelyVisible, pixelToDocument } from '../render/compositor'
+import { drawOrder, effectivelyVisible, following, pixelToDocument, transformCorners } from '../render/compositor'
 import { apply, invert } from '../render/gl'
 
 export type Tool = 'move' | 'marquee' | 'lasso' | 'wand' | 'brush' | 'eraser' | 'heal' | 'clone' | 'smear' | 'gradient' | 'shape' | 'crop' | 'eyedropper' | 'hand' | 'zoom'
@@ -598,11 +598,34 @@ export class Store {
     this.merge([below.id, layer.id], 'Merge Down')
   }
 
+  // Flips the selected layer about its own middle, or several selected layers (or a folder's contents) about the middle of the
+  // box around them (LayerFlip.swift): each is mirrored, its angle turning the other way. A linked mask flips with its layer; an
+  // unlinked one stays where it is.
   flipLayer(axis: 'x' | 'y') {
-    const layer = this.active
-    if (!layer) return
-    const t = layer.transform
-    this.updateLayer(layer.id, { transform: axis === 'x' ? { ...t, flipX: !t.flipX } : { ...t, flipY: !t.flipY } }, axis === 'x' ? 'Flip Horizontal' : 'Flip Vertical')
+    const ids = new Set<string>()
+    for (const id of this.state.selectedIds.length ? this.state.selectedIds : this.state.activeId ? [this.state.activeId] : []) {
+      const layer = this.layer(id)
+      if (!layer) continue
+      if (!layer.isGroup) ids.add(id)
+      for (const d of this.descendants(id)) if (!d.isGroup) ids.add(d.id)
+    }
+    const members = this.doc.layers.filter(l => ids.has(l.id))
+    if (!members.length) return
+    const corners = members.flatMap(l => transformCorners(l.transform)), along = axis === 'x' ? 0 : 1
+    const middle = members.length === 1 ? members[0].transform.origin[along] + members[0].transform.size[along] / 2 : (Math.min(...corners.map(c => c[along])) + Math.max(...corners.map(c => c[along]))) / 2
+    const mirrored = (t: Transform): Transform => {
+      const origin: [number, number] = [...t.origin]
+      origin[along] = 2 * middle - (t.origin[along] + t.size[along] / 2) - t.size[along] / 2
+      return axis === 'x' ? { ...t, origin, rotation: -t.rotation, flipX: !t.flipX } : { ...t, origin, rotation: -t.rotation, flipY: !t.flipY }
+    }
+    const layers = this.doc.layers.map(l => {
+      if (!ids.has(l.id)) return l
+      const transform = mirrored(l.transform)
+      if (!l.mask) return { ...l, transform }
+      const maskPlacement = l.maskLinked ? (l.maskPlacement ? following(l.maskPlacement, l.transform, transform) : null) : l.maskPlacement ?? l.transform
+      return { ...l, transform, maskPlacement }
+    })
+    this.commit(axis === 'x' ? 'Flip Horizontal' : 'Flip Vertical', { doc: this.replaceLayers(layers) })
   }
 
   // Crops the canvas to a document rectangle; layers keep their pixels and shift.

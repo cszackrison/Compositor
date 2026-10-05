@@ -1,7 +1,7 @@
 import { store } from '../editor/store'
 import { prefs } from '../editor/prefs'
-import { apply, chain, invert } from '../render/gl'
-import { drawOrder, effectivelyVisible, transformCorners, unitToDocument } from '../render/compositor'
+import { apply } from '../render/gl'
+import { drawOrder, effectivelyVisible, following, transformCorners, unitToDocument } from '../render/compositor'
 import { Raster } from '../model/raster'
 import { type Layer, type Transform } from '../model/types'
 import { call, withBuffers } from '../kernels'
@@ -49,23 +49,6 @@ export function currentBox(): Transform | null {
   return groupBox(list)
 }
 
-// Rebuilds a layer's transform after its group's box goes from `from` to `to` (LayerTransform.following), dropping any shear.
-function following(layer: Transform, from: Transform, to: Transform): Transform {
-  if (from.size[0] === to.size[0] && from.size[1] === to.size[1] && from.rotation === to.rotation && from.flipX === to.flipX && from.flipY === to.flipY)
-    return { ...layer, origin: [layer.origin[0] + to.origin[0] - from.origin[0], layer.origin[1] + to.origin[1] - from.origin[1]] }
-  const m = chain(unitToDocument(to), invert(unitToDocument(from)), unitToDocument(layer))
-  const [cx, cy] = apply(m, 0.5, 0.5)
-  const s = layer.flipX ? -1 : 1
-  const a = m[0], b = m[1], c = m[3], d = m[4]
-  let angle = Math.atan2(b * s, a * s) * 180 / Math.PI
-  while (angle - layer.rotation > 180) angle -= 360
-  while (angle - layer.rotation < -180) angle += 360
-  const r = angle * Math.PI / 180, width = Math.hypot(a, b), along = -c * Math.sin(r) + d * Math.cos(r), height = Math.abs(along)
-  return { ...layer, rotation: Math.round(angle * 1000) / 1000, origin: [cx - width / 2, cy - height / 2], size: [width, height], flipY: along < 0 }
-}
-
-// Scales the box by dragging one handle in its own rotated frame, the opposite side (or the center, with Option) staying put. Corners
-// keep the ratio unless Shift. Dragging past the opposite side flips the box on that axis.
 export function resize(original: Transform, handle: Handle, pointer: [number, number], proportional: boolean, fromCenter: boolean): Transform {
   const radians = original.rotation * Math.PI / 180, cos = Math.cos(radians), sin = Math.sin(radians)
   const cx = original.origin[0] + original.size[0] / 2, cy = original.origin[1] + original.size[1] / 2

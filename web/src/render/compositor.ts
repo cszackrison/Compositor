@@ -16,6 +16,23 @@ export function pixelToDocument(t: Transform, width: number, height: number): Ma
   return multiply(unitToDocument(t), scale(1 / width, 1 / height))
 }
 
+// Rebuilds a layer's transform after its group's box goes from `from` to `to` (LayerTransform.following), dropping any shear.
+export function following(layer: Transform, from: Transform, to: Transform): Transform {
+  if (from.size[0] === to.size[0] && from.size[1] === to.size[1] && from.rotation === to.rotation && from.flipX === to.flipX && from.flipY === to.flipY)
+    return { ...layer, origin: [layer.origin[0] + to.origin[0] - from.origin[0], layer.origin[1] + to.origin[1] - from.origin[1]] }
+  const m = chain(unitToDocument(to), invert(unitToDocument(from)), unitToDocument(layer))
+  const [cx, cy] = apply(m, 0.5, 0.5)
+  const s = layer.flipX ? -1 : 1
+  const a = m[0], b = m[1], c = m[3], d = m[4]
+  let angle = Math.atan2(b * s, a * s) * 180 / Math.PI
+  while (angle - layer.rotation > 180) angle -= 360
+  while (angle - layer.rotation < -180) angle += 360
+  const r = angle * Math.PI / 180, width = Math.hypot(a, b), along = -c * Math.sin(r) + d * Math.cos(r), height = Math.abs(along)
+  return { ...layer, rotation: Math.round(angle * 1000) / 1000, origin: [cx - width / 2, cy - height / 2], size: [width, height], flipY: along < 0 }
+}
+
+// Scales the box by dragging one handle in its own rotated frame, the opposite side (or the center, with Option) staying put. Corners
+// keep the ratio unless Shift. Dragging past the opposite side flips the box on that axis.
 export function transformCorners(t: Transform) {
   const m = unitToDocument(t)
   return [apply(m, 0, 0), apply(m, 1, 0), apply(m, 1, 1), apply(m, 0, 1)]
