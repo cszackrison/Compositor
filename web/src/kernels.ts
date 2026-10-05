@@ -1,14 +1,18 @@
 type Exports = Record<string, (...args: number[]) => number> & { memory: WebAssembly.Memory }
 
 let exports: Exports | undefined
+let compiled: WebAssembly.Module | undefined
 
-export async function loadKernels(bytes?: BufferSource) {
+// Workers take the page's compiled module, since a relative base URL would resolve against the worker's own script.
+export async function loadKernels(source?: BufferSource | WebAssembly.Module) {
   if (exports) return
-  const source: BufferSource = bytes ?? await fetch(`${import.meta.env.BASE_URL}kernels.wasm`).then(response => response.arrayBuffer())
-  const { instance } = await WebAssembly.instantiate(source, {})
+  compiled = source instanceof WebAssembly.Module ? source : await WebAssembly.compile(source ?? await fetch(`${import.meta.env.BASE_URL}kernels.wasm`).then(response => response.arrayBuffer()))
+  const instance = await WebAssembly.instantiate(compiled, {})
   exports = instance.exports as unknown as Exports
   exports._initialize?.()
 }
+
+export const kernelModule = () => compiled
 
 function kernel() {
   if (!exports) throw new Error('Pixel kernels are not loaded')

@@ -6,9 +6,10 @@ import type { FilterInput, FilterOutput } from './filters'
 // Filter previews off the main thread: the same filter functions and wasm kernels, so a slow one never freezes the page.
 type Request = { id: number; name: keyof typeof kinds; args: unknown[]; scale?: number; scaled?: number[]; input: Omit<FilterInput, 'pixels'> & { pixels: { width: number; height: number; channels: 1 | 4; data: Uint8Array } } }
 
-const ready = loadKernels()
+let ready: Promise<void> | undefined
 
-self.onmessage = async (event: MessageEvent<Request>) => {
+self.onmessage = async (event: MessageEvent<Request | WebAssembly.Module>) => {
+  if (event.data instanceof WebAssembly.Module) { ready = loadKernels(event.data); return }
   const { id, name, args, input, scale = 1, scaled = [] } = event.data
   try {
     await ready
