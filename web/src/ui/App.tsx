@@ -17,6 +17,7 @@ import { TabBar } from './Tabs'
 import { DialogHost } from './Dialogs'
 import { ColorPickerHost } from './ColorPicker'
 import { FilterHost, lastFilterName, repeatLastFilter } from './Filters'
+import { CommandPalette } from './CommandPalette'
 import { prefs, setPrefs, subscribePrefs } from '../editor/prefs'
 import { definitionFor, shortcutText, subscribeShortcuts } from '../editor/shortcuts'
 import { brushKey } from '../tools/paint'
@@ -48,6 +49,7 @@ const commands: Record<string, { run: () => void; enabled?: () => boolean }> = {
   'Export JPEG': { run: open('Export JPEG'), enabled: has },
   'Close Project': { run: () => closeProject(), enabled: has },
   'Fit Canvas': { run: fit, enabled: has },
+  'Search Commands': { run: open('Search Commands') },
   'Actual Pixels': { run: actualSize, enabled: has },
   'Zoom In': { run: () => zoomBy(2), enabled: has },
   'Zoom Out': { run: () => zoomBy(0.5), enabled: has },
@@ -259,6 +261,7 @@ export function App() {
       { label: state.editingMask && active?.mask ? 'Delete Layer Mask' : state.selectedIds.length > 1 ? 'Delete Layers' : 'Delete Layer', action: () => store.deleteSelected(), disabled: !active },
     ] },
     { title: 'View', items: [
+      item('Search Commands…', 'Search Commands'),
       { label: 'Toggle Fullscreen', shortcut: shortcutText('Toggle Fullscreen: the canvas alone on black (Esc also leaves)', 'Canvas & Layers'), checked: canvasOnly, action: () => setCanvasOnly(!canvasOnly), disabled: !doc },
       'divider',
       item('Fit Canvas', 'Fit Canvas'), item('Actual Pixels', 'Actual Pixels'), item('Zoom In', 'Zoom In'), item('Zoom Out', 'Zoom Out'),
@@ -344,6 +347,7 @@ export function App() {
     <DialogHost />
     <ColorPickerHost />
     <FilterHost />
+    {state.panel === 'Search Commands' && <CommandPalette menus={menus} />}
     <TouchTooltip />
     {state.message && <div className={`toast ${state.message.kind}`}>{state.message.text}</div>}
   </>

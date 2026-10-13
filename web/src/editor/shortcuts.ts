@@ -47,7 +47,7 @@ export type ShortcutDefinition = { id: string; group: ShortcutGroup; title: stri
 export const definitions: ShortcutDefinition[] = ([
   ['Menus', 'Undo', c('z', 1)], ['Menus', 'Redo', c('z', 9)], ['Menus', 'New Canvas', c('n', 3)], ['Menus', 'Open Project', c('o', 1)],
   ['Menus', 'Save', c('s', 1)], ['Menus', 'Save As', c('s', 9)], ['Menus', 'Export PNG', c('e', 9)], ['Menus', 'Export JPEG', c('s', 11)],
-  ['Menus', 'Close Project', c('w', 3)], ['Menus', 'Fit Canvas', c('0', 1)], ['Menus', 'Actual Pixels', c('1', 1)], ['Menus', 'Zoom In', c('=', 1)],
+  ['Menus', 'Close Project', c('w', 3)], ['Menus', 'Fit Canvas', c('0', 1)], ['Menus', 'Search Commands', c('f', 1)], ['Menus', 'Actual Pixels', c('1', 1)], ['Menus', 'Zoom In', c('=', 1)],
   ['Menus', 'Zoom Out', c('-', 1)], ['Menus', 'Show Transform Controls', c('h', 1)], ['Menus', 'Cut', c('x', 1)], ['Menus', 'Copy', c('c', 1)],
   ['Menus', 'Copy Merged', c('c', 9)], ['Menus', 'Paste', c('v', 1)], ['Menus', 'Fill with Foreground', c('\u007f', 2)], ['Menus', 'Fill with Background', c('\u007f', 1)],
   ['Menus', 'Content-Aware Fill', c('\u007f', 8)], ['Menus', 'Select All', c('a', 1)], ['Menus', 'Deselect', c('d', 1)], ['Menus', 'Inverse Selection', c('i', 9)], ['Menus', 'Select Subject', c('a', 3)],
