@@ -739,6 +739,27 @@ export class Compositor {
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4)
   }
 
+  // The last composite made small, its longer side `maxSide` at most, for the Navigator: halved on the GPU until it's that size, each
+  // halving averaging 2 × 2 pixels, so it's smooth without reading the whole composite back.
+  thumbnail(maxSide: number): Raster | null {
+    if (!this.output) return null
+    const gl = this.gl, made: Target[] = []
+    let source = this.output
+    while (Math.max(source.width, source.height) > maxSide) {
+      const f = Math.max(0.5, maxSide / Math.max(source.width, source.height))
+      const next = new Target(gl, Math.max(1, Math.round(source.width * f)), Math.max(1, Math.round(source.height * f)), 'rgba8')
+      gl.bindFramebuffer(gl.READ_FRAMEBUFFER, source.framebuffer)
+      gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, next.framebuffer)
+      gl.blitFramebuffer(0, 0, source.width, source.height, 0, 0, next.width, next.height, gl.COLOR_BUFFER_BIT, gl.LINEAR)
+      made.push(next)
+      source = next
+    }
+    const out = this.read(source)
+    made.forEach(target => target.dispose())
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null)
+    return out
+  }
+
   // The composite's premultiplied pixels, top row first.
   read(target = this.output!): Raster {
     const gl = this.gl

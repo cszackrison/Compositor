@@ -7,6 +7,8 @@ export type Prefs = {
   gridSettings: GridSettings; jpegQuality: number
   // A pen's pressure sets the brush size (the Mac app has no pressure, so it's off unless asked for).
   penPressure: boolean
+  // View › Navigator: a minimap in the canvas's corner from 300% zoom.
+  navigator: boolean
 }
 
 export const gridColors: [string, [number, number, number]][] = [['Light Gray', [0.7, 0.7, 0.7]], ['Light Blue', [0.29, 0.78, 1]], ['Light Red', [1, 0.4, 0.4]], ['Green', [0.25, 0.8, 0.25]], ['Medium Blue', [0.2, 0.4, 1]], ['Yellow', [1, 1, 0]], ['Magenta', [1, 0, 1]], ['Cyan', [0, 1, 1]], ['Black', [0, 0, 0]]]
@@ -14,7 +16,7 @@ export const gridColors: [string, [number, number, number]][] = [['Light Gray', 
 const defaults: Prefs = {
   rulers: false, guides: true, grid: false, lockGuides: false, pixelGrid: true, transformControls: true,
   snap: true, snapSession: true, snapTo: { guides: true, grid: false, layers: true, bounds: true },
-  gridSettings: { spacing: 64, subdivisions: 8, color: [0.7, 0.7, 0.7], style: 'Lines', opacity: 45 }, jpegQuality: 0.85, penPressure: false,
+  gridSettings: { spacing: 64, subdivisions: 8, color: [0.7, 0.7, 0.7], style: 'Lines', opacity: 45 }, jpegQuality: 0.85, penPressure: false, navigator: false,
 }
 
 const key = 'compositor.prefs.v1'

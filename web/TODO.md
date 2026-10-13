@@ -115,7 +115,7 @@ new C needs. Hashes are upstream's commits; effort is a guess.
 - [x] **File › Export As…** (450af5f, b1db93d, f5ae5ba, dac3bc6): JPEG and PNG first, PDF under More, sized with the ratio locked
   or by percent, previewed on the checkerboard with the file size. Grow `ExportJPEG` into it; PDF needs a small writer (fflate
   for its streams).
-- [ ] **Navigator** (3e09948): a minimap in the canvas's top-right corner from 300% zoom, the visible part boxed, click or drag to
+- [x] **Navigator** (3e09948): a minimap in the canvas's top-right corner from 300% zoom, the visible part boxed, click or drag to
   move there, redrawn 250 ms after edits settle. Needs a small render of the document that leaves the view alone.
 - [ ] **Filter › Progressive Blur** (3ae11cd): a blur from From to To along a line dragged on the canvas, or out from a point; Invert
   swaps them. Needs dragging on the canvas while a filter is open (`canvasPicker` only takes clicks).

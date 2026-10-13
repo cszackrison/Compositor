@@ -18,6 +18,7 @@ import { DialogHost } from './Dialogs'
 import { ColorPickerHost } from './ColorPicker'
 import { FilterHost, lastFilterName, repeatLastFilter } from './Filters'
 import { CommandPalette } from './CommandPalette'
+import { Navigator } from './Navigator'
 import { prefs, setPrefs, subscribePrefs } from '../editor/prefs'
 import { definitionFor, shortcutText, subscribeShortcuts } from '../editor/shortcuts'
 import { brushKey } from '../tools/paint'
@@ -268,6 +269,7 @@ export function App() {
       'divider',
       item('Fit Canvas', 'Fit Canvas'), item('Actual Pixels', 'Actual Pixels'), item('Zoom In', 'Zoom In'), item('Zoom Out', 'Zoom Out'),
       { label: 'Pixel Grid (800% and above)', checked: prefs.pixelGrid, action: () => setPrefs({ pixelGrid: !prefs.pixelGrid }) },
+      { label: 'Navigator (300% and above)', checked: prefs.navigator, action: () => setPrefs({ navigator: !prefs.navigator }) },
       item('Show Transform Controls', 'Show Transform Controls', { checked: prefs.transformControls }),
       'divider',
       item('Grid', 'Show Grid', { checked: prefs.grid }),
@@ -339,6 +341,7 @@ export function App() {
       <TabBar />
       <div style={{ flex: 1, position: 'relative' }}>
         <Stage />
+        <Navigator />
         {!doc && <Welcome />}
         {dragging && <div className="drop" />}
       </div>
