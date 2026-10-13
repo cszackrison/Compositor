@@ -3,7 +3,7 @@ import { adjustFragment, adjustMixFragment, blurFragment, clipFragment, copyFrag
 import { renderEffects, hasVisibleEffects } from './effects'
 import { channelTables, hueSaturationCube, kernelCube, cubeSize } from '../model/adjustments'
 import { type Adjustment, type Doc, type Layer, type Transform, blendModes } from '../model/types'
-import { type Deep, deepOf, isDeep, sixteenToHalf } from '../model/deep'
+import { type Deep, deepOf, sixteenToHalf } from '../model/deep'
 import { Raster } from '../model/raster'
 import { layerToMask, maskOnGrid } from '../model/masks'
 
@@ -659,7 +659,8 @@ export class Compositor {
     const gl = this.gl
     this.renderScale = renderScale
     const width = Math.max(1, Math.round(doc.width * renderScale)), height = Math.max(1, Math.round(doc.height * renderScale))
-    const hdr = this.floatTargets && doc.layers.some(isDeep)
+    // Any layer that has kept deep pixels, still current or not, so a filter's 8-bit preview doesn't switch the targets back and forth.
+    const hdr = this.floatTargets && doc.layers.some(l => !!l.deep)
     if (hdr !== this.hdr) {
       this.hdr = hdr
       this.pool.trim(-1, -1)

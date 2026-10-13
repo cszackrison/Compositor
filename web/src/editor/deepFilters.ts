@@ -1,4 +1,4 @@
-import { Raster } from '../model/raster'
+import { Raster, quantize16 } from '../model/raster'
 import { call, heap, withBuffers } from '../kernels'
 import { cubeSize, hueSaturationCube, kernelCube } from '../model/adjustments'
 import { fromHalf } from '../model/deep'
@@ -48,7 +48,9 @@ function onGrid<T extends { width: number; height: number; data: ArrayLike<numbe
 }
 
 // The 16-bit or HDR result of `run` (an 8-bit filter, given 8-bit pixels) on `deep`, on `grid` when the filter spreads past the layer.
-export function runDeep(name: string, run: (input: FilterInput) => FilterOutput, input: Omit<FilterInput, 'pixels'>, deep: DeepPixels, grid: DeepGrid | null, adjustment?: Adjustment): DeepPixels {
+// `single`: one 8-bit run rather than several read between, for previews (the Mac's previewHDR), too fine to see and too slow for every
+// slider move.
+export function runDeep(name: string, run: (input: FilterInput) => FilterOutput, input: Omit<FilterInput, 'pixels'>, deep: DeepPixels, grid: DeepGrid | null, adjustment?: Adjustment, single = false): DeepPixels {
   const source = placed(deep, grid), { width, height, hdr } = source
   if (adjustment && hdr && adjustment.kind === 'Exposure') return { ...source, pixels: exposure(source, adjustment) }
   const cube = adjustment ? adjustment.kind === 'Hue/Saturation' ? hueSaturationCube(adjustment) : kernelCube(adjustment) : null
@@ -65,7 +67,9 @@ export function runDeep(name: string, run: (input: FilterInput) => FilterOutput,
     }
     return { ...source, pixels: out }
   }
-  return { ...source, pixels: normalizing(source, sixteen => split(sixteen, width, height, mixesChannels.has(name), pixels => onGrid(run({ ...input, pixels }), pixels, (w, h) => new Raster(w, h, 4)))) }
+  const operation = (pixels: Raster) => onGrid(run({ ...input, pixels }), pixels, (w, h) => new Raster(w, h, 4))
+  if (single) return { ...source, pixels: normalizing(source, sixteen => { const once = operation(quantize16(sixteen, width, height)), out = new Uint16Array(once.data.length); for (let i = 0; i < out.length; i++) out[i] = once.data[i] * 257; return out }) }
+  return { ...source, pixels: normalizing(source, sixteen => split(sixteen, width, height, mixesChannels.has(name), operation)) }
 }
 
 // `body` on 16-bit pixels: an HDR layer's with each highlight divided down to within white, its result multiplied back.

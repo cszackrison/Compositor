@@ -136,8 +136,7 @@ new C needs. Hashes are upstream's commits; effort is a guess.
   Gradient tool. Convert to 8/16-Bit and the 16-Bit / HDR tag are in the Layers panel; Export As writes 16-bit PNG.
   - [ ] Liquify, Smudge and the Blur tool still work at 8 bits on a 16-bit layer (their strokes are taken as 8-bit paint); the Mac
     runs a 16-bit working copy on the GPU.
-  - [ ] Filter previews on an HDR layer are made from its 8-bit copy, highlights clipped; OK is made from the HDR pixels. The Mac
-    previews from them too.
+  - [x] Filter previews on an HDR layer are made again from its HDR pixels, once through, as the Mac previews them.
 - [x] **Import 16-bit images, EXR and Radiance HDR** (d9cdb81, 7f239dc). They come in dithered to 8 bits as the Mac shows them, and a
   16-bit PNG or EXR is kept as the layer's file until it's edited, so saving keeps its depth.
   - [x] Radiance HDR is kept as an OpenEXR (`io/exr.ts` writes half-float, ZIP-compressed EXR; ImageMagick and OpenEXR read it).

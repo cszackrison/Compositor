@@ -10,7 +10,7 @@ import type { Adjustment } from '../model/types'
 // Filter previews off the main thread: the same filter functions and wasm kernels, so a slow one never freezes the page.
 type Request = { id: number; name: keyof typeof kinds; args: unknown[]; scale?: number; scaled?: number[]; input: Omit<FilterInput, 'pixels'> & { pixels: { width: number; height: number; channels: 1 | 4; data: Uint8Array } } }
 // A 16-bit or HDR layer's OK: the filter at full depth (deepFilters.ts).
-type DeepRequest = { id: number; name: keyof typeof kinds; args: unknown[]; input: Omit<FilterInput, 'pixels'>; deep: DeepPixels; grid: DeepGrid | null }
+type DeepRequest = { id: number; name: keyof typeof kinds; args: unknown[]; input: Omit<FilterInput, 'pixels'>; deep: DeepPixels; grid: DeepGrid | null; single?: boolean }
 
 let ready: Promise<void> | undefined
 
@@ -18,12 +18,12 @@ self.onmessage = async (event: MessageEvent<Request | DeepRequest | WebAssembly.
   if (event.data instanceof WebAssembly.Module) { ready = loadKernels(event.data); return }
   if ('assetBase' in event.data) { setAssetBase(event.data.assetBase); return }
   if ('deep' in event.data) {
-    const { id, name, args, input, deep, grid } = event.data
+    const { id, name, args, input, deep, grid, single } = event.data
     try {
       await ready
       if (name === 'cameraRaw') await loadCameraRawTables()
       const run = kinds[name] as unknown as (input: FilterInput, ...args: unknown[]) => FilterOutput
-      const result = runDeep(name, pixels => run(pixels, ...args), input, deep, grid, name === 'adjustPixels' ? args[0] as Adjustment : undefined)
+      const result = runDeep(name, pixels => run(pixels, ...args), input, deep, grid, name === 'adjustPixels' ? args[0] as Adjustment : undefined, single)
       self.postMessage({ id, deep: result }, { transfer: [result.pixels.buffer as ArrayBuffer] })
     } catch (error) { self.postMessage({ id, error: (error as Error).message }) }
     return

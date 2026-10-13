@@ -64,13 +64,13 @@ const pixelSettings: Partial<Record<keyof typeof kinds, number[]>> = { gaussianB
 const previewScale = (j: FilterJob, input: FilterInput) => pixelSettings[j.job] ? Math.min(1, previewLimit / Math.max(input.pixels.width, input.pixels.height)) : 1
 
 // A filter job on a 16-bit or HDR layer's pixels at their full depth (deepFilters.ts), on `grid` when it spreads past the layer.
-function runDeepJob(j: FilterJob, input: Omit<FilterInput, 'pixels'>, deep: DeepPixels, grid: DeepGrid | null): Promise<DeepPixels> {
+function runDeepJob(j: FilterJob, input: Omit<FilterInput, 'pixels'>, deep: DeepPixels, grid: DeepGrid | null, single = false): Promise<DeepPixels> {
   const w = filterWorker(), adjustment = j.job === 'adjustPixels' ? j.args[0] as Adjustment : undefined
-  if (!w) { try { return Promise.resolve(runDeep(j.job, pixels => onMainThread(j, pixels), input, deep, grid, adjustment)) } catch (error) { return Promise.reject(error) } }
+  if (!w) { try { return Promise.resolve(runDeep(j.job, pixels => onMainThread(j, pixels), input, deep, grid, adjustment, single)) } catch (error) { return Promise.reject(error) } }
   const id = nextId++
   return new Promise((resolve, reject) => {
     waiting.set(id, { resolve: out => resolve(out as DeepPixels), reject })
-    w.postMessage({ id, name: j.job, args: j.args, input, deep, grid }, [deep.pixels.buffer])
+    w.postMessage({ id, name: j.job, args: j.args, input, deep, grid, single }, [deep.pixels.buffer])
   })
 }
 
@@ -180,6 +180,7 @@ export class FilterSession {
     const input = this.input(), scale = this.finalRun ? 1 : previewScale(next, input)
     this.running = runJob(next, input, scale)
       .then(out => { if (!this.closed) { this.failed = false; this.applyResult(out); this.shownJob = next; this.shownReduced = scale < 1; this.onError?.(null) } }, (error: Error) => { if (!this.closed) { this.failed = true; this.onError?.(error.message) } })
+      .then(() => this.previewHDR(next, scale))
       .finally(() => { this.running = null; this.pump() })
   }
 
@@ -260,11 +261,28 @@ export class FilterSession {
     return true
   }
 
+  // An HDR layer's preview made again from its HDR pixels (once through, highlights divided down and multiplied back), so light
+  // brighter than white shows as OK will keep it; skipped while a newer setting waits, or for a reduced preview.
+  private async previewHDR(job: FilterJob, scale: number) {
+    const deep = this.deep
+    if (!deep?.hdr || this.closed || this.failed || this.finalRun || this.queuedJob || scale < 1 || rasterizes.has(job.job) || !this.last || this.last.raster === this.original) return
+    const result = await runDeepJob(job, { isMask: false, toDocument: this.toDocument, layerId: this.layerId, transform: this.transform }, { pixels: flattened(deep).slice(), width: deep.width, height: deep.height, hdr: true }, this.grid(), true).catch(() => null)
+    if (!result || this.closed || this.queuedJob || this.finalRun) return
+    const pixels = store.state.selection ? this.blendDeep(result.pixels, deep, this.grid(), result.width, result.height) : result.pixels
+    const made = makeDeep(pixels, result.width, result.height, true)
+    this.show(made.image, this.last.transform)
+    store.updateLayerLive(this.layerId, { deep: made.deep })
+  }
+
+  private grid(): DeepGrid | null {
+    const deep = this.deep!, shape = this.shape
+    return shape && (shape.origin[0] || shape.origin[1] || shape.width !== deep.width || shape.height !== deep.height) ? { width: shape.width, height: shape.height, x: -shape.origin[0], y: -shape.origin[1] } : null
+  }
+
   // The filter again on the layer's pixels at their full depth, on the grid the 8-bit result came on, its selection blended in at full
   // depth too; the layer keeps its depth, with a fresh 8-bit copy of the result.
   private async commitDeep(job: FilterJob) {
-    const deep = this.deep!, shape = this.shape, transform = this.last!.transform
-    const grid = shape && (shape.origin[0] || shape.origin[1] || shape.width !== deep.width || shape.height !== deep.height) ? { width: shape.width, height: shape.height, x: -shape.origin[0], y: -shape.origin[1] } : null
+    const deep = this.deep!, transform = this.last!.transform, grid = this.grid()
     const input = { isMask: false, toDocument: this.toDocument, layerId: this.layerId, transform: this.transform }
     const result = await runDeepJob(job, input, { pixels: flattened(deep).slice(), width: deep.width, height: deep.height, hdr: deep.hdr }, grid)
     const pixels = store.state.selection ? this.blendDeep(result.pixels, deep, grid, result.width, result.height) : result.pixels
