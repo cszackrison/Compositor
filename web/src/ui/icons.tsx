@@ -29,6 +29,7 @@ const paths: Record<string, string> = {
   gradient: 'M2 3h12v10H2zM5 3v10M8 3v10M11 3v10',
   shape: 'M2 9h6v5H2zM11 2l3.5 6h-7z',
   crop: 'M4 1v11h11M1 4h11v11',
+  type: 'M3 3h10M8 3v10M6 13h4',
 }
 
 export function Icon({ name, size = 16 }: { name: string; size?: number }) {

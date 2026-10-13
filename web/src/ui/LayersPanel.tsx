@@ -1,4 +1,5 @@
 import { isDeep, isHDR } from '../model/deep'
+import { editActiveText, liveText } from '../tools/type'
 import { Fragment, useCallback, useEffect, useRef, useState, useSyncExternalStore, type DragEvent } from 'react'
 import { useEditor } from './hooks'
 import { store } from '../editor/store'
@@ -187,7 +188,7 @@ export function LayersPanel() {
               onDragStart={e => { const ids = selected ? state.selectedIds : [layer.id]; e.dataTransfer.setData('application/x-compositor-layers', JSON.stringify(ids)); setDraggedLayers(ids); e.dataTransfer.effectAllowed = 'copyMove' }} onDragEnd={() => setDraggedLayers(null)}
               onDragOver={e => onDragOver(e, layer)} onDrop={onDrop} onContextMenu={e => openMenu(e, layer)}
               onPointerDown={e => { startPress(e, layer); if (e.button === 0 && e.altKey && !commandKey(e) && clipZone(e, layer) && !(e.target as HTMLElement).classList.contains('mask')) { store.set({ effectSelection: null }); store.toggleClip(layer.id); e.preventDefault(); return } if (e.button === 0 && !(e.target as HTMLElement).closest('button,input')) { store.setActive(layer.id, e.shiftKey ? 'range' : e.metaKey || e.ctrlKey ? 'toggle' : 'none'); if (!(e.target as HTMLElement).classList.contains('mask')) store.set({ editingMask: false }) } }}
-              onDoubleClick={e => { if ((e.target as HTMLElement).classList.contains('name')) setRenaming(layer.id); else if (layer.adjustment || layer.effects) store.set({ inspector: layer.id }) }}
+              onDoubleClick={e => { if ((e.target as HTMLElement).classList.contains('name')) setRenaming(layer.id); else if (liveText(layer)) { store.setActive(layer.id); editActiveText() } else if (layer.adjustment || layer.effects) store.set({ inspector: layer.id }) }}
               onPointerMove={e => { const zone = clipZone(e, layer); (e.currentTarget as HTMLElement).style.cursor = e.altKey && !commandKey(e) ? (zone ? (store.canToggleClipFor(layer.id) ? 'alias' : 'default') : 'copy') : '' }}>
               <button className={`icon eye ${layer.visible ? '' : 'off'}`} title={layer.visible ? 'Hide' : 'Show'} onClick={() => store.updateLayer(layer.id, { visible: !layer.visible }, layer.visible ? 'Hide Layer' : 'Show Layer')}><Icon name={layer.visible ? 'eye' : 'eyeOff'} /></button>
               {layer.isGroup ? <span className="chevron" onClick={() => { const next = new Set(collapsed); next.has(layer.id) ? next.delete(layer.id) : next.add(layer.id); setCollapsed(next) }}><Icon name={collapsed.has(layer.id) ? 'chevronRight' : 'chevronDown'} size={12} /></span> : <span className="clip" title={layer.clipTo ? 'Clipped to the layer below' : undefined}>{layer.clipTo ? '↳' : ''}</span>}

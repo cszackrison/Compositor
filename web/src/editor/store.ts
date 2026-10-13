@@ -11,7 +11,7 @@ import { drawOrder, effectivelyVisible, following, pixelToDocument, transformCor
 import { apply, invert } from '../render/gl'
 import { maskOnGrid } from '../model/masks'
 
-export type Tool = 'move' | 'marquee' | 'lasso' | 'wand' | 'brush' | 'eraser' | 'heal' | 'clone' | 'smear' | 'gradient' | 'shape' | 'crop' | 'eyedropper' | 'hand' | 'zoom'
+export type Tool = 'move' | 'marquee' | 'lasso' | 'wand' | 'brush' | 'eraser' | 'heal' | 'clone' | 'smear' | 'gradient' | 'shape' | 'type' | 'crop' | 'eyedropper' | 'hand' | 'zoom'
 export type HealMode = 'Content-Aware' | 'Create Texture' | 'Proximity Match'
 export type SmearMode = 'Liquify' | 'Blur' | 'Smudge'
 export type ShapeKind = 'Rectangle' | 'Ellipse' | 'Line'
@@ -75,6 +75,8 @@ export class Store {
   untitled: string | null = null
   history = new History<Snapshot>()
   static renderer: Renderer | null = null
+  // The Type tool's recolor for a text layer (tools/type.ts), set there so the store doesn't load text layout.
+  static recolorText: ((store: Store, layer: Layer, color: [number, number, number]) => boolean) | null = null
   // The composite at full depth, for merging 16-bit and HDR layers (canvasState.renderDeep).
   static deepRenderer: ((doc: Doc) => Float32Array | null) | null = null
   // Where this project's view was, restored when its tab comes back.
@@ -225,6 +227,11 @@ export class Store {
     }
     all.splice(index, 0, ...placed)
     return all
+  }
+
+  // A layer put in above the active one without an undo step of its own, for an edit already under way (new text being typed).
+  insertLive(layer: Layer) {
+    this.set({ doc: this.replaceLayers(this.insert([layer])), activeId: layer.id, selectedIds: [layer.id], editingMask: false })
   }
 
   addLayer(layer: Layer, name = 'New Layer') {
@@ -553,6 +560,8 @@ export class Store {
     const target = this.editTarget()
     if (!target) return
     const { raster, toDocument, layer, isMask } = target
+    // A text layer filled with a color, no selection, is recolored and stays text (Fill Text).
+    if (color && !isMask && !this.state.selection && Store.recolorText?.(this, layer, color.map(v => v / 255) as [number, number, number])) return
     const before = raster.data.slice()
     const selection = this.state.selection
     const gray = Math.round(color ? 0.299 * color[0] + 0.587 * color[1] + 0.114 * color[2] : 0)

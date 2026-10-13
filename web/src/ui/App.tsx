@@ -97,7 +97,7 @@ const commands: Record<string, { run: () => void; enabled?: () => boolean }> = {
 
 const toolKeys: Record<string, Tool> = {
   'Move / Transform tool': 'move', 'Hand tool': 'hand', 'Zoom tool': 'zoom', 'Brush tool': 'brush', Eraser: 'eraser', 'Spot Healing': 'heal', 'Clone Stamp': 'clone',
-  'Gradient tool': 'gradient', 'Shape tool': 'shape', 'Eyedropper tool': 'eyedropper', 'Marquee / cycle shape': 'marquee', Magic: 'wand', 'Lasso / cycle mode': 'lasso',
+  'Gradient tool': 'gradient', 'Shape tool': 'shape', 'Type tool': 'type', 'Eyedropper tool': 'eyedropper', 'Marquee / cycle shape': 'marquee', Magic: 'wand', 'Lasso / cycle mode': 'lasso',
   'Blur / Smudge / Liquify': 'smear', 'Crop tool': 'crop',
 }
 

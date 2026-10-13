@@ -5,11 +5,18 @@ existing features were.
 
 ## Big pieces
 
-- [ ] **Type tool.** Text layers render from their saved PNG but can't be edited. Needs inline editing in paragraph boxes, fonts,
-  size, color, alignment, tracking and leading, and per-letter `colorRuns`/`fontRuns`. Browser text layout won't match Core Text
-  exactly, so re-rendered text will differ slightly from the Mac.
-  - [ ] Fill with Foreground/Background on a live text layer recolors the text ("Fill Text") instead of filling pixels.
-  - [ ] The foreground color picker previews into a text draft's selected letters.
+- [x] **Type tool** (T). A click starts point text on its baseline, a drag a paragraph box that wraps; a click on a text layer edits it
+  (double-click in the Layers panel or Return too). Text is set with the browser's canvas (`render/text.ts`), the same layout drawing
+  the layer and placing the caret, selection and box handles; typing, input methods and the clipboard go through a hidden text
+  field. The Type bar sets the face (with a live preview), size, color, alignment, tracking and leading, of the selected letters for
+  face and color (`colorRuns`, `fontRuns`); Option with the arrows sets tracking and leading; Done or ⌘Return keeps, Escape cancels.
+  Faces are found by their PostScript names through `@font-face local()`, so a project's fonts draw where they're installed.
+  - [x] Fill with Foreground/Background on a live text layer recolors the text ("Fill Text").
+  - [x] The foreground color picker paints a text draft's selected letters.
+  - [ ] Browser text layout isn't Core Text's: a project's text re-set on the web can sit a pixel or two differently, and wrap
+    differently at the edge of a box.
+  - [ ] The font menu lists every installed face only where the browser can (Chrome and Edge, on HTTPS or localhost, once allowed);
+    elsewhere it offers the common faces it can draw.
 - [x] **Camera Raw filter.** Filter › Camera Raw Filter docks its column at the window's right: the histogram, then Light, Color,
   Color Grading, Effects, Curve, Color Mixer, Detail, Optics, Geometry and Calibration, each with an eye and a reset. The measured
   tables (`Compositor/Resources/CameraRawTables.bin`) are copied beside the page at build time and unpacked on first use; the

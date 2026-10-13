@@ -275,3 +275,4 @@ input[type="range"].track::-moz-range-thumb { width: 12px; height: 12px; border-
 .canvas-pill { pointer-events: auto; display: flex; align-items: center; gap: 8px; padding: 5px 6px 5px 12px; background: rgba(40,40,44,0.92); border: 1px solid var(--line); border-radius: 999px; box-shadow: 0 6px 18px rgba(0,0,0,0.35); font-size: 12px; }
 .canvas-pill button { background: none; border: none; border-radius: 999px; padding: 2px 6px; color: var(--muted); }
 .canvas-pill button:hover { background: var(--panel-raised); color: var(--text); }
+.swatch-button { width: 28px; height: 22px; padding: 0; border: 1px solid var(--line); border-radius: 5px; }

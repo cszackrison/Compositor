@@ -11,6 +11,8 @@ import { applyDistort, cancelDistort, isDistorting, maskAlone } from '../tools/m
 import { armModifier, subscribeModifiers, touchModifiers } from './canvasState'
 import { useCoarse } from './layout'
 import { prefs, setPrefs, subscribePrefs } from '../editor/prefs'
+import { TypeBar } from './TypeBar'
+import { changeTextStyle, currentTextStyle, isEditingText, setTypeColor } from '../tools/type'
 
 export const tools: { tool: Tool; label: string; shortcut: string; icon: string }[] = [
   { tool: 'move', label: 'Move / Transform', shortcut: 'Move / Transform tool', icon: 'move' },
@@ -25,6 +27,7 @@ export const tools: { tool: Tool; label: string; shortcut: string; icon: string 
   { tool: 'smear', label: 'Smear', shortcut: 'Blur / Smudge / Liquify', icon: 'smear' },
   { tool: 'gradient', label: 'Gradient', shortcut: 'Gradient tool', icon: 'gradient' },
   { tool: 'shape', label: 'Shape', shortcut: 'Shape tool', icon: 'shape' },
+  { tool: 'type', label: 'Type', shortcut: 'Type tool', icon: 'type' },
   { tool: 'eyedropper', label: 'Eyedropper', shortcut: 'Eyedropper tool', icon: 'eyedropper' },
   { tool: 'hand', label: 'Hand', shortcut: 'Hand tool', icon: 'hand' },
   { tool: 'zoom', label: 'Zoom', shortcut: 'Zoom tool', icon: 'zoom' },
@@ -40,7 +43,10 @@ function Palette() {
   const pick = (which: 'foreground' | 'background') => {
     if (state.editingMask) { setMaskMenu(maskMenu === which ? null : which); return }
     const original = store.state[which]
-    openColorPicker({ title: `Color Picker (${which === 'foreground' ? 'Foreground' : 'Background'} Color)`, initial: original, onChange: c => { store.set({ [which]: c }); refreshGradient() }, onCommit: c => { store.set({ [which]: c }); refreshGradient() }, onCancel: () => { store.set({ [which]: original }); refreshGradient() } })
+    // With text open, the foreground color paints its selected letters too.
+    const text = which === 'foreground' && isEditingText() ? currentTextStyle() : null
+    const toText = (c: [number, number, number]) => { if (text) setTypeColor(c.map(v => v / 255) as [number, number, number]) }
+    openColorPicker({ title: `Color Picker (${which === 'foreground' ? 'Foreground' : 'Background'} Color)`, initial: original, onChange: c => { store.set({ [which]: c }); toText(c); refreshGradient() }, onCommit: c => { store.set({ [which]: c }); toText(c); refreshGradient() }, onCancel: () => { store.set({ [which]: original }); if (text) changeTextStyle(() => text); refreshGradient() } })
   }
   const fg = store.paletteColor('foreground'), bg = store.paletteColor('background')
   return (
@@ -134,6 +140,7 @@ export function ToolHeader() {
         {state.shape.kind === 'Line' && <Range label="Line Width" value={state.shape.lineWidth} min={1} max={100} onChange={lineWidth => store.set({ shape: { ...state.shape, lineWidth } })} suffix="px" />}
         <span className="muted">Fills with the foreground color. Shift for squares and 45° lines, {option} from the center</span>
       </>}
+      {state.tool === 'type' && <TypeBar />}
       {state.tool === 'crop' && <>
         <select value={state.crop.ratio} onChange={e => setCropRatio(e.target.value)}>{cropRatios.map(r => <option key={r}>{r}</option>)}</select>
         {state.crop.rect && <span className="muted">{state.crop.rect.w} × {state.crop.rect.h} px</span>}

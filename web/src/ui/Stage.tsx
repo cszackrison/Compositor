@@ -19,6 +19,7 @@ import { lasso, magic, marquee } from '../tools/select'
 import { move } from '../tools/move'
 import { gradient } from '../tools/gradient'
 import { shapeTool } from '../tools/shape'
+import { typeTool } from '../tools/type'
 import { crop, startCrop } from '../tools/crop'
 import { cancelGuideDrag, endGuideDrag, guideDrag, moveGuideDrag, rulerSize, startGuideDrag } from '../tools/guides'
 import { isMac } from '../editor/shortcuts'
@@ -28,7 +29,7 @@ export { actualSize, fit, renderFull, requestRender, view, viewChanged, zoomBy }
 const idle: ToolHandler = {}
 const zoomTool: ToolHandler = { down: p => { view.zoomAt(p.alt ? 0.5 : 2, ...p.screen); viewChanged(); requestRender(false) }, cursor: () => 'zoom-in' }
 export const handlers: Record<Tool, ToolHandler> = {
-  move, marquee, lasso, wand: magic, brush: paint, eraser: paint, heal: paint, clone: paint, smear, gradient, shape: shapeTool, crop, eyedropper, hand: idle, zoom: zoomTool,
+  move, marquee, lasso, wand: magic, brush: paint, eraser: paint, heal: paint, clone: paint, smear, gradient, shape: shapeTool, type: typeTool, crop, eyedropper, hand: idle, zoom: zoomTool,
 }
 export const activeHandler = () => handlers[store.state.tool]
 const brushTools = new Set<Tool>(['brush', 'eraser', 'heal', 'clone', 'smear'])
