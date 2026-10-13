@@ -5,7 +5,7 @@ import { deleteFromBrowser, readFromBrowser, saveToBrowser, type BrowserProject 
 import { canWriteDirectories, download, filesInHandle, imagesIn, readDirectoryHandle, readFileList, rootedAtManifest, unzipPackage, writeDirectory, zipPackage, type PackageFiles, type PackageTarget } from '../io/files'
 import { readProject, writeProject } from '../io/project'
 import { pdfOfImage } from '../io/pdf'
-import { Raster, decodeImageFile, encodePNG } from '../model/raster'
+import { Raster, decodeLayerFile, encodePNG } from '../model/raster'
 import { type Doc, fullTransform, newLayer, uuid, maxSide } from '../model/types'
 import { renderFull } from '../ui/Stage'
 
@@ -91,13 +91,13 @@ export const openZip = guard(async () => {
 // Opens an image as a new document when nothing is open, or places it as a layer.
 export const placeImages = guard(async (files: File[]) => {
   for (const file of files) {
-    const image = await decodeImageFile(file)
+    const { image, wide } = await decodeLayerFile(file)
     const name = file.name.replace(/\.[^.]+$/, '')
     if (!store.hasDocument) {
-      const layer = newLayer({ name, transform: fullTransform(image.width, image.height), image })
+      const layer = newLayer({ name, transform: fullTransform(image.width, image.height), image, wide })
       store.open({ id: uuid(), width: image.width, height: image.height, resolution: 72, layers: [layer], guides: [], extra: {} }, layer.id, null)
       store.set({ target: { kind: 'download', name } })
-    } else store.addImageLayer(image, name)
+    } else store.addImageLayer(image, name, wide)
   }
 })
 
@@ -122,7 +122,7 @@ export const importFolder = guard(async () => {
 })
 
 export const importImage = guard(async () => {
-  const input = Object.assign(document.createElement('input'), { type: 'file', accept: 'image/*,.hif,.heif,.heic', multiple: true })
+  const input = Object.assign(document.createElement('input'), { type: 'file', accept: 'image/*,.hif,.heif,.heic,.exr,.hdr', multiple: true })
   input.onchange = () => input.files?.length && placeImages([...input.files])
   input.click()
 })

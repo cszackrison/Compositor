@@ -231,11 +231,11 @@ export class Store {
     this.addLayer(newLayer({ name: `Layer ${count + 1}`, transform: fullTransform(this.doc.width, this.doc.height), image: new Raster(this.doc.width, this.doc.height, 4) }), 'New Layer')
   }
 
-  addImageLayer(image: Raster, name: string) {
+  addImageLayer(image: Raster, name: string, wide?: Layer['wide']) {
     const { width, height } = this.doc
     const fit = Math.min(1, width / image.width, height / image.height)
     const w = image.width * fit, h = image.height * fit
-    this.addLayer(newLayer({ name, transform: fullTransform(w, h, Math.round((width - w) / 2), Math.round((height - h) / 2)), image }), 'Place Image')
+    this.addLayer(newLayer({ name, transform: fullTransform(w, h, Math.round((width - w) / 2), Math.round((height - h) / 2)), image, wide }), 'Place Image')
   }
 
   addAdjustment(kind: AdjustmentKind) {

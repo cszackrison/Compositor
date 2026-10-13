@@ -125,8 +125,9 @@ new C needs. Hashes are upstream's commits; effort is a guess.
 - [ ] **16-bit and HDR layers at full depth** (d9cdb81, 6aea90a, 2b9603f, 3d2ada4, 2fe3524, a10fcb7, 905efc5). The web edits the
   8-bit copy, so an edited layer saves as 8-bit PNG. Full depth means 16-bit and half-float pixels through edits (the `deep_*`
   kernels are already in `kernels.wasm`), 16-bit textures dithered to the screen, Convert to 8/16 Bits and the depth tag.
-- [ ] **Import 16-bit images, EXR and Radiance HDR** as 16-bit and HDR layers (d9cdb81, 7f239dc). Import dithers them to 8 bits
-  (16-bit PNG) or can't read them (EXR, HDR) for now.
+- [x] **Import 16-bit images, EXR and Radiance HDR** (d9cdb81, 7f239dc). They come in dithered to 8 bits as the Mac shows them, and a
+  16-bit PNG or EXR is kept as the layer's file until it's edited, so saving keeps its depth.
+  - [ ] Radiance HDR saves as an 8-bit PNG: keeping it needs an EXR writer (three's EXRExporter wrote unreadable files in tests).
 - [ ] **EXR export** for documents with HDR layers (b9186f7).
 - [ ] **CMYK**: proof and gamut warning on the canvas, JPEG, TIFF and PDF in a profile's inks (59025aa, dac3bc6). Needs ICC
   color management in the browser.

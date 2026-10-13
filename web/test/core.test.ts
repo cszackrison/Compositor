@@ -2,7 +2,7 @@ import { describe, expect, it, beforeAll } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { encode } from 'fast-png'
 import { loadKernels, withBuffers, call, floats } from '../src/kernels'
-import { Raster, decodePNG, encodePNG, pngDepth } from '../src/model/raster'
+import { Raster, decodeHDR, decodeLayerFile, decodePNG, encodePNG, pngDepth } from '../src/model/raster'
 import { readProject, writeProject } from '../src/io/project'
 import { channelTables, curveValue, hueSaturationCube, kernelCube } from '../src/model/adjustments'
 import { newAdjustment, newLayer, fullTransform, type Doc } from '../src/model/types'
@@ -111,6 +111,18 @@ describe('project format', () => {
     const { doc } = await readProject(withLayerImage(bytes, 'exr').files)
     const expected = [128, 128, 128, 255, 255, 255, 255, 255]
     ;[...doc.layers[1].image!.data].forEach((v, i) => expect(Math.abs(v - expected[i])).toBeLessThanOrEqual(1))
+  })
+
+  it('imports Radiance HDR top row first, and keeps an imported EXR or 16-bit PNG as the layer\'s file', async () => {
+    const hdr = await decodeHDR(new Uint8Array(readFileSync(new URL('./fixtures/quad.hdr', import.meta.url))))
+    const expected = [255, 0, 0, 255, 255, 0, 0, 255, 0, 255, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 0, 0, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255]
+    expect([hdr.width, hdr.height]).toEqual([4, 2])
+    ;[...hdr.data].forEach((v, i) => expect(Math.abs(v - expected[i])).toBeLessThanOrEqual(1))
+    const exr = new File([readFileSync(new URL('./fixtures/quad-piz.exr', import.meta.url))], 'Render.exr')
+    const placed = await decodeLayerFile(exr)
+    expect([placed.wide?.file, placed.wide?.version]).toEqual(['exr', placed.image.version])
+    const png = await decodeLayerFile(new File([encodePNG(Raster.filled(2, 2, 4, [1, 2, 3, 255])) as Uint8Array<ArrayBuffer>], 'Flat.png', { type: 'image/png' }))
+    expect(png.wide).toBeUndefined()
   })
 
   it('keeps PNG pixels exact', () => {
