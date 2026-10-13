@@ -3,15 +3,16 @@ import * as kinds from './filterKinds'
 import { Raster } from '../model/raster'
 import type { FilterInput, FilterOutput } from './filters'
 import { multiply, scale as scaleBy } from '../render/gl'
-import { loadCameraRawTables } from '../model/cameraRaw'
+import { loadCameraRawTables, setAssetBase } from '../model/cameraRaw'
 
 // Filter previews off the main thread: the same filter functions and wasm kernels, so a slow one never freezes the page.
 type Request = { id: number; name: keyof typeof kinds; args: unknown[]; scale?: number; scaled?: number[]; input: Omit<FilterInput, 'pixels'> & { pixels: { width: number; height: number; channels: 1 | 4; data: Uint8Array } } }
 
 let ready: Promise<void> | undefined
 
-self.onmessage = async (event: MessageEvent<Request | WebAssembly.Module>) => {
+self.onmessage = async (event: MessageEvent<Request | WebAssembly.Module | { assetBase: string }>) => {
   if (event.data instanceof WebAssembly.Module) { ready = loadKernels(event.data); return }
+  if ('assetBase' in event.data) { setAssetBase(event.data.assetBase); return }
   const { id, name, args, input, scale = 1, scaled = [] } = event.data
   try {
     await ready

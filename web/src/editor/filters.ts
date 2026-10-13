@@ -46,6 +46,7 @@ function filterWorker(): Worker | null {
       else { const raster = new Raster(result.width, result.height, result.channels, result.data); pending.resolve(result.origin ? { pixels: raster, origin: result.origin } : raster) }
     }
     worker.postMessage(kernelModule())
+    worker.postMessage({ assetBase: new URL(import.meta.env.BASE_URL, location.href).href })
     worker.onerror = () => { waiting.forEach(p => p.reject(new Error('The filter stopped unexpectedly.'))); waiting.clear() }
   } catch { worker = null }
   return worker

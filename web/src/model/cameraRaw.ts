@@ -143,13 +143,21 @@ const brightnesses = [53, 80, 104, 130, 160, 190, 224], adaptiveValues = [-100, 
 // Where the tables sit in this wasm instance's memory, once loaded: each page and worker loads its own.
 let tablesAt = 0
 let loading: Promise<void> | null = null
+// Where the page's own files are: a worker's relative URLs would resolve against its script, in assets/, so the page tells it.
+let assetBase: string | null = null
+export function setAssetBase(url: string) { assetBase = url }
 
 // The tables file as the Mac keeps it (Resources/CameraRawTables.bin, copied beside the page at build time): a header, then each
 // table and channel's change from no change in steps, as a running difference, packed with xz. Decoded into wasm memory once.
 export function loadCameraRawTables(file?: Uint8Array): Promise<void> {
   if (tablesAt) return Promise.resolve()
   return loading ??= (async () => {
-    const bytes = file ?? new Uint8Array(await (await fetch(`${import.meta.env.BASE_URL}CameraRawTables.bin`)).arrayBuffer())
+    const fetched = async () => {
+      const response = await fetch(new URL('CameraRawTables.bin', assetBase ?? new URL(import.meta.env.BASE_URL, location.href)))
+      if (!response.ok) throw new Error('Camera Raw’s color tables could not be loaded.')
+      return new Uint8Array(await response.arrayBuffer())
+    }
+    const bytes = file ?? await fetched()
     const field = (at: number) => bytes[at] | bytes[at + 1] << 8
     if (String.fromCharCode(...bytes.subarray(0, 4)) !== 'CRT3' || field(4) !== size || field(6) !== count) throw new Error('Camera Raw’s color tables could not be read.')
     const step = field(8)
