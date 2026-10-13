@@ -4,6 +4,7 @@ import UniformTypeIdentifiers
 struct ContentView: View {
     /// The Layers panel's width, remembered across launches.
     @AppStorage("layersPanelWidth") private var layersPanelWidth = 252.0
+    @AppStorage("navigator.visible") private var showsNavigator = false
     @Bindable var session: EditorSession
     var applicationDelegate: CompositorApplicationDelegate? = nil
     @Environment(\.openWindow) private var openWindow
@@ -78,12 +79,14 @@ struct ContentView: View {
 
     @ViewBuilder private var editorStack: some View {
         VStack(spacing: 0) {
-            toolHeaders
+            if !session.canvasOnly { toolHeaders }
             HStack(spacing: 0) {
-                toolRail
-                Divider()
+                if !session.canvasOnly {
+                    toolRail
+                    Divider()
+                }
                 VStack(spacing: 0) {
-                    if session.showsRulers, session.document != nil {
+                    if session.showsRulers, session.document != nil, !session.canvasOnly {
                         HStack(spacing: 0) {
                             CanvasRulerCorner()
                             CanvasRulerView(session: session, axis: .horizontal)
@@ -91,30 +94,44 @@ struct ContentView: View {
                         }
                     }
                     HStack(spacing: 0) {
-                        if session.showsRulers, session.document != nil {
+                        if session.showsRulers, session.document != nil, !session.canvasOnly {
                             CanvasRulerView(session: session, axis: .vertical)
                                 .frame(width: CanvasRuler.thickness)
                         }
                         ZStack {
                             EditorCanvas(session: session)
                             if session.document == nil { welcome }
-                            if let layer = session.maskAloneLayer {
+                            if session.maskAloneLayer != nil || ((session.proofsColors || session.showsGamutWarning) && session.document != nil) {
                                 // At the foot of the canvas, clear of the transform box's rotation handle.
-                                MaskAloneBadge(session: session, layer: layer).fixedSize()
-                                    .padding(.bottom, 14)
-                                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                                VStack(spacing: 8) {
+                                    if session.proofsColors { ProofBadge(session: session).fixedSize() }
+                                    if session.showsGamutWarning { ProofBadge(session: session, gamut: true).fixedSize() }
+                                    if let layer = session.maskAloneLayer { MaskAloneBadge(session: session, layer: layer).fixedSize() }
+                                }
+                                .padding(.bottom, 14)
+                                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                            }
+                            if showsNavigator, !session.canvasOnly, session.viewport.zoom >= NavigatorMinimap.zoomShown {
+                                NavigatorMinimap(session: session)
+                                    .padding(12)
+                                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
                             }
                         }
                         .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("editor")) } action: { canvasFrame = $0 }
                     }
                 }
-                PanelResizeEdge(width: $layersPanelWidth, range: LayersPanel.widths)
-                LayersPanel(session: session, width: layersPanelWidth)
+                if !session.canvasOnly {
+                    PanelResizeEdge(width: $layersPanelWidth, range: LayersPanel.widths)
+                    // Clamped: a width saved when the panel could go narrower is brought into range.
+                    LayersPanel(session: session, width: min(LayersPanel.widths.upperBound, max(LayersPanel.widths.lowerBound, layersPanelWidth)))
+                }
             }
-            Divider()
-            // Keeps its own height however short the window gets; the tools scroll instead.
-            statusBar.fixedSize(horizontal: false, vertical: true)
-                .modifier(WidthReader(width: $windowWidth))
+            if !session.canvasOnly {
+                Divider()
+                // Keeps its own height however short the window gets; the tools scroll instead.
+                statusBar.fixedSize(horizontal: false, vertical: true)
+                    .modifier(WidthReader(width: $windowWidth))
+            }
         }
     }
 
@@ -156,6 +173,10 @@ struct ContentView: View {
         }
         .onAppear { applicationDelegate?.showEditor = { openWindow(id: "editor") } }
         .preferredColorScheme(.dark)
+        // Canvas Only (F): the canvas runs up under where the title bar was, so no gray strip is left across the top.
+        // The toolbar itself is hidden and shown by the window (see `toggleCanvasOnly`), which lays its buttons out
+        // again properly; hidden here instead, it came back with the tabs over the window buttons.
+        .ignoresSafeArea(.container, edges: session.canvasOnly ? .top : [])
         .navigationTitle(session.projectURL?.deletingPathExtension().lastPathComponent ?? "Untitled")
         .toolbar {
             ToolbarItem(placement: .navigation) {
@@ -246,7 +267,8 @@ struct ContentView: View {
                     content: SelectionAmountSheet(session: session, operation: operation))
             } else { selectionAmountPanel.close() }
         }
-        .onChange(of: session.filterEdit == nil) { _, closed in
+        // Last Filter applies without the panel.
+        .onChange(of: session.filterEdit == nil || session.filterEdit?.repeating == true) { _, closed in
             if closed { filterPanel.close() }
             else {
                 filterPanel.onClose = { session.cancelFilter() }
@@ -258,8 +280,9 @@ struct ContentView: View {
         .onChange(of: session.document == nil) { _, empty in
             if !empty { session.canvasFocusRequest += 1 }
         }
+        // A folder brings in the images directly inside it.
         .fileImporter(isPresented: $session.showsImporter,
-                      allowedContentTypes: UTType.importableImages, allowsMultipleSelection: true) { result in
+                      allowedContentTypes: UTType.importableImages + [.folder], allowsMultipleSelection: true) { result in
             switch result {
             case .success(let urls): Task { await session.importImages(urls) }
             case .failure(let error):
@@ -320,7 +343,7 @@ struct ContentView: View {
     }
     private var welcome: some View {
         NewCanvasSheet(session: session,
-            onCreate: { session.createNewProject(width: $0, height: $1) },
+            onCreate: { session.createNewProject(width: $0, height: $1, resolution: $2, background: $3) },
             onOpen: { Task { await applicationDelegate?.projects.open() } })
     }
     private var statusBar: some View {

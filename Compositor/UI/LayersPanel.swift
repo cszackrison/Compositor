@@ -4,7 +4,9 @@ struct LayersPanel: View {
     @Bindable var session: EditorSession
     /// Dragging the panel's left edge sets it, within `widths`.
     var width: CGFloat = 252
-    static let widths: ClosedRange<Double> = 202...352
+    /// No narrower than the footer: its icons can't shrink, and a footer wider than the panel pushed everything in
+    /// it out past both edges, over the edge that resizes it.
+    static let widths: ClosedRange<Double> = 222...352
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -32,32 +34,32 @@ struct LayersPanel: View {
             Divider()
             // No spacing: each button's hit area supplies it (8 pt either side makes the 16 pt gap).
             HStack(spacing: 0) {
-                Button { session.addBlankLayer() } label: { Image(systemName: "plus.square").footerHitArea() }
+                Button { session.addBlankLayer() } label: { FooterIcon(systemName: "plus.square") }
                     .help("New blank layer (⇧⌘N)").accessibilityLabel("New blank layer")
-                    .accessibilityIdentifier("addBlankLayer").disabled(!session.canEditLayers)
-                Button { session.groupSelectedLayers() } label: { Image(systemName: "folder.badge.plus").footerHitArea() }
-                    .help("Group selected layers (⌘G)").accessibilityLabel("New folder").disabled(!session.canEditLayers)
+                    .accessibilityIdentifier("addBlankLayer").disabled(!session.layersLookEditable)
+                Button { session.groupSelectedLayers() } label: { FooterIcon(systemName: "folder.badge.plus") }
+                    .help("Group selected layers (⌘G)").accessibilityLabel("New folder").disabled(!session.layersLookEditable)
                 LayerMaskMenu(session: session)
+                Menu {
+                    ForEach(AdjustmentKind.allCases, id: \.self) { kind in
+                        Button(kind.rawValue) { session.addAdjustment(kind) }
+                    }
+                } label: { Image(systemName: "circle.lefthalf.filled").footerHitArea() }
+                    .menuStyle(.borderlessButton).fixedSize().help("New adjustment layer").disabled(!session.layersLookEditable)
                 Menu {
                     ForEach(LayerEffectKind.allCases, id: \.self) { kind in
                         Button(kind.rawValue + "…") { session.addEffect(kind) }
                     }
                 } label: { Image(systemName: "sparkles").footerHitArea() }
                     .menuStyle(.borderlessButton).fixedSize()
-                    .help("Layer effects: stroke and drop shadow").accessibilityLabel("Layer effects")
-                    .accessibilityIdentifier("layerEffects").disabled(!session.canEditEffects)
-                Menu {
-                    ForEach(AdjustmentKind.allCases, id: \.self) { kind in
-                        Button(kind.rawValue) { session.addAdjustment(kind) }
-                    }
-                } label: { Image(systemName: "circle.lefthalf.filled").footerHitArea() }
-                    .menuStyle(.borderlessButton).fixedSize().help("New adjustment layer").disabled(!session.canEditLayers)
+                    .help("Add layer effect").accessibilityLabel("Layer effects")
+                    .accessibilityIdentifier("layerEffects").disabled(!session.layersLookEditable || session.activeLayer?.isGroup != false || session.activeLayer?.asset == nil)
                 Spacer()
-                Button { session.deleteLayerOrMask() } label: { Image(systemName: "trash").footerHitArea() }
+                Button { session.deleteLayerOrMask() } label: { FooterIcon(systemName: "trash") }
                     .help(session.selectedEffect != nil ? "Delete selected effect" : session.isMaskSelected ? "Delete layer mask" : session.selectedLayerIDs.count > 1 ? "Delete selected layers" : "Delete selected layer")
                     .accessibilityLabel(session.selectedEffect != nil ? "Delete selected effect" : session.isMaskSelected ? "Delete layer mask" : session.selectedLayerIDs.count > 1 ? "Delete selected layers" : "Delete selected layer")
                     .accessibilityIdentifier("deleteLayer")
-                    .disabled(!session.canEditLayers || session.activeLayer == nil)
+                    .disabled(!session.layersLookEditable || session.activeLayer == nil)
             }
             .buttonStyle(.plain).foregroundStyle(.secondary)
             .padding(.horizontal, 8).padding(.vertical, 4) // Plus the hit areas' 8 and 12: the original 16.
@@ -69,6 +71,21 @@ struct LayersPanel: View {
         }
     }
 
+}
+
+/// A footer button's icon: full strength when the button can be used, and as dim as the footer's menus (Effects,
+/// Adjustments) when it can't. A plain button with its own color doesn't dim when disabled, so the footer looked
+/// uneven, some disabled icons barely fading and others nearly gone.
+struct FooterIcon: View {
+    let systemName: String
+    @Environment(\.isEnabled) private var isEnabled
+    var body: some View {
+        // Disabled, as dim as the menus' icons (a quarter-strength white, measured): SwiftUI halves a disabled
+        // button's own color again, so the button asks for half-strength white.
+        Image(systemName: systemName)
+            .foregroundStyle(isEnabled ? AnyShapeStyle(.primary) : AnyShapeStyle(Color.white.opacity(0.5)))
+            .footerHitArea()
+    }
 }
 
 extension View {

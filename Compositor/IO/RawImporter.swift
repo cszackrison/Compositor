@@ -16,25 +16,48 @@ nonisolated struct RawDevelopSettings: Equatable, Sendable {
     var tint: Float = 0
     /// Apple's tone curve: 1 is its full interpretation, 0 leaves the image flat and neutral.
     var boost: Float = 1
+    /// Luminance noise reduction, 0–1, starting where the system's RAW engine starts for this camera.
+    var noiseReduction: Float = 0
+    /// The lens's distortion and vignetting taken out, from the profile in the file, where it has one.
+    var lensCorrection = false
+    /// Detail brought back in highlights the camera only partly clipped (one or two channels blown).
+    var highlightRecovery = false
     /// What the camera itself chose, so Reset has somewhere to go back to.
     var asShotTemperature: Float = 5000
     var asShotTint: Float = 0
+    var asShotNoiseReduction: Float = 0
+    var asShotLensCorrection = false
+    var asShotHighlightRecovery = false
+    /// Which of those this file's camera allows; the others stay as they are.
+    var supportsNoiseReduction = false
+    var supportsLensCorrection = false
+    var supportsHighlightRecovery = false
 
     var isAsShot: Bool {
         exposure == 0 && boost == 1 && temperature == asShotTemperature && tint == asShotTint
+            && noiseReduction == asShotNoiseReduction && lensCorrection == asShotLensCorrection
+            && highlightRecovery == asShotHighlightRecovery
     }
     mutating func reset() {
         exposure = 0
         boost = 1
         temperature = asShotTemperature
         tint = asShotTint
+        noiseReduction = asShotNoiseReduction
+        lensCorrection = asShotLensCorrection
+        highlightRecovery = asShotHighlightRecovery
     }
 }
 
 nonisolated enum RawImporter {
     /// One context for every develop: building a CIContext allocates GPU resources, and the sheet
-    /// develops again on each slider move.
-    private static let context = CIContext(options: [.useSoftwareRenderer: false])
+    /// develops again on each slider move. Half-float in linear light throughout, named rather than left to
+    /// Core Image's defaults, so nothing is rounded before the final 8-bit pixels.
+    private static let context = CIContext(options: [
+        .useSoftwareRenderer: false,
+        .workingFormat: CIFormat.RGBAh,
+        .workingColorSpace: CGColorSpace(name: CGColorSpace.extendedLinearSRGB)!,
+    ])
 
     /// Developing a RAW is seconds of work, so only one runs at a time and the caller waits its
     /// turn. Without this a dragged slider starts a render per pixel moved and they all pile up.
@@ -46,8 +69,9 @@ nonisolated enum RawImporter {
         static let shared = Queue()
         private var cached: (url: URL, limit: CGFloat, filter: CIRAWFilter)?
 
-        func develop(_ url: URL, settings: RawDevelopSettings, limit: CGFloat?) -> CGImage? {
-            guard let limit else { return try? RawImporter.develop(url, settings: settings, limit: nil) }
+        /// `sixteenBit`: the full frame at 16 bits a channel, for a 16-bit layer (`DeepLayer`); otherwise dithered to 8.
+        func develop(_ url: URL, settings: RawDevelopSettings, limit: CGFloat?, sixteenBit: Bool = false) -> CGImage? {
+            guard let limit else { return try? RawImporter.develop(url, settings: settings, limit: nil, sixteenBit: sixteenBit) }
             let filter: CIRAWFilter
             if let cached, cached.url == url, cached.limit == limit {
                 filter = cached.filter
@@ -75,21 +99,29 @@ nonisolated enum RawImporter {
         return type.conforms(to: .rawImage)
     }
 
-    /// The camera's own white balance, which is where the sliders start.
+    /// The camera's own white balance and the engine's own starting points for this camera, which is where the
+    /// controls start.
     static func asShot(_ url: URL) -> RawDevelopSettings? {
         guard let filter = CIRAWFilter(imageURL: url) else { return nil }
-        return RawDevelopSettings(temperature: filter.neutralTemperature, tint: filter.neutralTint,
-                                  asShotTemperature: filter.neutralTemperature, asShotTint: filter.neutralTint)
+        var settings = RawDevelopSettings(temperature: filter.neutralTemperature, tint: filter.neutralTint)
+        settings.noiseReduction = filter.isLuminanceNoiseReductionSupported ? filter.luminanceNoiseReductionAmount : 0
+        settings.lensCorrection = filter.isLensCorrectionSupported && filter.isLensCorrectionEnabled
+        settings.highlightRecovery = filter.isHighlightRecoverySupported && filter.isHighlightRecoveryEnabled
+        settings.asShotTemperature = settings.temperature
+        settings.asShotTint = settings.tint
+        settings.asShotNoiseReduction = settings.noiseReduction
+        settings.asShotLensCorrection = settings.lensCorrection
+        settings.asShotHighlightRecovery = settings.highlightRecovery
+        settings.supportsNoiseReduction = filter.isLuminanceNoiseReductionSupported
+        settings.supportsLensCorrection = filter.isLensCorrectionSupported
+        settings.supportsHighlightRecovery = filter.isHighlightRecoverySupported
+        return settings
     }
 
     /// The developed image. `limit` caps the long edge for the preview the sheet shows while the
     /// sliders move; the import itself passes nil and gets the full frame.
-    static func develop(_ url: URL, settings: RawDevelopSettings, limit: CGFloat? = nil) throws -> CGImage {
+    static func develop(_ url: URL, settings: RawDevelopSettings, limit: CGFloat? = nil, sixteenBit: Bool = false) throws -> CGImage {
         guard let filter = CIRAWFilter(imageURL: url) else { throw ImageImportError.unreadable }
-        filter.exposure = settings.exposure
-        filter.neutralTemperature = settings.temperature
-        filter.neutralTint = settings.tint
-        filter.boostAmount = settings.boost
         if let limit {
             let size = filter.nativeSize
             let longest = max(size.width, size.height)
@@ -98,20 +130,46 @@ nonisolated enum RawImporter {
                 filter.isDraftModeEnabled = true
             }
         }
-        guard let image = render(filter, settings: settings) else { throw ImageImportError.unreadable }
+        guard let image = render(filter, settings: settings, sixteenBit: sixteenBit) else { throw ImageImportError.unreadable }
         return image
     }
 
     /// Applies the settings to a filter that already holds the decoded frame, and reads the pixels out.
-    fileprivate static func render(_ filter: CIRAWFilter, settings: RawDevelopSettings) -> CGImage? {
+    fileprivate static func render(_ filter: CIRAWFilter, settings: RawDevelopSettings, sixteenBit: Bool = false) -> CGImage? {
         filter.exposure = settings.exposure
         filter.neutralTemperature = settings.temperature
         filter.neutralTint = settings.tint
         filter.boostAmount = settings.boost
+        if settings.supportsNoiseReduction { filter.luminanceNoiseReductionAmount = settings.noiseReduction }
+        if settings.supportsLensCorrection { filter.isLensCorrectionEnabled = settings.lensCorrection }
+        if settings.supportsHighlightRecovery { filter.isHighlightRecoveryEnabled = settings.highlightRecovery }
         guard let output = filter.outputImage else { return nil }
-        return context.createCGImage(output, from: output.extent, format: .RGBA8,
-                                     colorSpace: CGColorSpace(name: CGColorSpace.sRGB)!)
+        if sixteenBit {
+            return context.createCGImage(output, from: output.extent.integral, format: .RGBA16,
+                                         colorSpace: CGColorSpace(name: CGColorSpace.sRGB)!)
+        }
+        return dithered(output, context: context)
     }
+
+    /// The image as 8-bit sRGB pixels, rounded with a little noise rather than straight down. A RAW holds 12–14 bits;
+    /// rounded plainly to 8, a smooth sky came out in visible steps, which curves and levels then pulled further apart.
+    /// Noise of about one 8-bit step, too fine to see, breaks the steps up, as Lightroom does on export. The frame is
+    /// rendered once at 16 bits, then rounded on every core in C: a few tens of milliseconds on a 20-megapixel photo.
+    static func dithered(_ image: CIImage, context: CIContext) -> CGImage? {
+        let extent = image.extent.integral
+        let width = Int(extent.width), height = Int(extent.height)
+        guard width > 0, height > 0, let target = try? BrushRaster.context(width: width, height: height, mask: false),
+              let data = target.data?.assumingMemoryBound(to: UInt8.self) else { return nil }
+        var wide = [UInt16](repeating: 0, count: width * height * 4)
+        wide.withUnsafeMutableBytes { buffer in
+            context.render(image, toBitmap: buffer.baseAddress!, rowBytes: width * 8, bounds: extent, format: .RGBA16,
+                           colorSpace: CGColorSpace(name: CGColorSpace.sRGB)!)
+        }
+        // In C, where the per-pixel work is quick in any build.
+        wide.withUnsafeBufferPointer { dither_quantize16($0.baseAddress!, data, width, height, target.bytesPerRow) }
+        return target.makeImage()
+    }
+
 
     /// The frame's size without developing it, so an oversized file is refused before the work.
     static func pixelSize(_ url: URL) -> (width: Int, height: Int)? {

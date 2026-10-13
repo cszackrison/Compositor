@@ -27,23 +27,49 @@ struct RawDevelopSheet: View {
                         .resizable().aspectRatio(contentMode: .fit)
                         .clipShape(RoundedRectangle(cornerRadius: 6))
                 }
-                if working { ProgressView().controlSize(.small) }
+                if session.rawImporting {
+                    // Import pressed: the full frame takes a second or more to develop.
+                    VStack(spacing: 8) {
+                        ProgressView().controlSize(.regular)
+                        Text("Importing…").foregroundStyle(.secondary)
+                    }
+                    .padding(16).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
+                } else if working { ProgressView().controlSize(.small) }
             }
             .frame(width: 560, height: 340)
 
-            slider("Exposure", value: $settings.exposure, range: -3...3, unit: " EV", precision: 2)
-            slider("Temperature", value: $settings.temperature, range: 2000...12000, unit: " K", precision: 0)
-            slider("Tint", value: $settings.tint, range: -150...150, unit: "", precision: 0)
-            slider("Boost", value: $settings.boost, range: 0...1, unit: "", precision: 2)
+            Group {
+                slider("Exposure", value: $settings.exposure, range: -3...3, unit: " EV", precision: 2)
+                slider("Temperature", value: $settings.temperature, range: 2000...12000, unit: " K", precision: 0)
+                slider("Tint", value: $settings.tint, range: -150...150, unit: "", precision: 0)
+                slider("Boost", value: $settings.boost, range: 0...1, unit: "", precision: 2)
+                slider("Noise Reduction", value: $settings.noiseReduction, range: 0...1, unit: "", precision: 2)
+                    .disabled(!settings.supportsNoiseReduction)
+                    .help(settings.supportsNoiseReduction ? "Smooths grain, at the cost of fine detail"
+                                                          : "Not available for this camera")
+                HStack(spacing: 20) {
+                    Toggle("Lens Correction", isOn: $settings.lensCorrection)
+                        .disabled(!settings.supportsLensCorrection)
+                        .help(settings.supportsLensCorrection ? "Removes the lens's distortion and vignetting"
+                                                              : "This file has no lens profile")
+                    Toggle("Highlight Recovery", isOn: $settings.highlightRecovery)
+                        .disabled(!settings.supportsHighlightRecovery)
+                        .help(settings.supportsHighlightRecovery ? "Brings back detail in bright areas the camera partly clipped"
+                                                                 : "Not available for this camera")
+                }
+                .padding(.leading, 120)
 
-            HStack {
-                Button("Reset") { settings.reset() }.disabled(settings.isAsShot)
-                Spacer()
-                Button("Cancel") { session.finishRawDevelop(nil) }.keyboardShortcut(.cancelAction)
-                Button("Import") { session.finishRawDevelop(settings) }.keyboardShortcut(.defaultAction)
+                HStack {
+                    Button("Reset") { settings.reset() }.disabled(settings.isAsShot)
+                    Spacer()
+                    Button("Cancel") { session.finishRawDevelop(nil) }.keyboardShortcut(.cancelAction)
+                    Button("Import") { session.finishRawDevelop(settings) }.keyboardShortcut(.defaultAction)
+                }
             }
+            .disabled(session.rawImporting)
         }
         .padding(24).fixedSize()
+        .interactiveDismissDisabled(session.rawImporting)
         .task(id: revision) { await refreshPreview() }
         .onChange(of: settings) { _, _ in revision += 1 }
     }
@@ -67,7 +93,7 @@ struct RawDevelopSheet: View {
     private func slider(_ title: String, value: Binding<Float>, range: ClosedRange<Float>,
                         unit: String, precision: Int) -> some View {
         HStack(spacing: 10) {
-            Text(title).frame(width: 90, alignment: .leading)
+            Text(title).frame(width: 110, alignment: .leading)
             Slider(value: value, in: range).frame(width: 300)
             Text(String(format: "%.\(precision)f%@", value.wrappedValue, unit))
                 .monospacedDigit().foregroundStyle(.secondary)

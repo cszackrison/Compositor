@@ -179,11 +179,11 @@ final class EditorSession {
     @ObservationIgnored var distortEffectsCache: [UUID: DistortEffectsCache] = [:]
     /// Document positions a move has just snapped to, drawn as guides while it lasts.
     @ObservationIgnored var snapGuides: (xs: [CGFloat], ys: [CGFloat]) = ([], [])
-    var snappingEnabled = true {
-        didSet {
-            if !snappingEnabled { snapGuides = ([], []) }
-            refreshCanvasPreview?()
-        }
+    /// Crop, resize and selection moves follow View › Snap (⇧⌘;) too: they had a Snap item of their own, which left
+    /// the View menu with two called Snap.
+    var snappingEnabled: Bool {
+        get { snapEnabled }
+        set { snapEnabled = newValue }
     }
     /// Where the last brush stroke ended, so a Shift-click paints a straight line on from it.
     @ObservationIgnored var lastBrushPoint: (point: CGPoint, layerID: UUID, mask: Bool)?
@@ -253,6 +253,8 @@ final class EditorSession {
     /// The open filter (Filter menu), and the settings the next one starts from.
     var filterEdit: FilterEdit?
     var filterSettings = FilterSettings()
+    /// What Filter › Last Filter runs again.
+    var lastFilter: FilterKind?
     @ObservationIgnored var hueSaturationTask: Task<Void, Never>?
     /// The newest preview request while one is already rendering.
     @ObservationIgnored var hueSaturationPending: HueSaturationJob?
@@ -275,6 +277,13 @@ final class EditorSession {
     var wandSettings = WandSettings()
     var objectSelectionSettings = ObjectSelectionSettings()
     var showsPixelGrid = ToolDefaults.bool("pixelGrid", true) { didSet { ToolDefaults.set(showsPixelGrid, "pixelGrid") } }
+    /// View › CMYK › Proof Colors: the canvas as printing through `proofProfile` would show it, on white paper (`CMYK`).
+    var proofsColors = false { didSet { if proofsColors, proofProfile == nil { proofProfile = CMYK.chosen }; brushRevision += 1 } }
+    /// View › CMYK › Gamut Warning: colors the profile can't print as they are show gray, over the proof or the document's
+    /// own colors.
+    var showsGamutWarning = false { didSet { if showsGamutWarning, proofProfile == nil { proofProfile = CMYK.chosen }; brushRevision += 1 } }
+    /// The CMYK profile proofing and CMYK export use, as View › CMYK › Profile last set it.
+    var proofProfile: CMYKProfile? { didSet { CMYK.chosen = proofProfile; brushRevision += 1 } }
     /// Layout grid (View > Show > Grid). Off until turned on; independent of the 800% pixel grid.
     var showsGrid = ToolDefaults.bool("grid", false) { didSet { ToolDefaults.set(showsGrid, "grid") } }
     /// The layout grid's spacing and subdivisions (View > Grid Settings…). The person's, not the project's.
@@ -299,9 +308,31 @@ final class EditorSession {
     }
     /// User guides. Hidden extras do not snap.
     var showsGuides = ToolDefaults.bool("guides", true) { didSet { ToolDefaults.set(showsGuides, "guides") } }
+    /// F: the canvas alone on black, filling the screen, with every panel and bar put away. F again brings them back.
+    var canvasOnly = false
+    /// Nothing in progress for Escape to cancel (a transform, crop, lasso, shape, gradient, stroke or text), so in
+    /// fullscreen it leaves fullscreen instead.
+    var escapeHasNothingToCancel: Bool {
+        textDraft == nil && levels == nil && brushStroke == nil && warpStroke == nil && lassoDraft == nil
+            && shapeDraft == nil && gradientEdit == nil && cropRect == nil && guideDrag == nil && transformEdit == nil
+            && pixelMove == nil
+    }
+    /// Canvas Only can be switched: there's a canvas, and no text layer being typed or dialog open (Hue/Saturation,
+    /// Curves, the color picker…) for an F to belong to.
+    var canToggleCanvasOnly: Bool {
+        document != nil && textDraft == nil && filterEdit == nil && hueSaturation == nil && levels == nil
+            && colorPicker == nil && adjustmentEditingID == nil && effectsEditing == nil && colorRange == nil
+            && selectionAmountOperation == nil
+    }
     var showsRulers = ToolDefaults.bool("rulers", false) { didSet { ToolDefaults.set(showsRulers, "rulers") } }
     /// Master snap switch (View > Snap). On so today's layer/canvas snap keeps working.
-    var snapEnabled = ToolDefaults.bool("snap", true) { didSet { ToolDefaults.set(snapEnabled, "snap") } }
+    var snapEnabled = ToolDefaults.bool("snap", true) {
+        didSet {
+            ToolDefaults.set(snapEnabled, "snap")
+            if !snapEnabled { snapGuides = ([], []) }
+            refreshCanvasPreview?()
+        }
+    }
     var snapToGuides = ToolDefaults.bool("snapGuides", true) { didSet { ToolDefaults.set(snapToGuides, "snapGuides") } }
     var snapToGrid = ToolDefaults.bool("snapGrid", false) { didSet { ToolDefaults.set(snapToGrid, "snapGrid") } }
     var snapToLayers = ToolDefaults.bool("snapLayers", true) { didSet { ToolDefaults.set(snapToLayers, "snapLayers") } }
@@ -358,6 +389,7 @@ final class EditorSession {
         guard brushStroke == nil, warpStroke == nil, levels == nil else { return }
         if id != activeLayerID { commitTransform(); resolveGradient() }
         activeLayerID = id
+        revealActiveLayer()
     }
     func selectTool(_ value: NavigationTool) {
         if tool != value, !finishText() { return }
@@ -555,6 +587,8 @@ final class EditorSession {
     /// The RAW file being developed, and the settings the sheet is editing (see RawImporter).
     var rawDevelop: (url: URL, settings: RawDevelopSettings)?
     var showsRawDevelop = false { didSet { resumeFileRequests() } }
+    /// Import was pressed and the full frame is developing: the sheet stays up, showing that, until the layer is in.
+    var rawImporting = false
     @ObservationIgnored private var rawContinuation: CheckedContinuation<RawDevelopSettings?, Never>?
     /// Tests assign this to develop without a sheet.
     @ObservationIgnored var confirmRawDevelop: ((URL, RawDevelopSettings) async -> RawDevelopSettings?)?
@@ -570,12 +604,18 @@ final class EditorSession {
         }
     }
     func finishRawDevelop(_ settings: RawDevelopSettings?) {
-        showsRawDevelop = false
-        rawDevelop = nil
-        Task { await RawImporter.Queue.shared.release() }
+        // Importing, the sheet waits for the develop to finish (see `endRawDevelop`); cancelling closes it now.
+        if settings != nil, rawContinuation != nil { rawImporting = true } else { endRawDevelop() }
         let continuation = rawContinuation
         rawContinuation = nil
         continuation?.resume(returning: settings)
+    }
+    /// Closes the develop sheet once the RAW is in, or when it was cancelled.
+    func endRawDevelop() {
+        showsRawDevelop = false
+        rawImporting = false
+        rawDevelop = nil
+        Task { await RawImporter.Queue.shared.release() }
     }
     @ObservationIgnored private var conversionContinuation: CheckedContinuation<Bool, Never>?
     /// Cancel pressed while a Photoshop file was still being read.
@@ -624,7 +664,8 @@ final class EditorSession {
     private func restore(_ snapshot: DocumentHistory.Snapshot) {
         cancelCrop()
         cancelGradient()
-        let changedCanvas = document?.id != snapshot.document?.id
+        // A different canvas, or this one at another size (a rotation), is fitted to the window again.
+        let changedCanvas = document?.id != snapshot.document?.id || document?.size != snapshot.document?.size
         let keepMaskTarget = isMaskSelected && activeLayerID == snapshot.activeLayerID
         document = snapshot.document
         activeLayerID = snapshot.activeLayerID
@@ -639,6 +680,16 @@ final class EditorSession {
 
     func endEdit() { history.end(document: document, selection: activeLayerID) }
     var activeLayer: ImageLayer? { document?.layers.first { $0.id == activeLayerID } }
+    /// How the Layers panel looks: grayed for what lasts (a dialog, a pending transform, crop or gradient, a long
+    /// operation), but not for what only lasts while the mouse is down (a stroke, a move or Auto Select drag, moving
+    /// pixels) or for a moment's work, which flashed the whole panel gray for a frame. `canEditLayers` still blocks
+    /// layer changes through all of them; the panel's actions check it themselves.
+    var layersLookEditable: Bool {
+        selectionAmountOperation == nil && colorRange == nil && textDraft == nil && document != nil && !showsBusy
+            && !isImporting && !showsNewDocument && !showsImporter && renamingLayerID == nil
+            && transformEdit?.persistent != true && cropRect == nil && gradientEdit == nil
+            && hueSaturation == nil && levels == nil && filterEdit == nil && adjustmentEditingID == nil
+    }
     var canEditLayers: Bool {
         _ = showsBusy
         return selectionAmountOperation == nil && colorRange == nil && textDraft == nil && document != nil && brushStroke == nil && warpStroke == nil && !isProjectBusy && !isImporting && !showsNewDocument && !showsImporter && renamingLayerID == nil && transformEdit == nil && cropRect == nil && gradientEdit == nil && pixelMove == nil && hueSaturation == nil && levels == nil && filterEdit == nil && adjustmentEditingID == nil
@@ -760,6 +811,22 @@ final class EditorSession {
     private var pendingImports: [ImportRequest] = []
 
     func importImages(_ urls: [URL], at point: CGPoint? = nil) async {
+        // A folder brings in the images directly inside it, in name order. Its sandbox grant covers them, so it's
+        // held until they're all in.
+        var folders: [URL] = []
+        var empty: [String] = []
+        let urls = urls.flatMap { url -> [URL] in
+            guard ImageFolder.matches(url) else { return [url] }
+            if url.startAccessingSecurityScopedResource() { folders.append(url) }
+            let images = ImageFolder.images(in: url)
+            if images.isEmpty { empty.append(url.lastPathComponent) }
+            return images
+        }
+        defer { for folder in folders { folder.stopAccessingSecurityScopedResource() } }
+        if !empty.isEmpty {
+            let message = empty.map { "“\($0)” has no images to import." }.joined(separator: "\n")
+            importError = [importError, message].compactMap { $0 }.joined(separator: "\n\n")
+        }
         guard !urls.isEmpty else { return }
         if brushStroke != nil { await finishBrush() }
         cancelCrop()
@@ -786,6 +853,15 @@ final class EditorSession {
           let point = document == nil ? nil : request.point
           for (url, scoped) in request.files {
             defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+            // A CMYK file making a new document: its profile is kept and chosen, for proofing and for CMYK export when
+            // it's asked for.
+            let startsDocument = document == nil
+            var psdProfile: CMYKProfile?
+            defer {
+                if startsDocument, document != nil, let profile = psdProfile ?? CMYK.profile(ofImageAt: url) {
+                    proofProfile = CMYK.adopt(profile)
+                }
+            }
             do {
                 guard url.isFileURL else { throw ImageImportError.unsupported }
                 let usedPixels = document?.layers.reduce(0) { total, layer in
@@ -797,12 +873,12 @@ final class EditorSession {
                     guard size.width <= DocumentLimits.maxSide, size.height <= DocumentLimits.maxSide,
                           size.width * size.height <= DocumentLimits.documentPixelBudget - usedPixels else { throw ImageImportError.tooLarge }
                     guard let settings = await developRaw(url) else { continue }
+                    defer { if rawImporting { endRawDevelop() } }
                     // Seconds of work: off the main actor, or pressing Import freezes the window.
-                    guard let developed = await RawImporter.Queue.shared.develop(url, settings: settings, limit: nil)
+                    // A 16-bit layer: a RAW's latitude stays for later Levels, Curves and Camera Raw (`DeepLayer`).
+                    guard let developed = await RawImporter.Queue.shared.develop(url, settings: settings, limit: nil, sixteenBit: true)
                     else { throw ImageImportError.unreadable }
-                    let thumbnail = try PixelAdjust.thumbnail(of: developed)
-                    insert(ImportedImage(image: developed, thumbnail: thumbnail,
-                                         name: url.deletingPathExtension().lastPathComponent), centeredAt: point)
+                    insert(try DeepLayer.asset(developed, name: url.deletingPathExtension().lastPathComponent), centeredAt: point)
                 } else if UTType(filenameExtension: url.pathExtension)?.conforms(to: .svg) == true {
                     let asset = try await ImageImporter.shared.decodeSVG(url, fitting: document?.size,
                                                                          remainingPixels: DocumentLimits.documentPixelBudget - usedPixels)
@@ -812,6 +888,7 @@ final class EditorSession {
                     let imported: PSDImport
                     do {
                         let parsed = try await ImageImporter.shared.loadPhotoshop(url, remainingPixels: DocumentLimits.documentPixelBudget - usedPixels)
+                        psdProfile = parsed.cmykProfile
                         // Only a background: Photoshop writes no layer records, just the merged image, so that is
                         // what comes in, as one layer.
                         if parsed.layers.isEmpty {
@@ -945,19 +1022,34 @@ final class EditorSession {
     }
 
     /// `emptyLayer` starts the canvas with a selected blank "Layer 1", as File > New does.
-    func createDocument(width: Int, height: Int, emptyLayer: Bool = false) {
+    /// `background`: white or black fills the first layer, named Background as in Photoshop; nil leaves it transparent.
+    func createDocument(width: Int, height: Int, emptyLayer: Bool = false, resolution: Double = 72, background: CGColor? = nil) {
         guard !isProjectBusy, !isImporting, (1...DocumentLimits.maxSide).contains(width), (1...DocumentLimits.maxSide).contains(height) else { return }
         commitTransform()
         beginEdit("New Canvas")
         defer { endEdit() }
-        var document = CanvasDocument(width: width, height: height)
-        let layer = emptyLayer ? ImageLayer(name: "Layer 1", blankSize: document.size) : nil
+        var document = CanvasDocument(width: width, height: height, resolution: (1...9600).contains(resolution) ? resolution : 72)
+        let layer = emptyLayer ? Self.firstLayer(size: document.size, background: background) : nil
         if let layer { document.layers = [layer] }
         self.document = document
         activeLayerID = layer?.id
         renamingLayerID = nil
         viewport.fit(documentSize: document.size)
         showsNewDocument = false
+    }
+
+    /// A new canvas's layer: empty, or filled with the background color in full-size pixels, so painting on it keeps
+    /// every pixel's detail.
+    private static func firstLayer(size: CGSize, background: CGColor?) -> ImageLayer {
+        guard let background, let context = try? BrushRaster.context(width: Int(size.width), height: Int(size.height), mask: false)
+        else { return ImageLayer(name: "Layer 1", blankSize: size) }
+        context.setFillColor(background)
+        context.fill(CGRect(origin: .zero, size: size))
+        guard let image = context.makeImage(), let thumbnail = try? PixelAdjust.thumbnail(of: image)
+        else { return ImageLayer(name: "Layer 1", blankSize: size) }
+        var layer = ImageLayer(name: "Background", blankSize: size)
+        layer.asset = ImportedImage(image: image, thumbnail: thumbnail, name: "Background")
+        return layer
     }
 
     func fit() {

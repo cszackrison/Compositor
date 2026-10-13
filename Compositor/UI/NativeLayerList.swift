@@ -52,9 +52,12 @@ struct NativeLayerList: NSViewRepresentable {
         private var oldCollapsed: Set<UUID> = []
         private var editingEnabled = false
         private var synchronizing = false
+        private var activeLayerID: UUID?
         init(session: EditorSession) { self.session = session }
 
         func update(_ table: NSTableView) {
+            let selectionChanged = activeLayerID != session.activeLayerID
+            activeLayerID = session.activeLayerID
             let entries = session.layerRows
             let byID = Dictionary(uniqueKeysWithValues: (session.document?.layers ?? []).map { ($0.id, $0) })
             let next = entries.compactMap { byID[$0.layer.id] }
@@ -62,7 +65,7 @@ struct NativeLayerList: NSViewRepresentable {
             rowDetails = Dictionary(uniqueKeysWithValues: entries.map { ($0.layer.id, $0) })
             let expansionChanged = oldCollapsed != session.collapsedGroupIDs
             oldCollapsed = session.collapsedGroupIDs
-            let enabled = session.canEditLayers
+            let enabled = session.layersLookEditable
             synchronizing = true
             defer { synchronizing = false }
             let old = rows
@@ -72,9 +75,10 @@ struct NativeLayerList: NSViewRepresentable {
             if old.map(\.id) != next.map(\.id) {
                 table.reloadData()
             } else {
-                // Selection never reloads cells or recreates thumbnails.
+                // Selection never reloads cells or recreates thumbnails. A depth change can keep the very same picture
+                // (Convert to 16-Bit on an 8-bit layer), so its tag is compared too.
                 let changed = IndexSet(next.indices.filter {
-                    editableChanged || expansionChanged || (old[$0].name != next[$0].name || old[$0].isVisible != next[$0].isVisible || old[$0].size != next[$0].size || old[$0].parentID != next[$0].parentID || old[$0].isGroup != next[$0].isGroup || old[$0].asset?.image !== next[$0].asset?.image || (old[$0].liveText != nil) != (next[$0].liveText != nil) || old[$0].effects != next[$0].effects || old[$0].mask != next[$0].mask || old[$0].maskSourceID != next[$0].maskSourceID) || previousDetails[next[$0].id]?.depth != rowDetails[next[$0].id]?.depth || previousDetails[next[$0].id]?.visible != rowDetails[next[$0].id]?.visible
+                    editableChanged || expansionChanged || (old[$0].name != next[$0].name || old[$0].isVisible != next[$0].isVisible || old[$0].size != next[$0].size || old[$0].parentID != next[$0].parentID || old[$0].isGroup != next[$0].isGroup || old[$0].asset?.image !== next[$0].asset?.image || old[$0].depthLabel != next[$0].depthLabel || (old[$0].liveText != nil) != (next[$0].liveText != nil) || old[$0].effects != next[$0].effects || old[$0].mask != next[$0].mask || old[$0].maskSourceID != next[$0].maskSourceID) || previousDetails[next[$0].id]?.depth != rowDetails[next[$0].id]?.depth || previousDetails[next[$0].id]?.visible != rowDetails[next[$0].id]?.visible
                 })
                 let resized = IndexSet(next.indices.filter { (old[$0].effects?.kinds.count ?? 0) != (next[$0].effects?.kinds.count ?? 0) })
                 // Adding or removing an effect only changes how tall a row is. Left to AppKit that is animated, and
@@ -87,6 +91,10 @@ struct NativeLayerList: NSViewRepresentable {
             }
             let indices = IndexSet(next.indices.filter { session.selectedEffect == nil && session.selectedLayerIDs.contains(next[$0].id) })
             if table.selectedRowIndexes != indices { table.selectRowIndexes(indices, byExtendingSelection: false) }
+            // Reveal a newly selected layer, without undoing a manual scroll on later display updates.
+            if selectionChanged, let id = activeLayerID, let row = next.firstIndex(where: { $0.id == id }) {
+                table.scrollRowToVisible(row)
+            }
             // Border-only updates: selecting a target never rebuilds thumbnails or canvas pixels.
             let visible = table.rows(in: table.visibleRect)
             if visible.location != NSNotFound {
@@ -176,6 +184,20 @@ struct NativeLayerList: NSViewRepresentable {
             mergeItem.isEnabled = validateMenuItem(mergeItem)
             menu.addItem(mergeItem)
 
+            // 7b. Convert to 16-Bit / Convert to 8-Bit
+            let depthTitle = session.activeLayer?.asset?.deep == nil ? "Convert to 16-Bit" : "Convert to 8-Bit"
+            let depthItem = NSMenuItem(title: depthTitle, action: #selector(convertDepthAction), keyEquivalent: "")
+            depthItem.target = self
+            depthItem.isEnabled = validateMenuItem(depthItem)
+            // An HDR layer can go to 16 bits as well as to 8.
+            if session.activeLayer?.asset?.isHDR == true {
+                let sixteenItem = NSMenuItem(title: "Convert to 16-Bit", action: #selector(convertHDRToSixteenAction), keyEquivalent: "")
+                sixteenItem.target = self
+                sixteenItem.isEnabled = validateMenuItem(sixteenItem)
+                menu.addItem(sixteenItem)
+            }
+            menu.addItem(depthItem)
+
             menu.addItem(NSMenuItem.separator())
 
             // 8. Add Mask >
@@ -243,6 +265,8 @@ struct NativeLayerList: NSViewRepresentable {
                 return session.canEditLayers && session.activeLayer?.parentID != nil
             case #selector(mergeLayersAction):
                 return session.canMergeLayers
+            case #selector(convertDepthAction), #selector(convertHDRToSixteenAction):
+                return session.canConvertLayerDepth
             case #selector(addWhiteMaskAction), #selector(addBlackMaskAction):
                 return session.canEditMask && session.activeLayer?.mask == nil
             case #selector(toggleMaskAction):
@@ -292,6 +316,14 @@ struct NativeLayerList: NSViewRepresentable {
 
         @objc func mergeLayersAction(_ sender: Any?) {
             session.mergeLayers()
+        }
+
+        @objc func convertDepthAction(_ sender: Any?) {
+            session.convertLayerDepth()
+        }
+
+        @objc func convertHDRToSixteenAction(_ sender: Any?) {
+            session.convertHDRToSixteenBit()
         }
 
         @objc func addWhiteMaskAction(_ sender: Any?) {
@@ -762,6 +794,11 @@ private final class LayerCell: NSTableCellView, NSTextFieldDelegate {
     private let thumbnail = LayerThumbnailButton()
     private let maskThumbnail = LayerThumbnailButton()
     private let disabledMaskMark = MaskDisabledMark(labelWithString: "╱")
+    /// "16-Bit" or "HDR" after the size of a layer keeping more than 8 bits a channel (`DeepLayer`); gone once it's
+    /// rasterized to 8.
+    private let depthTag = LayerTag()
+    /// Holds the tag inside the row while it shows; hidden, it gives its room back to the size.
+    private var depthTagFits: NSLayoutConstraint!
     /// Between the thumbnails: the chain while layer and mask are linked, empty (still clickable) once unlinked.
     private let linkButton = NSButton()
     private var maskGap: NSLayoutConstraint!
@@ -835,14 +872,16 @@ private final class LayerCell: NSTableCellView, NSTextFieldDelegate {
         disabledMaskMark.font = .systemFont(ofSize: 32, weight: .medium)
         disabledMaskMark.textColor = .systemRed
         disabledMaskMark.isHidden = true
+        depthTag.isHidden = true
         nameLabel.lineBreakMode = .byTruncatingTail
         // One line, whatever the name holds: a text layer named after a paragraph would otherwise grow the row.
         nameLabel.usesSingleLineMode = true
         nameLabel.maximumNumberOfLines = 1
         nameLabel.font = .systemFont(ofSize: 13)
+        nameLabel.wantsLayer = true
         dimensions.font = .systemFont(ofSize: 10)
         dimensions.textColor = .secondaryLabelColor
-        for view in [eye, disclosure, thumbnail, linkButton, maskThumbnail, disabledMaskMark, nameLabel, dimensions] {
+        for view in [eye, disclosure, thumbnail, linkButton, maskThumbnail, disabledMaskMark, depthTag, nameLabel, dimensions] {
             view.translatesAutoresizingMaskIntoConstraints = false
             addSubview(view)
         }
@@ -885,15 +924,22 @@ private final class LayerCell: NSTableCellView, NSTextFieldDelegate {
             maskThumbnail.centerXAnchor.constraint(equalTo: maskSlot.centerXAnchor),
             maskThumbnail.centerYAnchor.constraint(equalTo: topAnchor, constant: 26),
             maskThumbnailWidth, maskThumbnailHeight,
+            // Inside the 2 pt selection outline, touching it on the right and bottom.
             disabledMaskMark.centerXAnchor.constraint(equalTo: maskThumbnail.centerXAnchor),
             disabledMaskMark.centerYAnchor.constraint(equalTo: maskThumbnail.centerYAnchor),
             nameLabel.leadingAnchor.constraint(equalTo: maskSlot.trailingAnchor, constant: 5),
             nameLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
             nameLabel.topAnchor.constraint(equalTo: topAnchor, constant: 9),
             dimensions.leadingAnchor.constraint(equalTo: nameLabel.leadingAnchor),
-            dimensions.trailingAnchor.constraint(equalTo: nameLabel.trailingAnchor),
-            dimensions.topAnchor.constraint(equalTo: nameLabel.bottomAnchor, constant: 3)
+            dimensions.trailingAnchor.constraint(lessThanOrEqualTo: nameLabel.trailingAnchor),
+            dimensions.topAnchor.constraint(equalTo: nameLabel.bottomAnchor, constant: 3),
+            depthTag.leadingAnchor.constraint(equalTo: dimensions.trailingAnchor, constant: 5),
+            depthTag.centerYAnchor.constraint(equalTo: dimensions.centerYAnchor)
         ])
+        depthTagFits = depthTag.trailingAnchor.constraint(lessThanOrEqualTo: nameLabel.trailingAnchor)
+        // A narrow panel truncates the size before the tag.
+        dimensions.lineBreakMode = .byTruncatingTail
+        dimensions.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
@@ -964,6 +1010,11 @@ private final class LayerCell: NSTableCellView, NSTextFieldDelegate {
         if renaming, layerID != layer.id { restoreLabel() }
         if !renaming { nameLabel.stringValue = (layer.maskSourceID == nil ? "" : "↳ ") + layer.name }
         dimensions.stringValue = layer.liveText != nil ? "Text · Double-click to edit" : layer.adjustment != nil ? "Adjustment · Double-click to edit" : layer.isGroup ? "Folder" : layer.sizeLabel
+        depthTag.text = layer.depthLabel ?? ""
+        depthTag.toolTip = layer.asset?.isHDR == true ? "HDR layer: keeps light brighter than white, shown as white"
+                                                      : "16-bit layer: keeps 16 bits a channel"
+        depthTag.isHidden = layer.depthLabel == nil || layer.maskSourceID != nil
+        depthTagFits.isActive = !depthTag.isHidden
         if let source = layer.maskSourceID {
             let sourceName = session.document?.layers.first(where: { $0.id == source })?.name ?? "Missing source"
             dimensions.stringValue = "Clipped to \(sourceName)"
@@ -1007,9 +1058,7 @@ private final class LayerCell: NSTableCellView, NSTextFieldDelegate {
         renaming = true
         nameLabel.isEditable = true
         nameLabel.isSelectable = true
-        nameLabel.isBezeled = true
-        nameLabel.bezelStyle = .roundedBezel
-        nameLabel.drawsBackground = true
+        nameLabel.layer?.backgroundColor = NSColor.quaternaryLabelColor.cgColor
         nameLabel.delegate = self
         nameLabel.stringValue = layerName
         window?.makeFirstResponder(nameLabel)
@@ -1019,8 +1068,7 @@ private final class LayerCell: NSTableCellView, NSTextFieldDelegate {
         renaming = false
         nameLabel.isEditable = false
         nameLabel.isSelectable = false
-        nameLabel.isBezeled = false
-        nameLabel.drawsBackground = false
+        nameLabel.layer?.backgroundColor = nil
         nameLabel.delegate = nil
     }
     private func endRenaming(keeping: Bool) {
@@ -1356,7 +1404,24 @@ private final class EyeSwipeButton: NSButton {
         }
     }
 }
-private final class MaskDisabledMark: NSTextField {
+/// A small rounded tag after a layer's size, naming something about its pixels ("16-Bit", "HDR"). Clicks go to the row.
+private final class LayerTag: NSView {
+    var text = "" { didSet { if text != oldValue { invalidateIntrinsicContentSize(); needsDisplay = true } } }
+    private var attributed: NSAttributedString {
+        NSAttributedString(string: text, attributes: [.font: NSFont.systemFont(ofSize: 9, weight: .medium),
+                                                      .foregroundColor: NSColor.secondaryLabelColor])
+    }
+    override var intrinsicContentSize: NSSize { NSSize(width: ceil(attributed.size().width) + 10, height: 14) }
+    override func draw(_ dirtyRect: NSRect) {
+        NSColor.quaternaryLabelColor.setFill()
+        NSBezierPath(roundedRect: bounds, xRadius: bounds.height / 2, yRadius: bounds.height / 2).fill()
+        let text = attributed, size = text.size()
+        text.draw(at: NSPoint(x: (bounds.width - size.width) / 2, y: (bounds.height - size.height) / 2))
+    }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+}
+
+final class MaskDisabledMark: NSTextField {
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
 
@@ -1378,5 +1443,12 @@ extension ImageLayer {
         let percent = Double(size.width) / Double(pixels) * 100
         guard abs(percent - 100) >= 0.05 else { return text }
         return text + " · " + percent.formatted(.number.precision(.fractionLength(0...1))) + "%"
+    }
+
+    /// The tag after the size of a layer keeping 16 bits a channel, or light brighter than white (`DeepLayer`); nil
+    /// once it's rasterized to 8.
+    var depthLabel: String? {
+        guard let asset, asset.deep != nil, liveText == nil, adjustment == nil, !isGroup else { return nil }
+        return asset.isHDR ? "HDR" : "16-Bit"
     }
 }
