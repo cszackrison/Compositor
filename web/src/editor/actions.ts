@@ -5,7 +5,8 @@ import { deleteFromBrowser, readFromBrowser, saveToBrowser, type BrowserProject 
 import { canWriteDirectories, download, filesInHandle, imagesIn, readDirectoryHandle, readFileList, rootedAtManifest, unzipPackage, writeDirectory, zipPackage, type PackageFiles, type PackageTarget } from '../io/files'
 import { readProject, writeProject } from '../io/project'
 import { pdfOfImage } from '../io/pdf'
-import { Raster, decodeLayerFile, encodePNG } from '../model/raster'
+import { encodeEXR } from '../io/exr'
+import { type LinearImage, Raster, decodeLayerFile, encodePNG, resizeLinear } from '../model/raster'
 import { type Doc, fullTransform, newLayer, uuid, maxSide } from '../model/types'
 import { renderFull } from '../ui/Stage'
 
@@ -200,7 +201,7 @@ function imageData(pixels: Raster, background?: [number, number, number]) {
 
 // Export As's file and an image to preview it by: the flattened canvas sized at high quality, then PNG keeping transparency, or JPEG
 // or a one-page PDF (at the document's resolution) over `background`.
-export async function encodeExport(pixels: Raster, format: 'JPEG' | 'PNG' | 'PDF', width: number, height: number, quality: number, background: [number, number, number], resolution: number): Promise<{ blob: Blob; preview: Blob }> {
+export async function encodeExport(pixels: Raster, format: 'JPEG' | 'PNG' | 'PDF' | 'EXR', width: number, height: number, quality: number, background: [number, number, number], resolution: number, linear: LinearImage | null = null): Promise<{ blob: Blob; preview: Blob }> {
   let sized = pixels
   if (width !== pixels.width || height !== pixels.height) {
     const source = new OffscreenCanvas(pixels.width, pixels.height), target = new OffscreenCanvas(width, height), context = target.getContext('2d')!
@@ -212,6 +213,12 @@ export async function encodeExport(pixels: Raster, format: 'JPEG' | 'PNG' | 'PDF
     sized = new Raster(width, height, 4, data)
   }
   if (format === 'PNG') { const blob = new Blob([encodePNG(sized) as Uint8Array<ArrayBuffer>], { type: 'image/png' }); return { blob, preview: blob } }
+  // An EXR from the half-float flattening, previewed as the screen shows it, clipped to white.
+  if (format === 'EXR') {
+    if (!linear) throw new Error('EXR keeps HDR layers, and this document has none.')
+    const exr = resizeLinear(linear, width, height)
+    return { blob: new Blob([encodeEXR(exr.data, width, height, resolution) as Uint8Array<ArrayBuffer>], { type: 'image/x-exr' }), preview: new Blob([encodePNG(sized) as Uint8Array<ArrayBuffer>], { type: 'image/png' }) }
+  }
   const flat = imageData(sized, background), canvas = new OffscreenCanvas(width, height)
   canvas.getContext('2d')!.putImageData(flat, 0, 0)
   if (format === 'JPEG') { const blob = await canvas.convertToBlob({ type: 'image/jpeg', quality }); return { blob, preview: blob } }

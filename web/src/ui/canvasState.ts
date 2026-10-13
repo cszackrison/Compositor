@@ -2,7 +2,7 @@ import { store } from '../editor/store'
 import { isCoarse } from './layout'
 import { Compositor } from '../render/compositor'
 import { Viewport } from '../render/viewport'
-import type { Raster } from '../model/raster'
+import type { LinearImage, Raster } from '../model/raster'
 import type { Doc } from '../model/types'
 
 // What the canvas shares with the tools: the view, the compositor, and when to draw again.
@@ -43,6 +43,23 @@ export function renderFull(doc: Doc): Raster {
   const pixels = compositor.read()
   requestRender()
   return pixels
+}
+
+// The composite in linear light with what's brighter than white kept, for an EXR export: premultiplied floats, top row first. Null
+// for a document without an HDR layer, or a GPU that can't render floats.
+export function renderLinear(doc: Doc): LinearImage | null {
+  if (!compositor) throw new Error('The canvas is not ready')
+  if (Math.max(doc.width, doc.height) > compositor.maxSize) throw new Error(`This canvas is larger than this GPU can render in one piece (${compositor.maxSize} px).`)
+  compositor.render(doc, 1)
+  const data = compositor.hdr ? compositor.readFloat() : null
+  requestRender()
+  if (!data) return null
+  const linear = (v: number) => v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4)
+  for (let i = 0; i < data.length; i += 4) {
+    const a = data[i + 3]
+    for (let c = 0; c < 3; c++) { const v = a > 0 ? data[i + c] / a : 0; data[i + c] = (v < 0 ? -linear(-v) : linear(v)) * a }
+  }
+  return { width: compositor.output!.width, height: compositor.output!.height, data }
 }
 
 export function zoomBy(factor: number) { view.zoomAt(factor, view.width / 2, view.height / 2); viewChanged(); requestRender(false) }

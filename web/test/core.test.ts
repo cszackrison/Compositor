@@ -2,7 +2,7 @@ import { describe, expect, it, beforeAll } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { encode } from 'fast-png'
 import { loadKernels, withBuffers, call, floats } from '../src/kernels'
-import { Raster, decodeHDR, decodeLayerFile, decodePNG, encodePNG, pngDepth, readEXR } from '../src/model/raster'
+import { Raster, decodeHDR, decodeLayerFile, decodePNG, encodePNG, pngDepth, readEXR, resizeLinear } from '../src/model/raster'
 import { encodeEXR, toHalf } from '../src/io/exr'
 import { readProject, writeProject } from '../src/io/project'
 import { channelTables, curveValue, hueSaturationCube, kernelCube } from '../src/model/adjustments'
@@ -137,6 +137,13 @@ describe('project format', () => {
     const read = await readEXR(encodeEXR(data, width, height))
     expect([read.width, read.height]).toEqual([width, height])
     read.data.forEach((v, i) => expect(Math.abs(v - data[i])).toBeLessThanOrEqual(Math.abs(data[i]) / 1024 + 1e-6))
+  })
+
+  it('resizes floats, averaging down and interpolating up, past white', () => {
+    const image = { width: 4, height: 2, data: new Float32Array([0, 0, 0, 1, 8, 8, 8, 1, 2, 2, 2, 1, 4, 4, 4, 1, 0, 0, 0, 1, 8, 8, 8, 1, 2, 2, 2, 1, 4, 4, 4, 1]) }
+    resizeLinear(image, 2, 1).data.forEach((v, i) => expect(v).toBeCloseTo(i % 4 === 3 ? 1 : 6.5 / 1.75, 5))
+    const up = resizeLinear({ width: 2, height: 1, data: new Float32Array([0, 0, 0, 0, 4, 4, 4, 1]) }, 4, 1).data
+    expect([up[0], up[4], up[8], up[12]]).toEqual([0, 1, 3, 4])
   })
 
   it('keeps PNG pixels exact', () => {

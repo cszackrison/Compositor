@@ -136,14 +136,49 @@ export function fromLinear(data: Float32Array, width: number, height: number) {
 
 export type LinearImage = { width: number; height: number; data: Float32Array }
 
-// An OpenEXR's pixels: premultiplied linear light, RGBA floats, top row first.
-export async function readEXR(bytes: Uint8Array): Promise<LinearImage> {
+// three's EXR reader, kept once loaded so the canvas can read an HDR layer's pixels while it draws.
+let exrReader: ((bytes: Uint8Array) => LinearImage) | null = null
+export async function loadEXRReader() {
+  if (exrReader) return exrReader
   const { EXRLoader } = await import('three/examples/jsm/loaders/EXRLoader.js')
   const { FloatType } = await import('three')
-  const exr = new EXRLoader().setDataType(FloatType).parse(bytes.slice().buffer) as unknown as LinearImage
-  const { width, height } = exr, data = new Float32Array(width * height * 4), row = width * 4
-  for (let y = 0; y < height; y++) data.set(exr.data.subarray((height - 1 - y) * row, (height - y) * row), y * row)
-  return { width, height, data }
+  const loader = new EXRLoader().setDataType(FloatType)
+  return exrReader = bytes => {
+    const exr = loader.parse(bytes.slice().buffer) as unknown as LinearImage
+    const { width, height } = exr, data = new Float32Array(width * height * 4), row = width * 4
+    for (let y = 0; y < height; y++) data.set(exr.data.subarray((height - 1 - y) * row, (height - y) * row), y * row)
+    return { width, height, data }
+  }
+}
+
+// An OpenEXR's pixels: premultiplied linear light, RGBA floats, top row first. `readEXRNow` is null until the reader has loaded.
+export async function readEXR(bytes: Uint8Array): Promise<LinearImage> { return (await loadEXRReader())(bytes) }
+export function readEXRNow(bytes: Uint8Array): LinearImage | null { if (!exrReader) loadEXRReader(); return exrReader?.(bytes) ?? null }
+
+// Floats resized with a triangle filter as wide as a source pixel or an output one, whichever is larger, so shrinking averages and
+// enlarging interpolates.
+export function resizeLinear(image: LinearImage, width: number, height: number): LinearImage {
+  if (width === image.width && height === image.height) return image
+  const pass = (data: Float32Array, from: number, to: number, lines: number, horizontal: boolean) => {
+    const out = new Float32Array(to * lines * 4), scale = from / to, support = Math.max(1, scale)
+    for (let o = 0; o < to; o++) {
+      const center = (o + 0.5) * scale - 0.5, first = Math.max(0, Math.ceil(center - support)), last = Math.min(from - 1, Math.floor(center + support))
+      const taps: [number, number][] = []
+      let total = 0
+      for (let i = first; i <= last; i++) { const w = Math.max(0, 1 - Math.abs(i - center) / support); if (w > 0) { taps.push([i, w]); total += w } }
+      if (!total) taps.push([Math.min(from - 1, Math.max(0, Math.round(center))), total = 1])
+      for (let line = 0; line < lines; line++) {
+        const d = (horizontal ? line * to + o : o * lines + line) * 4
+        for (const [i, w] of taps) {
+          const s = (horizontal ? line * from + i : i * lines + line) * 4, k = w / total
+          for (let c = 0; c < 4; c++) out[d + c] += data[s + c] * k
+        }
+      }
+    }
+    return out
+  }
+  const across = pass(image.data, image.width, width, image.height, true)
+  return { width, height, data: pass(across, image.height, height, width, false) }
 }
 
 // An HDR layer's OpenEXR (half floats, premultiplied, linear light as EXR keeps it).
@@ -172,6 +207,7 @@ export async function decodeLayerFile(file: File): Promise<{ image: Raster; wide
   const bytes = new Uint8Array(await file.arrayBuffer())
   if (name.endsWith('.hdr')) {
     const hdr = await readHDR(bytes), image = fromLinear(hdr.data, hdr.width, hdr.height)
+    await loadEXRReader()
     return { image, wide: { file: 'exr', bytes: encodeEXR(hdr.data, hdr.width, hdr.height), version: image.version } }
   }
   const exr = name.endsWith('.exr'), image = exr ? await decodeEXR(bytes) : decodePNG(bytes, 4)

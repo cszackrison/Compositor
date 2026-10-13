@@ -4,12 +4,12 @@ import { answerUnsaved, encodeExport, newCanvas, documentName, placeImages, save
 import { prefs, setPrefs, gridColors } from '../editor/prefs'
 import { chordLabel, chordOf, currentOverrides, definitions, effective, problem, saveOverrides, unassigned, type Chord } from '../editor/shortcuts'
 import { color_range, colorRangeMask } from './colorRange'
-import { canvasPicker, renderFull, requestRender } from './canvasState'
+import { canvasPicker, renderFull, renderLinear, requestRender } from './canvasState'
 import { EffectPanel, Scrub } from './Inspector'
 import { ColorSwatch } from './ColorPicker'
 import { useEditor } from './hooks'
 import type { Raster } from '../model/raster'
-import { type Transform, maxSide } from '../model/types'
+import { type Transform, isHDRLayer, maxSide } from '../model/types'
 import { outline } from '../model/selection'
 
 const close = () => store.set({ panel: null })
@@ -168,13 +168,16 @@ function Trim() {
 
 // Export JPEG with a live preview of the encoded file, so its artifacts and size show before saving.
 // File › Export As… (ExportAsSheet.swift): the flattened canvas as a JPEG, a PNG or a one-page PDF, at its own size or scaled,
-// previewed as it will be written, on the checkerboard where it keeps transparency.
-type ExportFormat = 'JPEG' | 'PNG' | 'PDF'
+// previewed as it will be written, on the checkerboard where it keeps transparency. With an HDR layer, EXR too: flattened in half
+// floats, the one format that keeps light brighter than white.
+type ExportFormat = 'JPEG' | 'PNG' | 'PDF' | 'EXR'
 let lastExportFormat: ExportFormat = 'PNG'
 function ExportAs({ start }: { start?: ExportFormat }) {
   const pixels = useMemo(() => renderFull(store.state.doc), [])
+  const linear = useMemo(() => store.state.doc.layers.some(isHDRLayer) ? renderLinear(store.state.doc) : null, [])
+  const others: ExportFormat[] = linear ? ['PDF', 'EXR'] : ['PDF']
   const resolution = store.state.doc.resolution || 72
-  const [format, setFormat] = useState<ExportFormat>(start ?? lastExportFormat)
+  const [format, setFormat] = useState<ExportFormat>(() => { const f = start ?? lastExportFormat; return f === 'EXR' && !linear ? 'PNG' : f })
   const [width, setWidth] = useState(pixels.width), [height, setHeight] = useState(pixels.height)
   const [quality, setQuality] = useState(prefs.jpegQuality)
   const [background, setBackground] = useState<[number, number, number]>([255, 255, 255])
@@ -182,12 +185,12 @@ function ExportAs({ start }: { start?: ExportFormat }) {
   const shownUrl = useRef<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [zoom, setZoom] = useState<'fit' | number>('fit')
-  const key = JSON.stringify([format, width, height, format === 'JPEG' ? quality : 0, format === 'PNG' ? 0 : background])
+  const key = JSON.stringify([format, width, height, format === 'JPEG' ? quality : 0, format === 'PNG' || format === 'EXR' ? 0 : background])
   const ready = result?.key === key && !error
   useEffect(() => {
     const timer = setTimeout(async () => {
       try {
-        const encoded = await encodeExport(pixels, format, width, height, quality, background, resolution)
+        const encoded = await encodeExport(pixels, format, width, height, quality, background, resolution, linear)
         if (shownUrl.current) URL.revokeObjectURL(shownUrl.current)
         shownUrl.current = URL.createObjectURL(encoded.preview)
         setResult({ blob: encoded.blob, url: shownUrl.current, key })
@@ -222,14 +225,14 @@ function ExportAs({ start }: { start?: ExportFormat }) {
         <button type="button" onClick={() => step(false)}>−</button><button type="button" onClick={() => step(true)}>+</button>
       </div>
       <div className="export-preview" style={{ overflow: zoom === 'fit' ? 'hidden' : 'auto', display: zoom === 'fit' ? 'flex' : 'block' }} onDoubleClick={() => setZoom(zoom === 'fit' ? 1 : 'fit')} title="Double-click switches between Fit and 100%">
-        {result && <img src={result.url} alt="" className={format === 'PNG' ? 'checkered' : ''} style={zoom === 'fit' ? { maxWidth: '100%', maxHeight: '100%' } : { width: width * zoom / devicePixelRatio, imageRendering: zoom >= 1 ? 'pixelated' : 'auto' }} />}
+        {result && <img src={result.url} alt="" className={format === 'PNG' || format === 'EXR' ? 'checkered' : ''} style={zoom === 'fit' ? { maxWidth: '100%', maxHeight: '100%' } : { width: width * zoom / devicePixelRatio, imageRendering: zoom >= 1 ? 'pixelated' : 'auto' }} />}
         {!ready && !error && <span className="muted" style={{ position: 'absolute', right: 10, bottom: 8 }}>Updating…</span>}
       </div>
       <div className="grid" style={{ gridTemplateColumns: '84px 1fr', gridTemplateRows: 'repeat(4, minmax(28px, auto))', alignContent: 'start' }}>
         <span className="muted">Format</span>
         <span style={{ display: 'flex', gap: 10 }}>
           <span className="segmented">{(['JPEG', 'PNG'] as const).map(f => <button key={f} type="button" className={format === f ? 'on' : ''} onClick={() => setFormat(f)}>{f}</button>)}</span>
-          <select title="Other formats" className={format === 'PDF' ? 'on' : ''} value={format === 'PDF' ? 'PDF' : ''} onChange={e => e.target.value && setFormat(e.target.value as ExportFormat)}><option value="" disabled>More</option><option>PDF</option></select>
+          <select title={`Other formats: PDF${linear ? ', and EXR to keep light brighter than white' : ''}`} className={others.includes(format) ? 'on' : ''} value={others.includes(format) ? format : ''} onChange={e => e.target.value && setFormat(e.target.value as ExportFormat)}><option value="" disabled>More</option>{others.map(f => <option key={f}>{f}</option>)}</select>
         </span>
         <span className="muted">Size</span>
         <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -239,10 +242,10 @@ function ExportAs({ start }: { start?: ExportFormat }) {
         </span>
         {format === 'JPEG' && <><span className="muted">Quality</span><span style={{ display: 'flex', alignItems: 'center', gap: 8 }}><input type="range" min={0} max={1} step={0.01} value={quality} onChange={e => setQuality(+e.target.value)} style={{ width: 300 }} /><span>{Math.round(quality * 100)}%</span></span></>}
         {format === 'PDF' && <><span className="muted">Page</span><span className="muted">{+(width / resolution).toFixed(2)} × {+(height / resolution).toFixed(2)} in at {Math.round(resolution)} DPI</span></>}
-        {format !== 'PNG' && <><span className="muted">Background</span><ColorSwatch title="Export Background" sampling={false} value={background} onChange={setBackground} /></>}
+        {format !== 'PNG' && format !== 'EXR' && <><span className="muted">Background</span><ColorSwatch title="Export Background" sampling={false} value={background} onChange={setBackground} /></>}
       </div>
       <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-        <span className="muted">{format === 'PNG' ? 'Transparency kept · sRGB' : 'sRGB'}</span>
+        <span className="muted">{format === 'EXR' ? 'Brighter than white kept · Transparency kept' : format === 'PNG' ? 'Transparency kept · sRGB' : 'sRGB'}</span>
         {error ? <span style={{ color: 'var(--danger)' }}>{error}</span> : <span className="muted">{ready ? (size > 1e6 ? `${(size / 1e6).toFixed(1)} MB` : `${Math.max(1, Math.round(size / 1e3))} KB`) : 'Updating…'}</span>}
       </div>
     </Modal>

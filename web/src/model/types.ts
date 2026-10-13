@@ -80,6 +80,9 @@ export type Layer = {
   wide?: { file: 'png' | 'exr'; bytes: Uint8Array; version: number }
 }
 
+// An HDR layer as imported, its OpenEXR still its pixels; an edit leaves the 8-bit copy, as the web can't edit in HDR.
+export const isHDRLayer = (layer: Layer) => layer.wide?.file === 'exr' && !!layer.image && layer.wide.version === layer.image.version
+
 export type Guide = { id: string; axis: 'horizontal' | 'vertical'; position: number }
 
 export type Doc = {

@@ -79,6 +79,7 @@ uniform sampler2D coverage;
 uniform int blendMode;
 uniform sampler2D backdrop;
 uniform vec2 targetSize;
+uniform int hdr;
 out vec4 color;
 ${blendGLSL}
 vec4 cubicWeights(float t) {
@@ -95,8 +96,9 @@ vec4 sampleImage(vec2 uv) {
     for (int i = 0; i < 4; i++) row += texture(image, (clamp(base + vec2(i - 1, j - 1), vec2(0.0), imageSize - 1.0) + 0.5) / imageSize) * wx[i];
     sum += row * wy[j];
   }
-  sum = clamp(sum, 0.0, 1.0);
-  return vec4(min(sum.rgb, sum.a), sum.a);
+  // An HDR source's colors may pass its coverage (brighter than white); only the ringing below black goes.
+  sum.a = clamp(sum.a, 0.0, 1.0);
+  return vec4(hdr == 1 ? max(sum.rgb, 0.0) : clamp(min(sum.rgb, sum.a), 0.0, 1.0), sum.a);
 }
 void main() {
   vec2 uv = sourceUV;
@@ -131,10 +133,11 @@ in vec2 uv;
 uniform sampler2D source;
 uniform int mode;
 uniform sampler2D alpha;
+uniform int hdr;
 out vec4 color;
 void main() {
   vec4 c = texture(source, uv);
-  if (mode == 1) { color = vec4(c.a > 0.0 ? min(c.rgb / c.a, 1.0) : vec3(0.0), 1.0); return; }
+  if (mode == 1) { color = vec4(c.a > 0.0 ? min(c.rgb / c.a, hdr == 1 ? 65504.0 : 1.0) : vec3(0.0), 1.0); return; }
   if (mode == 2) { float a = texture(alpha, uv).a; color = vec4(c.rgb * a, a); return; }
   color = c;
 }`
@@ -184,19 +187,29 @@ uniform uint seed;
 uniform float unitsPerPixel;
 uniform int gaussian;
 uniform int monochromatic;
+uniform int hdr;
 out vec4 color;
 ${hashGLSL}
+vec3 toLinear(vec3 c) { return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(0.04045, c)); }
+vec3 toEncoded(vec3 c) { return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c)); }
 void main() {
   vec4 p = texture(source, uv);
   if (p.a <= 0.0) { color = p; return; }
-  vec3 c = min(p.rgb / p.a, 1.0);
+  vec3 c = max(p.rgb / p.a, 0.0);
+  // Exposure over the full range, past white, as ExposureSettings' table works: to linear light, scaled, offset, raised to 1/gamma,
+  // and back.
+  if (mode == 6) { color = vec4(max(toEncoded(pow(max(toLinear(c) * params.x + params.y, 0.0), vec3(params.z))), 0.0) * p.a, p.a); return; }
+  // With HDR below, the other adjustments see each color divided by its brightest channel (when that's past white), keeping its hue
+  // within white, and their result is multiplied back (GPUAdjustment.apply on the Mac).
+  float over = hdr == 1 ? max(1.0, max(c.r, max(c.g, c.b))) : 1.0;
+  c = min(c / over, 1.0);
   if (mode == 1) {
     vec3 x = c * 255.0;
     c = vec3(texture(table, vec2((x.r + 0.5) / 256.0, 1.0 / 6.0)).r, texture(table, vec2((x.g + 0.5) / 256.0, 0.5)).r, texture(table, vec2((x.b + 0.5) / 256.0, 5.0 / 6.0)).r);
   } else if (mode == 2) {
     c = texture(cube, (c * 32.0 + 0.5) / 33.0).rgb;
   } else if (mode == 3) {
-    color = vec4(p.a - p.rgb, p.a); return;
+    c = 1.0 - c;
   } else if (mode == 4) {
     vec2 at = (floor(gl_FragCoord.xy) + 0.5) * unitsPerPixel;
     float amount = params.x, size = params.y, rough = clamp(params.z / 100.0, 0.0, 1.0);
@@ -218,7 +231,7 @@ void main() {
     }
     c = v / 255.0;
   }
-  color = vec4(clamp(c, 0.0, 1.0) * p.a, p.a);
+  color = vec4(clamp(c, 0.0, 1.0) * over * p.a, p.a);
 }`
 
 // One pass of a Gaussian along `direction` (in source texels), transparent past the source's edges.
