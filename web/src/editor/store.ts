@@ -682,7 +682,7 @@ export class Store {
     const scaleEffects = (effects: Layer['effects']) => {
       if (!effects) return effects
       const f = Math.sqrt(sx * sy), out: any = structuredClone(effects)
-      for (const effect of Object.values(out) as any[]) for (const key of ['size', 'distance', 'blur']) if (key in effect) effect[key] *= f
+      for (const effect of Object.values(out) as any[]) for (const key of ['size', 'distance', 'blur']) if (key in effect) effect[key] = Math.min(key === 'distance' ? 5000 : 500, effect[key] * f)
       return out
     }
     const layers = doc.layers.map(l => {
@@ -724,6 +724,32 @@ export class Store {
     const layers = this.doc.layers.map(l => ({ ...l, transform: mirror(l.transform), maskPlacement: l.maskPlacement ? mirror(l.maskPlacement) : null }))
     const guides = this.doc.guides.map(g => (axis === 'x') === (g.axis === 'vertical') ? { ...g, position: (axis === 'x' ? width : height) - g.position } : g)
     this.commit(axis === 'x' ? 'Flip Canvas Horizontal' : 'Flip Canvas Vertical', { doc: { ...this.doc, layers, guides }, selection: null })
+  }
+
+  // Image › Rotate Canvas 90° (CanvasRotation.swift): width and height swap, and every layer, placed mask, guide and the selection turn
+  // with the canvas. Layers are placed, not resampled.
+  rotateCanvas(clockwise: boolean) {
+    const { width, height } = this.doc
+    const turn = (t: Transform): Transform => {
+      const cx = t.origin[0] + t.size[0] / 2, cy = t.origin[1] + t.size[1] / 2
+      const [mx, my] = clockwise ? [height - cy, cx] : [cy, width - cx]
+      return { ...t, origin: [mx - t.size[0] / 2, my - t.size[1] / 2], rotation: (t.rotation + (clockwise ? 90 : -90)) % 360 }
+    }
+    const layers = this.doc.layers.map(l => ({ ...l, transform: turn(l.transform), maskPlacement: l.maskPlacement ? turn(l.maskPlacement) : null }))
+    const guides = this.doc.guides.map(g => ({
+      ...g, axis: g.axis === 'vertical' ? 'horizontal' as const : 'vertical' as const,
+      position: g.axis === 'vertical' ? (clockwise ? g.position : width - g.position) : (clockwise ? height - g.position : g.position),
+    }))
+    const old = this.state.selection
+    let selection: Raster | null = null
+    if (old) {
+      selection = new Raster(old.height, old.width, 1)
+      for (let y = 0; y < old.height; y++) for (let x = 0; x < old.width; x++) {
+        const [nx, ny] = clockwise ? [old.height - 1 - y, x] : [y, old.width - 1 - x]
+        selection.data[ny * old.height + nx] = old.data[y * old.width + x]
+      }
+    }
+    this.commit(clockwise ? 'Rotate Canvas 90° Clockwise' : 'Rotate Canvas 90° Counterclockwise', { doc: { ...this.doc, width: height, height: width, layers, guides }, selection })
   }
 
   cropToSelection() {

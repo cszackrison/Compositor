@@ -11,7 +11,7 @@ import { BrushStroke } from '../src/tools/brush'
 import { History } from '../src/model/history'
 import { pixelToDocument } from '../src/render/compositor'
 import { zipPackage, unzipPackage } from '../src/io/files'
-import { contentAwareFill, defaultDither, defaultScanlines, dither, scanlines } from '../src/editor/filterKinds'
+import { contentAwareFill, defaultDither, defaultScanlines, dither, gaussianBlur, noSides, scanlines } from '../src/editor/filterKinds'
 import { identity } from '../src/render/gl'
 
 beforeAll(async () => { await loadKernels(readFileSync(new URL('../public/kernels.wasm', import.meta.url))) })
@@ -135,6 +135,24 @@ describe('filters', () => {
       const i = (y * 48 + x) * 4
       expect(out.data[i + 3]).toBe(255)
       expect(Math.max(out.data[i], out.data[i + 2])).toBeGreaterThan(120)
+    }
+  })
+
+  it('Gaussian Blur keeps solid edges at the canvas, and Preserve Transparency keeps the outline and its color', () => {
+    const solid = () => Raster.filled(10, 10, 4, [90, 90, 90, 255])
+    const filled = gaussianBlur(input(solid()), 3, false, { left: true, right: true, top: true, bottom: true }) as { pixels: Raster; origin: [number, number] }
+    expect([filled.pixels.width, filled.pixels.height, ...filled.origin]).toEqual([10, 10, 0, 0])
+    expect(filled.pixels.data.every((v, i) => v === (i % 4 === 3 ? 255 : 90))).toBe(true)
+    const faded = gaussianBlur(input(solid()), 3, false, noSides) as { pixels: Raster; origin: [number, number] }
+    expect(faded.pixels.width).toBeGreaterThan(10)
+    expect(faded.pixels.data[faded.pixels.data.length - 1]).toBeLessThan(255)
+    const cutout = new Raster(12, 12, 4)
+    for (let y = 3; y < 9; y++) for (let x = 3; x < 9; x++) cutout.data.set([200, 0, 0, 255], (y * 12 + x) * 4)
+    cutout.data.set([100, 0, 0, 128], (3 * 12 + 2) * 4)
+    const kept = gaussianBlur(input(cutout.clone()), 2, true) as Raster
+    for (let i = 0; i < kept.data.length; i += 4) {
+      expect(kept.data[i + 3]).toBe(cutout.data[i + 3])
+      expect(Math.abs(kept.data[i] - Math.round(cutout.data[i + 3] * 200 / 255))).toBeLessThanOrEqual(1)
     }
   })
 

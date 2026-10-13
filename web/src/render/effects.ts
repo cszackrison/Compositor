@@ -70,7 +70,8 @@ function morph(source: Float32Array, width: number, height: number, reach: numbe
   return out
 }
 
-// The layer with its effects, in layer pixels, grown by `inset` on every side (MetalLayerEffects' composite order).
+// The layer with its effects, in layer pixels, grown by `inset` on every side (MetalLayerEffects' composite order: shadow, outer glow,
+// outside stroke, the recolored layer, inside stroke).
 export function renderEffects(image: Raster, mask: Raster | null, effects: LayerEffects): { raster: Raster; inset: number } {
   const stroke = on(effects.stroke), shadow = on(effects.shadow), overlay = on(effects.colorOverlay), innerShadow = on(effects.innerShadow), outerGlow = on(effects.outerGlow), innerGlow = on(effects.innerGlow)
   const inset = Math.ceil(Math.max(stroke && !stroke.inside ? stroke.size : 0, shadow ? shadow.distance + 3 * shadow.blur : 0, outerGlow ? 3 * outerGlow.size : 0)) + 2
@@ -92,10 +93,10 @@ export function renderEffects(image: Raster, mask: Raster | null, effects: Layer
   if (shadow) { const [dx, dy] = offset(shadow.angle, shadow.distance); shadowBuf = blur(shift(shape, width, height, dx, dy), width, height, shadow.blur / 2) }
   if (innerShadow) {
     const [dx, dy] = offset(innerShadow.angle, innerShadow.distance), b = blur(shift(shape, width, height, dx, dy), width, height, innerShadow.blur / 2)
-    innerBuf = shape.map((s, i) => Math.min(1, Math.max(0, s * (1 - b[i]))))
+    innerBuf = b.map(v => Math.min(1, Math.max(0, 1 - v)))
   }
   if (outerGlow && outerGlow.size > 0) glowBuf = blur(shape, width, height, outerGlow.size / 2)
-  if (innerGlow && innerGlow.size > 0) { const b = blur(shape, width, height, innerGlow.size / 2); innerGlowBuf = shape.map((s, i) => Math.min(1, Math.max(0, s * (1 - b[i])))) }
+  if (innerGlow && innerGlow.size > 0) { const b = blur(shape, width, height, innerGlow.size / 2); innerGlowBuf = b.map(v => Math.min(1, Math.max(0, 1 - v))) }
   const out = new Raster(width, height, 4)
   const clamp = (v: number) => Math.min(1, Math.max(0, v))
   for (let i = 0; i < width * height; i++) {
@@ -104,11 +105,15 @@ export function renderEffects(image: Raster, mask: Raster | null, effects: Layer
     if (shadow && shadowBuf) { const k = clamp(shadowBuf[i] * shadow.opacity); r = shadow.red * k; g = shadow.green * k; b = shadow.blue * k; a = k }
     if (outerGlow && glowBuf) over(outerGlow, clamp(glowBuf[i] * (1 - shape[i]) * outerGlow.opacity))
     if (stroke && ring && !stroke.inside) over(stroke, clamp(ring[i] * stroke.opacity))
+    // A color overlay, inner glow and inner shadow recolor the layer's own pixels and keep their alpha, as Photoshop's do, so a
+    // translucent pixel takes the whole color and the effects beneath aren't tinted.
     const sa = src[i * 4 + 3]
-    r = src[i * 4] + r * (1 - sa); g = src[i * 4 + 1] + g * (1 - sa); b = src[i * 4 + 2] + b * (1 - sa); a = sa + a * (1 - sa)
-    if (overlay) over(overlay, clamp(shape[i] * overlay.opacity))
-    if (innerGlow && innerGlowBuf) over(innerGlow, clamp(innerGlowBuf[i] * innerGlow.opacity))
-    if (innerShadow && innerBuf) over(innerShadow, clamp(innerBuf[i] * innerShadow.opacity))
+    let sr = src[i * 4], sg = src[i * 4 + 1], sb = src[i * 4 + 2]
+    const recolor = (effect: { red: number; green: number; blue: number }, k: number) => { sr = sr * (1 - k) + effect.red * sa * k; sg = sg * (1 - k) + effect.green * sa * k; sb = sb * (1 - k) + effect.blue * sa * k }
+    if (overlay) recolor(overlay, clamp(overlay.opacity))
+    if (innerGlow && innerGlowBuf) recolor(innerGlow, clamp(innerGlowBuf[i] * innerGlow.opacity))
+    if (innerShadow && innerBuf) recolor(innerShadow, clamp(innerBuf[i] * innerShadow.opacity))
+    r = sr + r * (1 - sa); g = sg + g * (1 - sa); b = sb + b * (1 - sa); a = sa + a * (1 - sa)
     if (stroke && ring && stroke.inside) over(stroke, clamp(ring[i] * stroke.opacity))
     const p = i * 4
     out.data[p] = clamp(r) * 255 + 0.5; out.data[p + 1] = clamp(g) * 255 + 0.5; out.data[p + 2] = clamp(b) * 255 + 0.5; out.data[p + 3] = clamp(a) * 255 + 0.5

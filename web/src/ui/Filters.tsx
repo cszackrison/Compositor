@@ -4,7 +4,7 @@ import { FilterDialog } from './FilterDialog'
 import { Slider, AdjustmentEditor } from './Inspector'
 import { useEditor } from './hooks'
 import { defaultDither, defaultScanlines, ditherGroups, ditherStyles, ditherUses, type DitherSettings, type VignetteSettings } from '../editor/filterKinds'
-import { job } from '../editor/filters'
+import { canvasSides, job } from '../editor/filters'
 import { RemoveBackgroundDialog } from '../ai/RemoveBackground'
 import { type Adjustment, type AdjustmentKind, type LevelRange, newAdjustment, identityRange } from '../model/types'
 import { applyRange } from '../model/adjustments'
@@ -26,11 +26,16 @@ function Simple<P extends object>({ name, initial, run, trim, children, masks }:
 }
 
 function GaussianBlurDialog() {
-  return <Simple name="Gaussian Blur" initial={{ radius: 1 }} trim run={p => job('gaussianBlur', p.radius)}>{(p, set) => <Slider label="Radius" value={p.radius} min={0.1} max={250} digits={1} log onChange={radius => set({ radius })} />}</Simple>
+  const sides = useMemo(canvasSides, [])
+  return <Simple name="Gaussian Blur" initial={{ radius: 5, preserveTransparency: false }} trim run={p => job('gaussianBlur', p.radius, p.preserveTransparency, sides)}>{(p, set) => <>
+    <Slider label="Radius" value={p.radius} min={0.1} max={250} digits={1} log onChange={radius => set({ radius })} />
+    <label title="Blur only the colors and keep every pixel's transparency, so the outline stays where it is"><input type="checkbox" checked={!!p.preserveTransparency} onChange={e => set({ preserveTransparency: e.target.checked })} /> Preserve Transparency</label>
+  </>}</Simple>
 }
 
 function MotionBlurDialog() {
-  return <Simple name="Motion Blur" initial={{ angle: 0, distance: 10 }} trim run={p => job('motionBlur', p.angle, p.distance)}>{(p, set) => <>
+  const sides = useMemo(canvasSides, [])
+  return <Simple name="Motion Blur" initial={{ angle: 0, distance: 10 }} trim run={p => job('motionBlur', p.angle, p.distance, sides)}>{(p, set) => <>
     <Slider label="Angle" value={p.angle} min={-90} max={90} onChange={angle => set({ angle })} />
     <Slider label="Distance" value={p.distance} min={1} max={2000} log onChange={distance => set({ distance })} />
   </>}</Simple>

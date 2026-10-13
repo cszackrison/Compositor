@@ -1,6 +1,6 @@
 import { store } from './store'
 import { Raster } from '../model/raster'
-import { apply, type Mat3 } from '../render/gl'
+import { apply, invert, type Mat3 } from '../render/gl'
 import type { Layer, Transform } from '../model/types'
 import { call, kernelModule, withBuffers } from '../kernels'
 import { pixelToDocument } from '../render/compositor'
@@ -15,6 +15,17 @@ export type FilterRun = (input: FilterInput) => FilterOutput
 // A filter to run in the worker (filterWorker.ts): a function of filterKinds by name, and its arguments after the input.
 export type FilterJob = { job: keyof typeof kinds; args: unknown[] }
 export const job = (name: keyof typeof kinds, ...args: unknown[]): FilterJob => ({ job: name, args })
+// The active layer's sides at or past the canvas's edge, where Gaussian and Motion Blur carry its edge pixels on; none for a mask or a
+// rotated layer, whose sides don't run along the canvas's.
+export function canvasSides(): kinds.Sides {
+  const layer = store.active, doc = store.state.doc
+  if (!layer?.image || !doc || store.state.editingMask || layer.transform.rotation % 360 !== 0) return kinds.noSides
+  const toPixel = invert(pixelToDocument(layer.transform, layer.image.width, layer.image.height))
+  const corners = [[0, 0], [doc.width, doc.height]].map(([x, y]) => apply(toPixel, x, y))
+  const [x0, x1] = [Math.min(corners[0][0], corners[1][0]), Math.max(corners[0][0], corners[1][0])], [y0, y1] = [Math.min(corners[0][1], corners[1][1]), Math.max(corners[0][1], corners[1][1])]
+  return { left: x0 >= -0.5, right: x1 <= layer.image.width + 0.5, top: y0 >= -0.5, bottom: y1 <= layer.image.height + 0.5 }
+}
+
 export const isJob = (run: FilterRun | FilterJob | undefined | null): run is FilterJob => !!run && typeof run === 'object' && 'job' in run
 
 let worker: Worker | null | undefined

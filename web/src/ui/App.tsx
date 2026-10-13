@@ -221,6 +221,8 @@ export function App() {
       { label: 'Trim…', action: open('Trim'), disabled: !doc },
       { label: 'Crop to Selection', action: () => store.cropToSelection(), disabled: !state.selection },
       'divider',
+      { label: 'Rotate Canvas 90° Clockwise', action: () => { store.rotateCanvas(true); fit() }, disabled: !doc },
+      { label: 'Rotate Canvas 90° Counterclockwise', action: () => { store.rotateCanvas(false); fit() }, disabled: !doc },
       { label: 'Flip Canvas Horizontal', action: () => store.flipCanvas('x'), disabled: !doc },
       { label: 'Flip Canvas Vertical', action: () => store.flipCanvas('y'), disabled: !doc },
     ] },

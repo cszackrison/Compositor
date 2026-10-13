@@ -10,24 +10,46 @@ const clamp01 = (v: number) => Math.min(1, Math.max(0, v))
 
 // Pads a raster by `margin` transparent pixels on every side, for filters that spread past the layer's edges.
 function padded(pixels: Raster, margin: number): { pixels: Raster; origin: [number, number] } {
-  const out = new Raster(pixels.width + margin * 2, pixels.height + margin * 2, 4)
-  for (let y = 0; y < pixels.height; y++) out.data.set(pixels.data.subarray(y * pixels.width * 4, (y + 1) * pixels.width * 4), ((y + margin) * out.width + margin) * 4)
-  return { pixels: out, origin: [-margin, -margin] }
+  return paddedSides(pixels, margin, noSides)
 }
 
-export function gaussianBlur(input: FilterInput, radius: number): FilterOutput {
+// A layer's sides (in its own pixels, top is row 0) at or past the canvas's edge.
+export type Sides = { left: boolean; right: boolean; top: boolean; bottom: boolean }
+export const noSides: Sides = { left: false, right: false, top: false, bottom: false }
+const anySide = (sides: Sides) => sides.left || sides.right || sides.top || sides.bottom
+
+// Pads by `margin` transparent pixels on every side but `sides`, which Gaussian and Motion Blur then carry their edge pixels on past
+// (blurring with clamped edges), as Photoshop's do at the canvas's edge: a picture filling the canvas keeps solid edges.
+function paddedSides(pixels: Raster, margin: number, sides: Sides): { pixels: Raster; origin: [number, number] } {
+  const left = sides.left ? 0 : margin, top = sides.top ? 0 : margin
+  const out = new Raster(pixels.width + left + (sides.right ? 0 : margin), pixels.height + top + (sides.bottom ? 0 : margin), 4)
+  for (let y = 0; y < pixels.height; y++) out.data.set(pixels.data.subarray(y * pixels.width * 4, (y + 1) * pixels.width * 4), ((y + top) * out.width + left) * 4)
+  return { pixels: out, origin: [left ? -left : 0, top ? -top : 0] }
+}
+
+// `preserveTransparency` blurs only the colors, from the layer's own pixels, and keeps every pixel's alpha, so the outline stays put.
+export function gaussianBlur(input: FilterInput, radius: number, preserveTransparency = false, sides: Sides = noSides): FilterOutput {
   if (radius <= 0) return null
+  if (preserveTransparency && !input.isMask) {
+    const { pixels } = input, blurred = blurFloats(Float32Array.from(pixels.data), pixels.width, pixels.height, 4, radius)
+    // Dividing by the blurred alpha takes out the pull of the clear pixels around, which would darken the colors near the outline.
+    for (let i = 0; i < pixels.data.length; i += 4) {
+      const a = pixels.data[i + 3], b = blurred[i + 3]
+      for (let c = 0; c < 3; c++) pixels.data[i + c] = b > 0 ? Math.round(Math.min(a, blurred[i + c] / b * a)) : 0
+    }
+    return pixels
+  }
   const margin = input.isMask ? 0 : Math.ceil(radius * 3 + 2)
-  const grid = margin ? padded(input.pixels, margin) : { pixels: input.pixels, origin: [0, 0] as [number, number] }
-  return { pixels: blurRaster(grid.pixels, radius, input.isMask), origin: grid.origin }
+  const grid = margin ? paddedSides(input.pixels, margin, sides) : { pixels: input.pixels, origin: [0, 0] as [number, number] }
+  return { pixels: blurRaster(grid.pixels, radius, input.isMask || anySide(sides)), origin: grid.origin }
 }
 
-export function motionBlur(input: FilterInput, angle: number, distance: number): FilterOutput {
+export function motionBlur(input: FilterInput, angle: number, distance: number, sides: Sides = noSides): FilterOutput {
   if (distance <= 0) return null
   const sigma = distance / Math.sqrt(12), reach = Math.ceil(sigma * 3)
   const margin = input.isMask ? 0 : reach + 2
-  const grid = margin ? padded(input.pixels, margin) : { pixels: input.pixels, origin: [0, 0] as [number, number] }
-  const { width, height, data } = grid.pixels
+  const grid = margin ? paddedSides(input.pixels, margin, sides) : { pixels: input.pixels, origin: [0, 0] as [number, number] }
+  const { width, height, data } = grid.pixels, clamped = input.isMask || anySide(sides)
   const out = new Raster(width, height, 4)
   const dx = Math.cos(angle * Math.PI / 180), dy = -Math.sin(angle * Math.PI / 180)
   const taps = Math.min(96, Math.max(1, reach)), step = reach / taps
@@ -35,7 +57,7 @@ export function motionBlur(input: FilterInput, angle: number, distance: number):
   let total = 0
   for (let k = -taps; k <= taps; k++) { const d = k * step, w = Math.exp(-d * d / (2 * sigma * sigma)); weights.push(w); total += w }
   const sample = (x: number, y: number, c: number) => {
-    if (input.isMask) { x = Math.min(width - 1, Math.max(0, x)); y = Math.min(height - 1, Math.max(0, y)) }
+    if (clamped) { x = Math.min(width - 1, Math.max(0, x)); y = Math.min(height - 1, Math.max(0, y)) }
     const x0 = Math.floor(x), y0 = Math.floor(y), fx = x - x0, fy = y - y0
     const at = (px: number, py: number) => px < 0 || py < 0 || px >= width || py >= height ? 0 : data[(py * width + px) * 4 + c]
     return (at(x0, y0) * (1 - fx) + at(x0 + 1, y0) * fx) * (1 - fy) + (at(x0, y0 + 1) * (1 - fx) + at(x0 + 1, y0 + 1) * fx) * fy

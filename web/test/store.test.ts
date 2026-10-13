@@ -109,4 +109,25 @@ describe('layer operations', () => {
     expect(copy.clipTo).toBe(copyBase.id)
     expect(store.layer(id('C'))!.clipTo).toBe(id('B'))
   })
+
+  it('rotates the canvas a quarter turn, layers, guides and selection with it, and back', async () => {
+    const { pixelToDocument } = await import('../src/render/compositor')
+    const { apply } = await import('../src/render/gl')
+    const store = new Store()
+    const layer = newLayer({ name: 'Dot', transform: fullTransform(1, 1, 0, 0), image: new Raster(1, 1, 4) })
+    store.open({ id: 'R', width: 4, height: 2, resolution: 72, layers: [layer], guides: [{ id: 'G', axis: 'vertical', position: 1 }], extra: {} }, layer.id, null)
+    const selection = new Raster(4, 2, 1)
+    selection.data[0] = 255
+    store.set({ selection })
+    store.rotateCanvas(true)
+    expect([store.doc.width, store.doc.height]).toEqual([2, 4])
+    const t = store.doc.layers[0].transform
+    expect(apply(pixelToDocument(t, 1, 1), 0.5, 0.5).map(v => Math.round(v * 100) / 100)).toEqual([1.5, 0.5])
+    expect(store.doc.guides[0]).toMatchObject({ axis: 'horizontal', position: 1 })
+    expect(store.state.selection!.data[1]).toBe(255)
+    store.rotateCanvas(false)
+    expect(store.doc.layers[0].transform).toEqual({ ...layer.transform, rotation: 0 })
+    expect(store.doc.guides[0]).toMatchObject({ axis: 'vertical', position: 1 })
+    expect(store.state.selection!.data[0]).toBe(255)
+  })
 })

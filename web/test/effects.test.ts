@@ -27,4 +27,13 @@ describe('layer effects', () => {
       expect(Buffer.from(fast.raster.data).equals(Buffer.from(slow.raster.data))).toBe(true)
     }
   })
+
+  it('recolor translucent pixels fully with an overlay, keeping their alpha and leaving the shadow untinted', () => {
+    const image = new Raster(5, 5, 4)
+    for (let i = 0; i < 25; i++) image.data.set([0, 0, 0, 128], i * 4)
+    const white = { red: 1, green: 1, blue: 1 }
+    const { raster, inset } = renderEffects(image, null, { colorOverlay: { ...white, opacity: 1 } } as LayerEffects)
+    const center = ((inset + 2) * raster.width + inset + 2) * 4
+    expect([...raster.data.subarray(center, center + 4)]).toEqual([128, 128, 128, 128])
+  })
 })

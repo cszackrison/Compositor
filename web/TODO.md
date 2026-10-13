@@ -74,13 +74,13 @@ new C needs. Hashes are upstream's commits; effort is a guess.
   the menu ("Last Filter: Gaussian Blur"); not Content-Aware Fill or the Image menu's adjustments. `FilterSession.start()` and
   `commit()` already run a job without a dialog, so keep the last job from `FilterDialog`'s commit. The Mac's ⌃⌘F has no separate
   chord off the Mac, and Ctrl+F is the browser's Find. Small.
-- [ ] **Gaussian Blur: Preserve Transparency, solid edges at the canvas, 5 px to start** (9a0ad3e). Preserve Transparency blurs
+- [x] **Gaussian Blur: Preserve Transparency, solid edges at the canvas, 5 px to start** (9a0ad3e). Preserve Transparency blurs
   without padding, divides by the blurred alpha and puts the original alpha back. A side at or past the canvas edge isn't padded
   and carries its edge pixels outward (Motion Blur too); other sides still fade out. Small.
-- [ ] **Color Overlay, Inner Glow and Inner Shadow recolor translucent pixels fully** (e7e295e, 9cb57db): recolor the layer's own
+- [x] **Color Overlay, Inner Glow and Inner Shadow recolor translucent pixels fully** (e7e295e, 9cb57db): recolor the layer's own
   pixels before they go over the shadow, glow and outside stroke, and drop the `shape ×` from the inner buffers in
   `render/effects.ts`. Regenerate `test/fixtures/effectsReference.ts`. Small.
-- [ ] **Image › Rotate Canvas 90° Clockwise and Counterclockwise** (754f188, `CanvasRotation.swift`): width and height swap, each
+- [x] **Image › Rotate Canvas 90° Clockwise and Counterclockwise** (754f188, `CanvasRotation.swift`): width and height swap, each
   transform quarter-turns about the canvas (no resampling), guides swap axis, the selection turns too. Model on
   `store.flipCanvas`. Small.
 - [ ] **Canvas Only** on F (ad4bddf, 088a5c1, 720c121): the canvas alone on black over the whole window, F or Esc to leave, maybe
@@ -105,7 +105,7 @@ new C needs. Hashes are upstream's commits; effort is a guess.
 - [ ] Drop anywhere on the tab bar to open in a new project (d3d0ce7). Trivial.
 - [ ] ⌘ or Ctrl with a middle drag zooms, 2^(dy/100) about the press point (e03923f); and the closed hand for a middle-button pan
   with any tool (c0a1cd0). Trivial.
-- [ ] Image Size caps the effect sizes it scales (94e90bd): sizes and blurs at 500, distances at 5000, in `scaleEffects`. Trivial.
+- [x] Image Size caps the effect sizes it scales (94e90bd): sizes and blurs at 500, distances at 5000, in `scaleEffects`. Trivial.
 
 ### Medium
 
