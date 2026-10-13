@@ -91,7 +91,8 @@ opt-in pen pressure, a web app manifest for the home screen, a large-canvas warn
 - [x] Phones on their side get a phone layout of their own: the tools down the left, the bar above the canvas and the tool's options
   below it (a coarse pointer and at most 500 px tall).
 - [ ] Reordering layers by dragging on touch (Move Up and Move Down in the long-press menu for now).
-- [ ] Offline use from the home screen would need a service worker.
+- [x] Offline use: a service worker (`public/sw.js`) keeps the app's files as it installs (listed by the build in `offline.json`) and the
+  optional parts (HEIC, RAW, the AI runtimes) once used; a new build waits for open tabs to close. HTTPS or localhost only.
 - [ ] iOS may clear browser storage for sites not added to the home screen after a week unused; projects saved in the browser
   should be downloaded as a zip to keep.
 

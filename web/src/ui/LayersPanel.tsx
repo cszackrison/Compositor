@@ -160,6 +160,31 @@ export function LayersPanel() {
     const box = (event.currentTarget as HTMLElement).getBoundingClientRect(), y = (event.clientY - box.top) / box.height
     setDrop({ id: layer.id, where: layer.isGroup && y > 0.3 && y < 0.7 ? 'into' : y < 0.5 ? 'above' : 'below' })
   }
+  // Reordering by touch, from a row's grip, as the mouse's drag does: where it's let go marks above, below or into a folder.
+  const reorder = useRef<{ ids: string[]; target: { id: string; where: 'above' | 'below' | 'into' } | null } | null>(null)
+  const startReorder = (event: React.PointerEvent, layer: Layer, selected: boolean) => {
+    event.stopPropagation(); event.preventDefault()
+    ;(event.currentTarget as HTMLElement).setPointerCapture(event.pointerId)
+    reorder.current = { ids: selected ? state.selectedIds : [layer.id], target: null }
+  }
+  const moveReorder = (event: React.PointerEvent) => {
+    const r = reorder.current
+    if (!r) return
+    const list = listRef.current, box = list?.getBoundingClientRect()
+    if (list && box) { if (event.clientY < box.top + 30) list.scrollTop -= 8; else if (event.clientY > box.bottom - 30) list.scrollTop += 8 }
+    const row = document.elementFromPoint(event.clientX, event.clientY)?.closest('[data-layer-id]') as HTMLElement | null, over = row && store.layer(row.dataset.layerId)
+    if (!row || !over || r.ids.includes(over.id)) { r.target = null; setDrop(null); return }
+    const rect = row.getBoundingClientRect(), y = (event.clientY - rect.top) / rect.height
+    r.target = { id: over.id, where: over.isGroup && y > 0.3 && y < 0.7 ? 'into' : y < 0.5 ? 'above' : 'below' }
+    setDrop(r.target)
+  }
+  const endReorder = () => {
+    const r = reorder.current
+    reorder.current = null
+    if (r?.target) store.move(r.ids, r.target.where === 'into' ? { into: r.target.id } : r.target.where === 'above' ? { above: r.target.id } : { below: r.target.id })
+    setDrop(null)
+  }
+
   const onDrop = (event: DragEvent) => {
     event.preventDefault()
     const effect = event.dataTransfer.getData('application/x-compositor-effect')
@@ -197,6 +222,7 @@ export function LayersPanel() {
                 : layer.image ? <img className={`thumb ${isActive && !editingMask ? 'target' : ''}`} src={thumbnail(layer.image, `${layer.id}:image`)} alt="" title={`${command}-click loads the layer’s pixels as a selection`} onClick={e => { if (commandKey(e)) store.loadSelection(layer.id, false, e.altKey ? 'subtract' : e.shiftKey ? 'add' : 'replace'); else store.set({ editingMask: false }) }} /> : <span className="thumb" />}
               {layer.mask && <img className={`thumb mask ${editingMask ? 'target' : ''} ${layer.maskEnabled ? '' : 'disabled'}`} src={thumbnail(layer.mask, `${layer.id}:mask`)} alt="" title={`Layer mask: click to edit, Shift-click to disable, ${command}-click selects its black areas`} onClick={e => { if (commandKey(e)) store.loadSelection(layer.id, true, e.altKey ? 'subtract' : e.shiftKey ? 'add' : 'replace'); else if (e.shiftKey) store.updateLayer(layer.id, { maskEnabled: !layer.maskEnabled }, layer.maskEnabled ? 'Disable Mask' : 'Enable Mask'); else { store.setActive(layer.id); store.set({ editingMask: true }) } }} />}
               <span className="name">{renaming === layer.id ? <input autoFocus defaultValue={layer.name} onBlur={e => { const name = e.target.value.trim(); if (name && name !== layer.name) store.updateLayer(layer.id, { name }, 'Rename Layer'); setRenaming(null) }} onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); if (e.key === 'Escape') setRenaming(null); e.stopPropagation() }} /> : layer.name}</span>
+              {coarse && <span className="grip" title="Drag to move the layer" onPointerDown={e => startReorder(e, layer, selected)} onPointerMove={moveReorder} onPointerUp={endReorder} onPointerCancel={endReorder}>≡</span>}
               {isDeep(layer) && <span className="badge" title={isHDR(layer) ? 'Keeps light brighter than white' : 'Keeps 16 bits a channel'}>{isHDR(layer) ? 'HDR' : '16-Bit'}</span>}
               {layer.effects && Object.values(layer.effects).some(Boolean) && <span className="badge" title="Layer effects">fx</span>}
               {layer.blendMode !== 'Normal' && !layer.isGroup && <span className="badge" title={layer.blendMode}>◐</span>}
