@@ -88,6 +88,8 @@ export class Store {
   }
   pixelsChanged() { this.set({ pixelRevision: this.state.pixelRevision + 1, saved: false }) }
   notify(text: string, kind: 'error' | 'info' = 'error') {
+    // A part of the editor loaded on first use that a newer version has since replaced on the server (Chrome, Firefox, Safari).
+    if (import.meta.env?.PROD && /dynamically imported module|Importing a module script failed/i.test(text)) text = 'Compositor has been updated since this page was opened. Save your work, then reload the page.'
     this.set({ message: { text, kind } })
     setTimeout(() => { if (this.state.message?.text === text) this.set({ message: null }) }, kind === 'error' ? 6000 : 2500)
   }
