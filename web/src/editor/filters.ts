@@ -1,7 +1,11 @@
 import { store } from './store'
 import { Raster } from '../model/raster'
 import { apply, invert, type Mat3 } from '../render/gl'
-import type { Layer, Transform } from '../model/types'
+import type { Adjustment, Layer, Transform } from '../model/types'
+import { type Deep, bound, cutDeep, deepOf, flattened, makeDeep } from '../model/deep'
+import { type DeepGrid, type DeepPixels, rasterizes, runDeep } from './deepFilters'
+import { fromHalf } from '../model/deep'
+import { toHalf } from '../io/exr'
 import { call, kernelModule, withBuffers } from '../kernels'
 import { pixelToDocument } from '../render/compositor'
 import * as kinds from './filterKinds'
@@ -30,18 +34,19 @@ export const isJob = (run: FilterRun | FilterJob | undefined | null): run is Fil
 
 let worker: Worker | null | undefined
 let nextId = 1
-const waiting = new Map<number, { resolve: (out: FilterOutput) => void; reject: (error: Error) => void }>()
+const waiting = new Map<number, { resolve: (out: FilterOutput | DeepPixels) => void; reject: (error: Error) => void }>()
 const onMainThread = (j: FilterJob, input: FilterInput) => (kinds[j.job] as unknown as (input: FilterInput, ...args: unknown[]) => FilterOutput)(input, ...j.args)
 
 function filterWorker(): Worker | null {
   if (worker !== undefined) return worker
   try {
     worker = new Worker(new URL('./filterWorker.ts', import.meta.url), { type: 'module' })
-    worker.onmessage = (event: MessageEvent<{ id: number; error?: string; result?: { width: number; height: number; channels: 1 | 4; data: Uint8Array; origin: [number, number] | null } | null }>) => {
-      const { id, error, result } = event.data, pending = waiting.get(id)
+    worker.onmessage = (event: MessageEvent<{ id: number; error?: string; deep?: DeepPixels; result?: { width: number; height: number; channels: 1 | 4; data: Uint8Array; origin: [number, number] | null } | null }>) => {
+      const { id, error, result, deep } = event.data, pending = waiting.get(id)
       waiting.delete(id)
       if (!pending) return
       if (error) pending.reject(new Error(error))
+      else if (deep) pending.resolve(deep)
       else if (!result) pending.resolve(null)
       else { const raster = new Raster(result.width, result.height, result.channels, result.data); pending.resolve(result.origin ? { pixels: raster, origin: result.origin } : raster) }
     }
@@ -58,12 +63,23 @@ const previewLimit = 2048
 const pixelSettings: Partial<Record<keyof typeof kinds, number[]>> = { gaussianBlur: [0], motionBlur: [1], progressiveBlur: [0, 1], bloom: [1], tonalContrast: [4], cameraRaw: [2] }
 const previewScale = (j: FilterJob, input: FilterInput) => pixelSettings[j.job] ? Math.min(1, previewLimit / Math.max(input.pixels.width, input.pixels.height)) : 1
 
+// A filter job on a 16-bit or HDR layer's pixels at their full depth (deepFilters.ts), on `grid` when it spreads past the layer.
+function runDeepJob(j: FilterJob, input: Omit<FilterInput, 'pixels'>, deep: DeepPixels, grid: DeepGrid | null): Promise<DeepPixels> {
+  const w = filterWorker(), adjustment = j.job === 'adjustPixels' ? j.args[0] as Adjustment : undefined
+  if (!w) { try { return Promise.resolve(runDeep(j.job, pixels => onMainThread(j, pixels), input, deep, grid, adjustment)) } catch (error) { return Promise.reject(error) } }
+  const id = nextId++
+  return new Promise((resolve, reject) => {
+    waiting.set(id, { resolve: out => resolve(out as DeepPixels), reject })
+    w.postMessage({ id, name: j.job, args: j.args, input, deep, grid }, [deep.pixels.buffer])
+  })
+}
+
 function runJob(j: FilterJob, input: FilterInput, scale = 1): Promise<FilterOutput> {
   const w = filterWorker()
   if (!w) { try { return Promise.resolve(onMainThread(j, input)) } catch (error) { return Promise.reject(error) } }
   const id = nextId++, { pixels, ...rest } = input
   return new Promise((resolve, reject) => {
-    waiting.set(id, { resolve, reject })
+    waiting.set(id, { resolve: out => resolve(out as FilterOutput), reject })
     w.postMessage({ id, name: j.job, args: j.args, scale, scaled: pixelSettings[j.job] ?? [], input: { ...rest, pixels: { width: pixels.width, height: pixels.height, channels: pixels.channels, data: pixels.data } } }, [pixels.data.buffer])
   })
 }
@@ -83,11 +99,12 @@ export function grownTransform(t: Transform, toDocument: Mat3, oldWidth: number,
 
 // A layer's pixels cut down to `w`×`h` at (x, y) of its grid, with the transform that keeps them in place. A mask on the layer's
 // own grid (the same size as its pixels) is cut the same way, so it stays lined up.
-export function croppedLayer(layer: Layer, x: number, y: number, w: number, h: number): Pick<Layer, 'image' | 'mask' | 'transform'> {
-  const image = layer.image!, cropped = new Raster(w, h, 4, image.read(x, y, w, h))
+export function croppedLayer(layer: Layer, x: number, y: number, w: number, h: number): Pick<Layer, 'image' | 'mask' | 'transform' | 'deep'> {
+  const image = layer.image!, cropped = new Raster(w, h, 4, image.read(x, y, w, h)), deep = deepOf(layer)
   const onGrid = layer.mask && !layer.maskPlacement && layer.mask.width === image.width && layer.mask.height === image.height
   return {
     image: cropped,
+    deep: deep ? bound(cropped, cutDeep(flattened(deep), deep.width, x, y, w, h), deep.hdr) : undefined,
     mask: onGrid ? new Raster(w, h, 1, layer.mask!.read(x, y, w, h)) : layer.mask,
     transform: grownTransform(layer.transform, pixelToDocument(layer.transform, image.width, image.height), image.width, image.height, [x, y], w, h),
   }
@@ -118,6 +135,9 @@ export class FilterSession {
   private shownJob: FilterJob | null = null
   private shownReduced = false
   private finalRun = false
+  // A 16-bit or HDR layer's pixels, which OK runs the filter on at their full depth; and the grid the last result came on.
+  private deep: Deep | null = null
+  private shape: { origin: [number, number]; width: number; height: number } | null = null
   onError?: (message: string | null) => void
   onBusy?: (busy: boolean) => void
 
@@ -129,7 +149,9 @@ export class FilterSession {
     store.beginGesture('Filter')
     const target = store.editTarget()
     if (!target) { store.cancelGesture(); store.notify('Choose a layer with pixels, or its mask, to filter.'); return null }
-    return new FilterSession(target.raster, target.isMask, target.layer.id, target.toDocument, target.layer.transform)
+    const session = new FilterSession(target.raster, target.isMask, target.layer.id, target.toDocument, target.layer.transform)
+    session.deep = target.isMask ? null : deepOf(target.layer)
+    return session
   }
 
   private constructor(readonly original: Raster, readonly isMask: boolean, readonly layerId: string, readonly toDocument: Mat3, readonly transform: Transform) {}
@@ -164,9 +186,10 @@ export class FilterSession {
   applyNow(run: FilterRun) { this.applyResult(run(this.input())) }
 
   private applyResult(result: FilterOutput) {
-    if (!result) { this.show(this.original, this.transform); return }
+    if (!result) { this.shape = null; this.show(this.original, this.transform); return }
     const pixels = result instanceof Raster ? result : result.pixels
     const origin: [number, number] = result instanceof Raster ? [0, 0] : result.origin
+    this.shape = { origin, width: pixels.width, height: pixels.height }
     const { original, toDocument } = this
     const grown = origin[0] !== 0 || origin[1] !== 0 || pixels.width !== original.width || pixels.height !== original.height
     const channels = original.channels
@@ -220,6 +243,12 @@ export class FilterSession {
     if (isJob(next)) { this.queuedJob = next; this.pump() }
     else if (next) this.applyNow(next)
     while (this.running) await this.running
+    const finalJob = this.shownJob
+    if (this.deep && !this.failed && this.last && this.last.raster !== this.original && finalJob && !rasterizes.has(finalJob.job)) {
+      this.onBusy?.(true)
+      try { await this.commitDeep(finalJob) } catch (error) { this.failed = true; this.onError?.((error as Error).message) }
+      this.onBusy?.(false)
+    }
     this.closed = true
     if (this.failed) { store.cancelGesture(); store.pixelsChanged(); return false }
     if (!this.last || this.last.raster === this.original) { store.cancelGesture(); return true }
@@ -229,6 +258,36 @@ export class FilterSession {
     store.history.renameLast(name)
     store.pixelsChanged()
     return true
+  }
+
+  // The filter again on the layer's pixels at their full depth, on the grid the 8-bit result came on, its selection blended in at full
+  // depth too; the layer keeps its depth, with a fresh 8-bit copy of the result.
+  private async commitDeep(job: FilterJob) {
+    const deep = this.deep!, shape = this.shape, transform = this.last!.transform
+    const grid = shape && (shape.origin[0] || shape.origin[1] || shape.width !== deep.width || shape.height !== deep.height) ? { width: shape.width, height: shape.height, x: -shape.origin[0], y: -shape.origin[1] } : null
+    const input = { isMask: false, toDocument: this.toDocument, layerId: this.layerId, transform: this.transform }
+    const result = await runDeepJob(job, input, { pixels: flattened(deep).slice(), width: deep.width, height: deep.height, hdr: deep.hdr }, grid)
+    const pixels = store.state.selection ? this.blendDeep(result.pixels, deep, grid, result.width, result.height) : result.pixels
+    const made = makeDeep(pixels, result.width, result.height, deep.hdr)
+    this.show(made.image, transform)
+    store.updateLayerLive(this.layerId, { deep: made.deep })
+  }
+
+  // `next` (on `grid`) where the selection covers it, the layer's own pixels elsewhere, mixed by its soft edge.
+  private blendDeep(next: Uint16Array, deep: Deep, grid: DeepGrid | null, width: number, height: number) {
+    const selection = store.state.selection!, original = flattened(deep), hdr = deep.hdr, ox = grid?.x ?? 0, oy = grid?.y ?? 0
+    const [m0, m1, , m3, m4, , m6, m7] = this.toDocument, out = new Uint16Array(next.length)
+    const value = (v: number) => hdr ? fromHalf(v) : v, encode = (v: number) => hdr ? toHalf(v) : Math.round(v)
+    for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
+      const px = x - ox + 0.5, py = y - oy + 0.5, sx = Math.floor(m0 * px + m3 * py + m6), sy = Math.floor(m1 * px + m4 * py + m7)
+      const k = sx >= 0 && sy >= 0 && sx < selection.width && sy < selection.height ? selection.data[sy * selection.width + sx] / 255 : 0
+      const i = (y * width + x) * 4, lx = x - ox, ly = y - oy, inside = lx >= 0 && ly >= 0 && lx < deep.width && ly < deep.height, j = (ly * deep.width + lx) * 4
+      for (let c = 0; c < 4; c++) {
+        const before = inside ? original[j + c] : 0
+        out[i + c] = k >= 1 ? next[i + c] : k <= 0 ? before : encode(value(before) + (value(next[i + c]) - value(before)) * k)
+      }
+    }
+    return out
   }
 
   private trim() {

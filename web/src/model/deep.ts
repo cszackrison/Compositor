@@ -97,6 +97,16 @@ export function makeDeep(pixels: Uint16Array, width: number, height: number, hdr
   return { image, deep: { hdr, width, height, pixels, raster: image, version: image.version, base: image.data.slice(), file } }
 }
 
+// Deep pixels with an 8-bit copy made from them some other way (cut from a larger copy), taken as they are.
+export const bound = (raster: Raster, pixels: Uint16Array, hdr: boolean): Deep => ({ hdr, width: raster.width, height: raster.height, pixels, raster, version: raster.version, base: raster.data.slice() })
+
+// A rectangle of deep pixels.
+export function cutDeep(pixels: Uint16Array, width: number, x: number, y: number, w: number, h: number) {
+  const out = new Uint16Array(w * h * 4)
+  for (let j = 0; j < h; j++) out.set(pixels.subarray(((y + j) * width + x) * 4, ((y + j) * width + x + w) * 4), j * w * 4)
+  return out
+}
+
 // A copy of a layer's deep pixels for a copy of its 8-bit ones (a duplicated layer).
 export const rebound = (deep: Deep, raster: Raster): Deep => ({ ...deep, raster, version: raster.version, pixels: flattened(deep), base: raster.data.slice(), file: flattened(deep) === deep.pixels ? deep.file : undefined })
 

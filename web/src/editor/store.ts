@@ -1,4 +1,4 @@
-import { deepOf, rebound } from '../model/deep'
+import { deepOf, dithered, flattened, hdrTo16, makeDeep, rebound, widened } from '../model/deep'
 import { History, type PixelPatch } from '../model/history'
 import { Raster } from '../model/raster'
 import { type Adjustment, type AdjustmentKind, type BlendMode, type Doc, type EffectKind, effectNames, type Layer, type LayerEffects, type Transform, fullTransform, newAdjustment, newLayer, uuid } from '../model/types'
@@ -606,6 +606,34 @@ export class Store {
     const below = siblings[siblings.findIndex(l => l.id === layer.id) - 1]
     if (!below || below.isGroup) { this.notify('There is no layer below to merge into.'); return }
     this.merge([below.id, layer.id], 'Merge Down')
+  }
+
+  // Convert to 16-Bit / Convert to 8-Bit (DeepLayers.swift): one layer of pixels, or a blank one (not text, an adjustment or a folder).
+  get canConvertDepth() {
+    const layer = this.active
+    return !!layer && this.state.selectedIds.length <= 1 && !layer.isGroup && !layer.adjustment && layer.text === undefined
+  }
+
+  // To 16 bits the pixels stay exactly as they are and what follows keeps the extra precision (a blank layer gets clear 16-bit pixels
+  // over the canvas, to paint gradients on); to 8 bits they're dithered down. `toSixteen` takes an HDR layer to 16 bits, its pixels
+  // clipped to white, instead of to 8.
+  convertDepth(toSixteen = false) {
+    const layer = this.active
+    if (!layer || !this.canConvertDepth) return
+    const deep = deepOf(layer)
+    if (!layer.image) {
+      const { width, height } = this.doc, made = makeDeep(new Uint16Array(width * height * 4), width, height, false)
+      this.updateLayer(layer.id, { image: made.image, deep: made.deep, transform: fullTransform(width, height) }, 'Convert to 16-Bit')
+    } else if (deep && toSixteen && deep.hdr) {
+      const made = makeDeep(hdrTo16(flattened(deep)), deep.width, deep.height, false)
+      this.updateLayer(layer.id, { image: made.image, deep: made.deep }, 'Convert to 16-Bit')
+    } else if (deep) {
+      this.updateLayer(layer.id, { image: dithered(flattened(deep), deep.width, deep.height, deep.hdr), deep: undefined }, 'Convert to 8-Bit')
+    } else {
+      const image = layer.image
+      this.updateLayer(layer.id, { deep: { hdr: false, width: image.width, height: image.height, pixels: widened(image), raster: image, version: image.version, base: image.data.slice() } }, 'Convert to 16-Bit')
+    }
+    this.pixelsChanged()
   }
 
   // A new transform for a layer from the Move tool's fields: a linked mask with a placement of its own goes with it, an unlinked

@@ -9,6 +9,15 @@ import { channelTables, cubeSize, hueSaturationCube } from '../model/adjustments
 
 const clamp01 = (v: number) => Math.min(1, Math.max(0, v))
 
+// Pixels as floats on the 0–255 scale, nothing rounded or clipped: a 16-bit or HDR layer's, for the blurs and Bloom, which run on them
+// directly (model/deep.ts, `runsAtFullDepth`) as the Mac runs them in Core Image at full depth.
+export class FloatPixels {
+  constructor(readonly width: number, readonly height: number, readonly channels: 4 = 4, readonly data: Float32Array = new Float32Array(width * height * 4)) {}
+}
+const isFloat = (pixels: Raster | FloatPixels): pixels is FloatPixels => pixels instanceof FloatPixels
+const like = (pixels: Raster | FloatPixels, width: number, height: number) => isFloat(pixels) ? new FloatPixels(width, height) as unknown as Raster : new Raster(width, height, 4)
+const put = (pixels: Raster | FloatPixels, v: number) => isFloat(pixels) ? v : Math.round(v)
+
 // Pads a raster by `margin` transparent pixels on every side, for filters that spread past the layer's edges.
 function padded(pixels: Raster, margin: number): { pixels: Raster; origin: [number, number] } {
   return paddedSides(pixels, margin, noSides)
@@ -23,7 +32,7 @@ const anySide = (sides: Sides) => sides.left || sides.right || sides.top || side
 // (blurring with clamped edges), as Photoshop's do at the canvas's edge: a picture filling the canvas keeps solid edges.
 function paddedSides(pixels: Raster, margin: number, sides: Sides): { pixels: Raster; origin: [number, number] } {
   const left = sides.left ? 0 : margin, top = sides.top ? 0 : margin
-  const out = new Raster(pixels.width + left + (sides.right ? 0 : margin), pixels.height + top + (sides.bottom ? 0 : margin), 4)
+  const out = like(pixels, pixels.width + left + (sides.right ? 0 : margin), pixels.height + top + (sides.bottom ? 0 : margin))
   for (let y = 0; y < pixels.height; y++) out.data.set(pixels.data.subarray(y * pixels.width * 4, (y + 1) * pixels.width * 4), ((y + top) * out.width + left) * 4)
   return { pixels: out, origin: [left ? -left : 0, top ? -top : 0] }
 }
@@ -36,13 +45,15 @@ export function gaussianBlur(input: FilterInput, radius: number, preserveTranspa
     // Dividing by the blurred alpha takes out the pull of the clear pixels around, which would darken the colors near the outline.
     for (let i = 0; i < pixels.data.length; i += 4) {
       const a = pixels.data[i + 3], b = blurred[i + 3]
-      for (let c = 0; c < 3; c++) pixels.data[i + c] = b > 0 ? Math.round(Math.min(a, blurred[i + c] / b * a)) : 0
+      for (let c = 0; c < 3; c++) pixels.data[i + c] = b > 0 ? put(pixels, Math.min(a, blurred[i + c] / b * a)) : 0
     }
     return pixels
   }
   const margin = input.isMask ? 0 : Math.ceil(radius * 3 + 2)
   const grid = margin ? paddedSides(input.pixels, margin, sides) : { pixels: input.pixels, origin: [0, 0] as [number, number] }
-  return { pixels: blurRaster(grid.pixels, radius, input.isMask || anySide(sides)), origin: grid.origin }
+  const clamped = input.isMask || anySide(sides)
+  if (isFloat(grid.pixels)) return { pixels: new FloatPixels(grid.pixels.width, grid.pixels.height, 4, blurFloats(grid.pixels.data, grid.pixels.width, grid.pixels.height, 4, radius, clamped)) as unknown as Raster, origin: grid.origin }
+  return { pixels: blurRaster(grid.pixels, radius, clamped), origin: grid.origin }
 }
 
 // Filter › Progressive Blur: a Gaussian blur whose radius changes evenly along a line (document coordinates), `from` at its start and
@@ -66,7 +77,7 @@ export function progressiveBlur(input: FilterInput, from: number, to: number, st
   }
   const levels = [0]
   for (let r = strongest; r >= 0.5 && levels.length < 7; r /= 2) levels.splice(1, 0, r)
-  const source = Float32Array.from(grid.pixels.data), out = new Raster(width, height, 4)
+  const source = Float32Array.from(grid.pixels.data), out = like(grid.pixels, width, height)
   let lower: Float32Array = source
   for (let k = 1; k < levels.length; k++) {
     const upper = blurFloats(source, width, height, 4, levels[k], clamp), low = levels[k - 1], span = levels[k] - low
@@ -74,7 +85,7 @@ export function progressiveBlur(input: FilterInput, from: number, to: number, st
       const r = radius[i]
       if (r > levels[k] || (k > 1 && r <= low)) continue
       const w = (r - low) / span
-      for (let c = i * 4; c < i * 4 + 4; c++) out.data[c] = Math.round(lower[c] + (upper[c] - lower[c]) * w)
+      for (let c = i * 4; c < i * 4 + 4; c++) out.data[c] = put(out, lower[c] + (upper[c] - lower[c]) * w)
     }
     lower = upper
   }
@@ -87,7 +98,7 @@ export function motionBlur(input: FilterInput, angle: number, distance: number, 
   const margin = input.isMask ? 0 : reach + 2
   const grid = margin ? paddedSides(input.pixels, margin, sides) : { pixels: input.pixels, origin: [0, 0] as [number, number] }
   const { width, height, data } = grid.pixels, clamped = input.isMask || anySide(sides)
-  const out = new Raster(width, height, 4)
+  const out = like(grid.pixels, width, height)
   const dx = Math.cos(angle * Math.PI / 180), dy = -Math.sin(angle * Math.PI / 180)
   const taps = Math.min(96, Math.max(1, reach)), step = reach / taps
   const weights: number[] = []
@@ -102,7 +113,7 @@ export function motionBlur(input: FilterInput, angle: number, distance: number, 
   for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) for (let c = 0; c < 4; c++) {
     let sum = 0
     for (let k = -taps; k <= taps; k++) sum += sample(x + dx * k * step, y + dy * k * step, c) * weights[k + taps]
-    out.data[(y * width + x) * 4 + c] = Math.round(sum / total)
+    out.data[(y * width + x) * 4 + c] = put(out, sum / total)
   }
   return { pixels: out, origin: grid.origin }
 }
@@ -158,14 +169,15 @@ export function bloom(input: FilterInput, amount: number, radius: number): Filte
   const grid = margin ? padded(input.pixels, margin) : { pixels: input.pixels, origin: [0, 0] as [number, number] }
   const source = grid.pixels, intensity = amount / 50
   const blurred = blurFloats(Float32Array.from(source.data), source.width, source.height, 4, radius)
-  const out = new Raster(source.width, source.height, 4)
+  // At full depth an HDR layer's highlights glow past white rather than stopping there.
+  const out = like(source, source.width, source.height), float = isFloat(source), limit = (v: number) => float ? Math.max(0, v) : clamp01(v)
   for (let i = 0; i < out.data.length; i += 4) {
     const glowA = clamp01(blurred[i + 3] / 255 * intensity), a = source.data[i + 3] / 255
     const outA = a + glowA * (1 - a)
-    out.data[i + 3] = Math.round(outA * 255)
+    out.data[i + 3] = put(out, outA * 255)
     for (let c = 0; c < 3; c++) {
-      const base = source.data[i + c] / 255, glow = clamp01(blurred[i + c] / 255 * intensity)
-      out.data[i + c] = Math.round(clamp01(Math.min(outA, base + glow - base * glow)) * 255)
+      const base = source.data[i + c] / 255, glow = limit(blurred[i + c] / 255 * intensity)
+      out.data[i + c] = put(out, (float ? Math.max(0, base + glow - Math.min(1, base) * Math.min(1, glow)) : clamp01(Math.min(outA, base + glow - base * glow))) * 255)
     }
   }
   return { pixels: out, origin: grid.origin }

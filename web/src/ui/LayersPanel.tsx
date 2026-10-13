@@ -1,3 +1,4 @@
+import { isDeep, isHDR } from '../model/deep'
 import { Fragment, useCallback, useEffect, useRef, useState, useSyncExternalStore, type DragEvent } from 'react'
 import { useEditor } from './hooks'
 import { store } from '../editor/store'
@@ -134,6 +135,9 @@ export function LayersPanel() {
       ...(layer.isGroup ? [{ label: 'Ungroup Layers', action: () => store.ungroup() }] : []),
       { label: 'Move Out of Folder', action: () => store.moveOutOfFolder(), disabled: !layer.parentId },
       { label: store.mergeTitle, action: () => store.mergeDown(), disabled: !store.canMerge },
+      // An HDR layer can go to 16 bits as well as to 8.
+      ...(isHDR(layer) ? [{ label: 'Convert to 16-Bit', action: () => store.convertDepth(true), disabled: !store.canConvertDepth }] : []),
+      { label: isDeep(layer) ? 'Convert to 8-Bit' : 'Convert to 16-Bit', action: () => store.convertDepth(), disabled: !store.canConvertDepth },
       'divider',
       { label: 'Add Mask', disabled: !!layer.mask, submenu: [
         { label: 'Reveal All (White)', action: () => store.addMask(layer.id) },
@@ -192,6 +196,7 @@ export function LayersPanel() {
                 : layer.image ? <img className={`thumb ${isActive && !editingMask ? 'target' : ''}`} src={thumbnail(layer.image, `${layer.id}:image`)} alt="" title={`${command}-click loads the layer’s pixels as a selection`} onClick={e => { if (commandKey(e)) store.loadSelection(layer.id, false, e.altKey ? 'subtract' : e.shiftKey ? 'add' : 'replace'); else store.set({ editingMask: false }) }} /> : <span className="thumb" />}
               {layer.mask && <img className={`thumb mask ${editingMask ? 'target' : ''} ${layer.maskEnabled ? '' : 'disabled'}`} src={thumbnail(layer.mask, `${layer.id}:mask`)} alt="" title={`Layer mask: click to edit, Shift-click to disable, ${command}-click selects its black areas`} onClick={e => { if (commandKey(e)) store.loadSelection(layer.id, true, e.altKey ? 'subtract' : e.shiftKey ? 'add' : 'replace'); else if (e.shiftKey) store.updateLayer(layer.id, { maskEnabled: !layer.maskEnabled }, layer.maskEnabled ? 'Disable Mask' : 'Enable Mask'); else { store.setActive(layer.id); store.set({ editingMask: true }) } }} />}
               <span className="name">{renaming === layer.id ? <input autoFocus defaultValue={layer.name} onBlur={e => { const name = e.target.value.trim(); if (name && name !== layer.name) store.updateLayer(layer.id, { name }, 'Rename Layer'); setRenaming(null) }} onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); if (e.key === 'Escape') setRenaming(null); e.stopPropagation() }} /> : layer.name}</span>
+              {isDeep(layer) && <span className="badge" title={isHDR(layer) ? 'Keeps light brighter than white' : 'Keeps 16 bits a channel'}>{isHDR(layer) ? 'HDR' : '16-Bit'}</span>}
               {layer.effects && Object.values(layer.effects).some(Boolean) && <span className="badge" title="Layer effects">fx</span>}
               {layer.blendMode !== 'Normal' && !layer.isGroup && <span className="badge" title={layer.blendMode}>◐</span>}
             </div>
