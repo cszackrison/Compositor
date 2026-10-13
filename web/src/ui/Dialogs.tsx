@@ -80,10 +80,12 @@ function NewCanvas() {
     <Modal title="New Canvas" onSubmit={() => pixelWidth && pixelHeight && newCanvas(pixelWidth, pixelHeight, canvasFills[fill], resolution)} submit="Create Canvas" disabled={!pixelWidth || !pixelHeight}>
       <div style={{ display: 'flex', alignItems: 'flex-end', gap: 10 }}>
         {field('Width', width, setWidth, true)}<span className="muted" style={{ paddingBottom: 8 }}>×</span>{field('Height', height, setHeight)}
-        <select title="Preset sizes for screens and common formats" value={preset} onChange={e => { const p = presetGroups.flat()[+e.target.value]; if (p) setPixels(p[1], p[2]) }} style={{ width: 34, padding: '7px 4px' }}>
-          <option value={-1}>Custom</option>
-          {presetGroups.map((group, g) => <optgroup key={g} label={g ? '──────' : 'Sizes'}>{group.map(p => <option key={p[0]} value={presetGroups.flat().indexOf(p)}>{p[0]} · {p[1]} × {p[2]}</option>)}</optgroup>)}
-        </select>
+        <span className="icon-select" title="Preset sizes for screens and common formats">▾
+          <select value={preset} onChange={e => { const p = presetGroups.flat()[+e.target.value]; if (p) setPixels(p[1], p[2]) }}>
+            <option value={-1}>Custom</option>
+            {presetGroups.map((group, g) => <optgroup key={g} label={g ? '──────' : 'Sizes'}>{group.map(p => <option key={p[0]} value={presetGroups.flat().indexOf(p)}>{p[0]} · {p[1]} × {p[2]}</option>)}</optgroup>)}
+          </select>
+        </span>
       </div>
       <div className="muted" style={{ display: 'flex', alignItems: 'center', gap: 2 }}>
         <button type="button" className="pill" title="Start see-through, or with a white or black Background layer. Click to switch." onClick={() => setFill((fill + 1) % canvasFills.length)}>{canvasFills[fill][0].toUpperCase() + canvasFills[fill].slice(1)} canvas</button>·

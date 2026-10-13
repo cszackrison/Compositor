@@ -31,6 +31,10 @@ import { PhoneMenu, Sheet } from './Phone'
 import { Icon } from './icons'
 import { TouchTooltip } from './TouchTooltip'
 
+// Vite reloading the page after an edit to the source, in development, isn't someone leaving with unsaved work.
+let devReload = false
+import.meta.hot?.on('vite:beforeFullReload', () => { devReload = true })
+
 const open = (panel: string) => () => store.set({ panel })
 const has = () => store.hasDocument
 const busy = () => !!activeHandler().busy?.()
@@ -307,7 +311,7 @@ export function App() {
       if (!has() && !toolKeys[definition.title]) return
       if (canvasCommand(definition.title)) event.preventDefault()
     }
-    const unload = (event: BeforeUnloadEvent) => { if (tabs.some(tab => tab.hasDocument && !tab.state.saved)) event.preventDefault() }
+    const unload = (event: BeforeUnloadEvent) => { if (!devReload && tabs.some(tab => tab.hasDocument && !tab.state.saved)) event.preventDefault() }
     const onPaste = (event: ClipboardEvent) => {
       const target = event.target as HTMLElement
       if (target.closest('input, textarea')) return

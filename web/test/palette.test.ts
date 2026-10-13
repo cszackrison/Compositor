@@ -26,6 +26,8 @@ describe('command palette search', () => {
 
   it('puts whole words before scattered letters, and typed words starting words first', () => {
     expect(ids([entry('Layer › New Adjustment Layer › Hue/Saturation…'), entry('Tool › Lasso'), entry('Tool › Polygonal Lasso')], 'lasso')).toEqual(['Tool › Lasso', 'Tool › Polygonal Lasso', 'Layer › New Adjustment Layer › Hue/Saturation…'])
+    expect(ids([entry('Tool › Spot Healing Brush'), entry('Filter › Gaussian Blur…')], 'gb')[0]).toBe('Filter › Gaussian Blur…')
+    expect(ids([entry('Filter › Gaussian Blur…'), entry('Layer › New Layer')], 'newlayer')).toEqual(['Layer › New Layer'])
     expect(ids([entry('Layer › New Adjustment Layer › Curves…'), entry('Layer › New Adjustment Layer › Exposure…'), entry('Layer › Duplicate Layer'), entry('Layer › New Blank Layer')], 'new layer')[0]).toBe('Layer › New Blank Layer')
   })
 })

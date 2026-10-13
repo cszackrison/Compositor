@@ -235,9 +235,11 @@ export function Stage() {
       const box = ref.current!.getBoundingClientRect(), dpr = window.devicePixelRatio || 1
       for (const canvas of [canvasRef.current!, overlayRef.current!]) { canvas.width = Math.round(box.width * dpr); canvas.height = Math.round(box.height * dpr) }
       const first = view.width <= 1
+      // The point at the middle stays there, as on the Mac, so Canvas Only or a resized window keeps the picture centered.
+      if (!first) { view.offsetX += (box.width - view.width) / 2; view.offsetY += (box.height - view.height) / 2 }
       view.width = box.width; view.height = box.height
       if (first && store.hasDocument) view.fit(store.doc.width, store.doc.height)
-      requestRender(false)
+      viewChanged(); requestRender(false)
     }
     const observer = new ResizeObserver(resize)
     observer.observe(ref.current!)

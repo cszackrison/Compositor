@@ -17,9 +17,12 @@ function wordsStartWords(words: string[], title: string) {
   return true
 }
 
+// The typed letters run on from the start of some word, spaces aside: "newlayer" in New Layer, but not "gb" in Healing Brush.
+const spacesAside = (wanted: string, title: string) => { const words = title.split(' '); return words.some((_, i) => words.slice(i).join('').startsWith(wanted)) }
+
 // The query's letters must appear in order; each scores, more at the start of a word and more again right after the previous match,
 // so "gb" finds Gaussian Blur. How the typed text was found ranks first: whole at a word's start ("lasso" in Lasso), each typed word
-// starting a word in order ("new layer" in New Blank Layer), whole inside a word, spaces aside, and last scattered letters. Found the
+// starting a word in order ("new layer" in New Blank Layer), whole inside a word, from a word's start with spaces aside, and last scattered letters. Found the
 // same way, a clearly shorter title is the likelier one.
 export function paletteScore(query: string, text: string): number | null {
   const wanted = [...query.toLowerCase().replace(/\s/g, '')]
@@ -35,7 +38,7 @@ export function paletteScore(query: string, text: string): number | null {
     from = found + 1
   }
   const title = letters.join(''), phrase = query.toLowerCase().trim(), words = phrase.split(' ').filter(Boolean)
-  const tier = wordsStartWords([phrase], title) ? 5 : words.length > 1 && wordsStartWords(words, title) ? 4 : title.includes(phrase) ? 3 : title.replace(/ /g, '').includes(wanted.join('')) ? 2 : 1
+  const tier = wordsStartWords([phrase], title) ? 5 : words.length > 1 && wordsStartWords(words, title) ? 4 : title.includes(phrase) ? 3 : spacesAside(wanted.join(''), title) ? 2 : 1
   return tier * 1_000_000 + (tier === 1 ? total * 100 : 0) - Math.floor(letters.length / 4)
 }
 

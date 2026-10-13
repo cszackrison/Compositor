@@ -8,17 +8,17 @@ import type { MenuItem } from './Menu'
 const close = () => store.set({ panel: null })
 
 // The menu bar as entries: every item, by its path ("Layer › Rename Layer…"), with its key and whether it's enabled and checked now.
-// Help and the palette itself are left out.
+// Help and the palette itself are left out; a disabled submenu disables its items.
 function menuEntries(menus: { title: string; items: MenuItem[] }[]) {
   const out: PaletteEntry[] = [], seen = new Map<string, number>()
-  const walk = (items: MenuItem[], path: string[]) => {
+  const walk = (items: MenuItem[], path: string[], off = false) => {
     for (const item of items) {
       if (item === 'divider' || item.label === 'Search Commands…') continue
       const titles = [...path, item.label]
-      if (item.submenu) { walk(item.submenu, titles); continue }
+      if (item.submenu) { walk(item.submenu, titles, off || !!item.disabled); continue }
       const title = titles.join(' › '), count = seen.get(title) ?? 0
       seen.set(title, count + 1)
-      out.push({ id: count ? `${title} (${count + 1})` : title, title, shortcut: item.shortcut, enabled: !item.disabled && !!item.action, on: item.checked, run: item.action ?? (() => {}) })
+      out.push({ id: count ? `${title} (${count + 1})` : title, title, shortcut: item.shortcut, enabled: !off && !item.disabled && !!item.action, on: item.checked, run: item.action ?? (() => {}) })
     }
   }
   for (const menu of menus) if (menu.title !== 'Help') walk(menu.items, [menu.title])
