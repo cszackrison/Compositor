@@ -328,7 +328,7 @@ export function App() {
     return () => { window.removeEventListener('keydown', keydown); window.removeEventListener('beforeunload', unload); window.removeEventListener('paste', onPaste); window.removeEventListener('copy', onCopy); window.removeEventListener('cut', onCut) }
   }, [])
 
-  useEffect(() => { document.title = doc ? `${documentName()}${state.saved ? '' : ' — Edited'} · Compositor` : 'Compositor' }, [doc, state.saved, state.target])
+  useEffect(() => { document.title = doc ? `${documentName()}${state.saved ? '' : ' — Edited'} · Compositor` : 'Compositor' }, [doc, state.doc, state.saved, state.target])
 
   const onDrop = async (event: React.DragEvent) => {
     if (event.dataTransfer.types.includes('application/x-compositor-layers') || event.dataTransfer.types.includes('application/x-compositor-tab')) return

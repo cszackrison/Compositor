@@ -203,6 +203,9 @@ function ExportAs({ start }: { start?: ExportFormat }) {
     const clamped = Math.min(largest, Math.max(0.01, Number.isFinite(scale) ? scale : 1))
     setWidth(Math.max(1, Math.round(pixels.width * clamped))); setHeight(Math.max(1, Math.round(pixels.height * clamped)))
   }
+  // What's being typed stays as typed, so "800" isn't clamped to 1% at its first digit; the field shows the size it made once left.
+  const [typed, setTyped] = useState<{ side: 'width' | 'height'; text: string } | null>(null)
+  const type = (side: 'width' | 'height', text: string) => { setTyped({ side, text }); if (+text >= 1) setScale(+text / pixels[side]) }
   const percent = Math.round(width / pixels.width * 100)
   const steps = [0.25, 0.5, 1, 2, 4, 8]
   const step = (up: boolean) => setZoom(z => { const current = z === 'fit' ? 0.25 : z; return up ? steps.find(s => s > current * 1.001) ?? current : [...steps].reverse().find(s => s < current * 0.999) ?? current })
@@ -222,7 +225,7 @@ function ExportAs({ start }: { start?: ExportFormat }) {
         {result && <img src={result.url} alt="" className={format === 'PNG' ? 'checkered' : ''} style={zoom === 'fit' ? { maxWidth: '100%', maxHeight: '100%' } : { width: width * zoom / devicePixelRatio, imageRendering: zoom >= 1 ? 'pixelated' : 'auto' }} />}
         {!ready && !error && <span className="muted" style={{ position: 'absolute', right: 10, bottom: 8 }}>Updating…</span>}
       </div>
-      <div className="grid">
+      <div className="grid" style={{ gridTemplateColumns: '84px 1fr', gridTemplateRows: 'repeat(4, minmax(28px, auto))', alignContent: 'start' }}>
         <span className="muted">Format</span>
         <span style={{ display: 'flex', gap: 10 }}>
           <span className="segmented">{(['JPEG', 'PNG'] as const).map(f => <button key={f} type="button" className={format === f ? 'on' : ''} onClick={() => setFormat(f)}>{f}</button>)}</span>
@@ -230,8 +233,8 @@ function ExportAs({ start }: { start?: ExportFormat }) {
         </span>
         <span className="muted">Size</span>
         <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <input type="number" min={1} style={{ width: 72 }} value={width} title="Width in pixels; the height follows, keeping the proportions" onChange={e => setScale(+e.target.value / pixels.width)} />×
-          <input type="number" min={1} style={{ width: 72 }} value={height} title="Height in pixels; the width follows, keeping the proportions" onChange={e => setScale(+e.target.value / pixels.height)} /><span className="muted">px</span>
+          <input type="number" min={1} style={{ width: 72 }} value={typed?.side === 'width' ? typed.text : width} title="Width in pixels; the height follows, keeping the proportions" onChange={e => type('width', e.target.value)} onBlur={() => setTyped(null)} />×
+          <input type="number" min={1} style={{ width: 72 }} value={typed?.side === 'height' ? typed.text : height} title="Height in pixels; the width follows, keeping the proportions" onChange={e => type('height', e.target.value)} onBlur={() => setTyped(null)} /><span className="muted">px</span>
           <select title="Scale the export: the document stays as it is" value="" onChange={e => setScale(+e.target.value / 100)}><option value="" disabled>{percent}%</option>{[25, 50, 75, 100, 200].map(p => <option key={p} value={p}>{p}%</option>)}</select>
         </span>
         {format === 'JPEG' && <><span className="muted">Quality</span><span style={{ display: 'flex', alignItems: 'center', gap: 8 }}><input type="range" min={0} max={1} step={0.01} value={quality} onChange={e => setQuality(+e.target.value)} style={{ width: 300 }} /><span>{Math.round(quality * 100)}%</span></span></>}
