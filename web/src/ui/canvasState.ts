@@ -77,6 +77,10 @@ export function samplePixels(allLayers: boolean): Raster | null {
 // While a panel samples from the canvas (Color Range, Levels' eyedroppers), clicks go to it instead of the tool.
 export const canvasPicker: { current: ((point: [number, number], shift: boolean, alt: boolean) => void) | null } = { current: null }
 // A panel's drag on the canvas (Hue/Saturation's targeted hand): screen x since the press, and whether ⌘ is held.
+// A dialog's own drag on the canvas (Progressive Blur's line), taking the pointer before the tool, in document coordinates, and
+// drawing over the canvas in screen coordinates.
+export type CanvasGesture = { down: (point: [number, number], screen: [number, number]) => void; move: (point: [number, number], shift: boolean) => void; up: () => void; draw: (context: CanvasRenderingContext2D) => void }
+export const canvasGesture: { current: CanvasGesture | null } = { current: null }
 export const canvasDrag: { current: { move: (dx: number, command: boolean) => void; up: () => void } | null; startX: number } = { current: null, startX: 0 }
 
 // On-screen stand-ins for Shift, Option and Command on touch screens. A tap holds the key for the next gesture on the canvas, a

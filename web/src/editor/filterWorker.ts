@@ -2,6 +2,7 @@ import { loadKernels } from '../kernels'
 import * as kinds from './filterKinds'
 import { Raster } from '../model/raster'
 import type { FilterInput, FilterOutput } from './filters'
+import { multiply, scale as scaleBy } from '../render/gl'
 
 // Filter previews off the main thread: the same filter functions and wasm kernels, so a slow one never freezes the page.
 type Request = { id: number; name: keyof typeof kinds; args: unknown[]; scale?: number; scaled?: number[]; input: Omit<FilterInput, 'pixels'> & { pixels: { width: number; height: number; channels: 1 | 4; data: Uint8Array } } }
@@ -18,7 +19,9 @@ self.onmessage = async (event: MessageEvent<Request | WebAssembly.Module>) => {
     // A preview of a large layer runs on a copy at most 2048 px on its longest side, its pixel-sized settings scaled to match,
     // and comes back enlarged to the layer's grid, as the Mac app previews (FilterJob.scale). OK always runs at full size.
     const pixels = scale < 1 ? resample(full, Math.max(1, Math.round(full.width * scale)), Math.max(1, Math.round(full.height * scale))) : full
-    let out = run({ ...input, pixels }, ...args.map((a, i) => scaled.includes(i) && typeof a === 'number' ? a * scale : a))
+    // The copy's pixels map to the document through the layer's mapping, scaled up to the layer's own pixels first.
+    const toDocument = scale < 1 ? multiply(input.toDocument, scaleBy(full.width / pixels.width, full.height / pixels.height)) : input.toDocument
+    let out = run({ ...input, pixels, toDocument }, ...args.map((a, i) => scaled.includes(i) && typeof a === 'number' ? a * scale : a))
     if (scale < 1 && out) {
       const small = out instanceof Raster ? out : out.pixels, origin = out instanceof Raster ? [0, 0] : out.origin
       const big = resample(small, Math.max(1, Math.round(small.width / scale)), Math.max(1, Math.round(small.height / scale)))

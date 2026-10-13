@@ -10,7 +10,7 @@ import { type Adjustment, type AdjustmentKind, type LevelRange, newAdjustment, i
 import { applyRange } from '../model/adjustments'
 import { call, withBuffers } from '../kernels'
 import type { Raster } from '../model/raster'
-import { canvasPicker } from './canvasState'
+import { canvasGesture, canvasPicker, requestRender, view } from './canvasState'
 import { ColorSwatch } from './ColorPicker'
 import { apply, invert } from '../render/gl'
 import { pixelToDocument } from '../render/compositor'
@@ -29,6 +29,7 @@ const filterContext = (): FilterContext => ({ sides: canvasSides(), fillsClear: 
 const repeatable: Record<string, { job: (p: any, context: FilterContext) => FilterJob; trim?: boolean; growEmpty?: boolean }> = {
   'Gaussian Blur': { job: (p, c) => job('gaussianBlur', p.radius, p.preserveTransparency, c.sides), trim: true },
   'Motion Blur': { job: (p, c) => job('motionBlur', p.angle, p.distance, c.sides), trim: true },
+  'Progressive Blur': { job: (p, c) => job('progressiveBlur', p.from, p.to, p.start, p.end, p.radial, p.inverted, c.sides), trim: true },
   'Add Noise': { job: (p, c) => job('addNoise', p.amount, p.gaussian, p.monochromatic, c.seed) },
   Vignette: { job: (p, c) => job('vignette', p, c.fillsClear), growEmpty: true },
   'Bloom / Glow': { job: p => job('bloom', p.amount, p.radius), trim: true },
@@ -50,9 +51,10 @@ export async function repeatLastFilter() {
   await session.commit(name, spec.job(params, context), spec.trim)
 }
 
-function Simple<P extends object>({ name, initial, children }: { name: string; initial: P; children: (p: P, set: (c: Partial<P>) => void) => React.ReactNode }) {
+// `fresh` settings start anew at each opening, over the remembered ones.
+function Simple<P extends object>({ name, initial, fresh, children }: { name: string; initial: P; fresh?: Partial<P>; children: (p: P, set: (c: Partial<P>) => void) => React.ReactNode }) {
   const context = useMemo(filterContext, []), spec = repeatable[name]
-  return <FilterDialog title={name} initial={recall(name, initial)} run={p => spec.job(p, context)} trim={spec.trim} growEmpty={spec.growEmpty} onClose={close} onCommit={p => { remembered.set(name, p); lastFilter = { name, params: p } }}>{children}</FilterDialog>
+  return <FilterDialog title={name} initial={{ ...recall(name, initial), ...fresh }} run={p => spec.job(p, context)} trim={spec.trim} growEmpty={spec.growEmpty} onClose={close} onCommit={p => { remembered.set(name, p); lastFilter = { name, params: p } }}>{children}</FilterDialog>
 }
 
 function GaussianBlurDialog() {
@@ -67,6 +69,69 @@ function MotionBlurDialog() {
     <Slider label="Angle" value={p.angle} min={-90} max={90} onChange={angle => set({ angle })} />
     <Slider label="Distance" value={p.distance} min={1} max={2000} log onChange={distance => set({ distance })} />
   </>}</Simple>
+}
+
+type ProgressiveSettings = { from: number; to: number; start: [number, number]; end: [number, number]; radial: boolean; inverted: boolean }
+
+// Progressive Blur starts sharp at 35% down the layer's visible part, blurring to its foot; dragging on the canvas moves either end or
+// starts a new line, Shift keeping it to 45° steps. The line shows a solid handle where it's sharp and a ring where it's fully blurred.
+function ProgressiveBlurDialog() {
+  const fresh = useMemo(() => {
+    const doc = store.state.doc, t = store.active?.transform
+    const x0 = Math.max(0, t?.origin[0] ?? 0), y0 = Math.max(0, t?.origin[1] ?? 0), x1 = Math.min(doc.width, t ? t.origin[0] + t.size[0] : doc.width), y1 = Math.min(doc.height, t ? t.origin[1] + t.size[1] : doc.height)
+    const [left, top, right, bottom] = x1 > x0 && y1 > y0 ? [x0, y0, x1, y1] : [0, 0, doc.width, doc.height]
+    return { start: [(left + right) / 2, top + (bottom - top) * 0.35] as [number, number], end: [(left + right) / 2, bottom] as [number, number] }
+  }, [])
+  return <Simple name="Progressive Blur" initial={{ from: 0, to: 20, radial: false, inverted: false, ...fresh } as ProgressiveSettings} fresh={fresh}>{(p, set) => <>
+    <ProgressiveLine settings={p} set={set} />
+    <span className="muted">Click and drag two points on the canvas.</span>
+    <div className="row"><span className="muted">Shape</span><span className="segmented">{(['Linear', 'Radial'] as const).map(shape => <button key={shape} type="button" className={p.radial === (shape === 'Radial') ? 'on' : ''} title="Linear blurs along the line; Radial keeps the start sharp and blurs outwards" onClick={() => set({ radial: shape === 'Radial' })}>{shape}</button>)}</span><span /></div>
+    <Slider label="From" value={p.from} min={0} max={250} digits={1} onChange={from => set({ from })} />
+    <Slider label="To" value={p.to} min={0} max={250} digits={1} onChange={to => set({ to })} />
+    <label title="Swap From and To: blur the start and sharpen toward the end"><input type="checkbox" checked={p.inverted} onChange={e => set({ inverted: e.target.checked })} /> Invert</label>
+  </>}</Simple>
+}
+
+function ProgressiveLine({ settings, set }: { settings: ProgressiveSettings; set: (c: Partial<ProgressiveSettings>) => void }) {
+  const latest = useRef(settings)
+  latest.current = settings
+  useEffect(() => {
+    let dragging: 'start' | 'end' | null = null
+    const snapped = (point: [number, number], anchor: [number, number]): [number, number] => {
+      const angle = Math.round(Math.atan2(point[1] - anchor[1], point[0] - anchor[0]) / (Math.PI / 4)) * Math.PI / 4, length = Math.hypot(point[0] - anchor[0], point[1] - anchor[1])
+      return [anchor[0] + Math.cos(angle) * length, anchor[1] + Math.sin(angle) * length]
+    }
+    canvasGesture.current = {
+      down: (point, screen) => {
+        const { start, end } = latest.current, near = (p: [number, number]) => { const [x, y] = view.toScreen(...p); return Math.hypot(x - screen[0], y - screen[1]) <= 10 }
+        if (near(end)) dragging = 'end'
+        else if (near(start)) dragging = 'start'
+        else { dragging = 'end'; set({ start: point, end: point }) }
+      },
+      move: (point, shift) => {
+        if (!dragging) return
+        const anchor = dragging === 'start' ? latest.current.end : latest.current.start
+        set({ [dragging]: shift ? snapped(point, anchor) : point })
+      },
+      up: () => { dragging = null },
+      draw: c => {
+        const { start, end, radial } = latest.current, [x0, y0] = view.toScreen(...start), [x1, y1] = view.toScreen(...end)
+        if (radial) {
+          c.beginPath(); c.arc(x0, y0, Math.hypot(x1 - x0, y1 - y0), 0, Math.PI * 2)
+          c.setLineDash([4, 4]); c.strokeStyle = 'rgba(0,0,0,0.5)'; c.lineWidth = 2; c.stroke(); c.strokeStyle = 'rgba(255,255,255,0.8)'; c.lineWidth = 1; c.stroke(); c.setLineDash([])
+        }
+        c.beginPath(); c.moveTo(x0, y0); c.lineTo(x1, y1)
+        c.strokeStyle = 'rgba(0,0,0,0.7)'; c.lineWidth = 3; c.stroke(); c.strokeStyle = '#fff'; c.lineWidth = 1; c.stroke()
+        c.beginPath(); c.arc(x0, y0, 6, 0, Math.PI * 2); c.fillStyle = '#fff'; c.fill(); c.strokeStyle = '#000'; c.lineWidth = 1; c.stroke()
+        c.beginPath(); c.arc(x1, y1, 6, 0, Math.PI * 2); c.fillStyle = 'rgba(153,153,153,0.9)'; c.fill(); c.strokeStyle = '#000'; c.stroke()
+        c.beginPath(); c.arc(x1, y1, 5, 0, Math.PI * 2); c.strokeStyle = '#fff'; c.lineWidth = 2; c.stroke()
+      },
+    }
+    requestRender(false)
+    return () => { canvasGesture.current = null; requestRender(false) }
+  }, [])
+  useEffect(() => { requestRender(false) }, [settings.start, settings.end, settings.radial])
+  return null
 }
 
 function AddNoiseDialog() {
@@ -297,7 +362,7 @@ export function LevelsTools({ source, toSource, adjustment, onChange }: { source
 
 export const filterPanels: Record<string, () => React.ReactNode> = {
   'Gaussian Blur': () => <GaussianBlurDialog />, 'Motion Blur': () => <MotionBlurDialog />, 'Add Noise': () => <AddNoiseDialog />, Vignette: () => <VignetteDialog />,
-  'Bloom / Glow': () => <BloomDialog />, Dither: () => <DitherDialog />, Scanlines: () => <ScanlinesDialog />, 'Tonal Contrast': () => <TonalContrastDialog />, 'Lens Correction': () => <LensDialog />,
+  'Progressive Blur': () => <ProgressiveBlurDialog />, 'Bloom / Glow': () => <BloomDialog />, Dither: () => <DitherDialog />, Scanlines: () => <ScanlinesDialog />, 'Tonal Contrast': () => <TonalContrastDialog />, 'Lens Correction': () => <LensDialog />,
   'Content-Aware Fill': () => <ContentAwareDialog />, 'Remove Background': () => <RemoveBackgroundDialog />,
   ...Object.fromEntries((['Curves', 'Levels', 'Hue/Saturation', 'Black & White', 'Color Balance', 'Exposure', 'Gradient Map', 'Grain'] as AdjustmentKind[]).map(kind => [kind, () => <AdjustmentFilterDialog kind={kind} />])),
 }

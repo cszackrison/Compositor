@@ -44,6 +44,42 @@ export function gaussianBlur(input: FilterInput, radius: number, preserveTranspa
   return { pixels: blurRaster(grid.pixels, radius, input.isMask || anySide(sides)), origin: grid.origin }
 }
 
+// Filter › Progressive Blur: a Gaussian blur whose radius changes evenly along a line (document coordinates), `from` at its start and
+// `to` at its end and past it, or radially from the start out to the circle through the end. Made from blurs at a few radii, each
+// pixel blending the two either side of its own, one pair at a time so a large layer holds only three copies.
+export function progressiveBlur(input: FilterInput, from: number, to: number, start: [number, number], end: [number, number], radial: boolean, inverted: boolean, sides: Sides = noSides): FilterOutput {
+  if (inverted) [from, to] = [to, from]
+  const strongest = Math.max(from, to)
+  if (strongest <= 0) return null
+  const margin = input.isMask ? 0 : Math.ceil(strongest * 3 + 2)
+  const grid = margin ? paddedSides(input.pixels, margin, sides) : { pixels: input.pixels, origin: [0, 0] as [number, number] }
+  const { width, height } = grid.pixels, clamp = input.isMask || anySide(sides)
+  const toPixel = invert(input.toDocument), at = (point: [number, number]) => { const [x, y] = apply(toPixel, ...point); return [x - grid.origin[0], y - grid.origin[1]] }
+  const [sx, sy] = at(start), [ex, ey] = at(end)
+  let [dx, dy] = [ex - sx, ey - sy]
+  if (Math.hypot(dx, dy) < 1) [dx, dy] = [0, 1]
+  const length = Math.hypot(dx, dy), radius = new Float32Array(width * height)
+  for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
+    const px = x + 0.5 - sx, py = y + 0.5 - sy, t = radial ? Math.hypot(px, py) / length : (px * dx + py * dy) / (length * length)
+    radius[y * width + x] = from + (to - from) * clamp01(t)
+  }
+  const levels = [0]
+  for (let r = strongest; r >= 0.5 && levels.length < 7; r /= 2) levels.splice(1, 0, r)
+  const source = Float32Array.from(grid.pixels.data), out = new Raster(width, height, 4)
+  let lower: Float32Array = source
+  for (let k = 1; k < levels.length; k++) {
+    const upper = blurFloats(source, width, height, 4, levels[k], clamp), low = levels[k - 1], span = levels[k] - low
+    for (let i = 0; i < radius.length; i++) {
+      const r = radius[i]
+      if (r > levels[k] || (k > 1 && r <= low)) continue
+      const w = (r - low) / span
+      for (let c = i * 4; c < i * 4 + 4; c++) out.data[c] = Math.round(lower[c] + (upper[c] - lower[c]) * w)
+    }
+    lower = upper
+  }
+  return { pixels: out, origin: grid.origin }
+}
+
 export function motionBlur(input: FilterInput, angle: number, distance: number, sides: Sides = noSides): FilterOutput {
   if (distance <= 0) return null
   const sigma = distance / Math.sqrt(12), reach = Math.ceil(sigma * 3)

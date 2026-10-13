@@ -117,7 +117,7 @@ new C needs. Hashes are upstream's commits; effort is a guess.
   for its streams).
 - [x] **Navigator** (3e09948): a minimap in the canvas's top-right corner from 300% zoom, the visible part boxed, click or drag to
   move there, redrawn 250 ms after edits settle. Needs a small render of the document that leaves the view alone.
-- [ ] **Filter › Progressive Blur** (3ae11cd): a blur from From to To along a line dragged on the canvas, or out from a point; Invert
+- [x] **Filter › Progressive Blur** (3ae11cd): a blur from From to To along a line dragged on the canvas, or out from a point; Invert
   swaps them. Needs dragging on the canvas while a filter is open (`canvasPicker` only takes clicks).
 
 ### Large

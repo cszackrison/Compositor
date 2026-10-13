@@ -11,7 +11,7 @@ import { BrushStroke } from '../src/tools/brush'
 import { History } from '../src/model/history'
 import { pixelToDocument } from '../src/render/compositor'
 import { zipPackage, unzipPackage } from '../src/io/files'
-import { contentAwareFill, defaultDither, defaultScanlines, dither, gaussianBlur, noSides, scanlines } from '../src/editor/filterKinds'
+import { contentAwareFill, defaultDither, defaultScanlines, dither, gaussianBlur, noSides, progressiveBlur, scanlines } from '../src/editor/filterKinds'
 import { identity } from '../src/render/gl'
 
 beforeAll(async () => { await loadKernels(readFileSync(new URL('../public/kernels.wasm', import.meta.url))) })
@@ -154,6 +154,22 @@ describe('filters', () => {
       expect(kept.data[i + 3]).toBe(cutout.data[i + 3])
       expect(Math.abs(kept.data[i] - Math.round(cutout.data[i + 3] * 200 / 255))).toBeLessThanOrEqual(1)
     }
+  })
+
+  it('Progressive Blur is sharp where its line starts and blurred at its end, along it or out from the start', () => {
+    const stripes = () => { const r = new Raster(40, 40, 4); for (let y = 0; y < 40; y++) for (let x = 0; x < 40; x++) r.data.set(x % 4 < 2 ? [255, 255, 255, 255] : [0, 0, 0, 255], (y * 40 + x) * 4); return r }
+    const all = { left: true, right: true, top: true, bottom: true }
+    const at = (out: Raster, x: number, y: number) => out.data[(y * out.width + x) * 4]
+    const linear = progressiveBlur(input(stripes()), 0, 6, [20, 0], [20, 40], false, false, all) as { pixels: Raster; origin: [number, number] }
+    expect([linear.pixels.width, linear.pixels.height]).toEqual([40, 40])
+    expect(at(linear.pixels, 0, 0)).toBeGreaterThan(240); expect(at(linear.pixels, 2, 0)).toBeLessThan(15)
+    expect(Math.abs(at(linear.pixels, 0, 39) - at(linear.pixels, 2, 39))).toBeLessThan(20)
+    const radial = progressiveBlur(input(stripes()), 0, 6, [20, 20], [20, 30], true, false, all) as { pixels: Raster }
+    const contrast = (x: number, y: number) => Math.abs(at(radial.pixels, x, y) - at(radial.pixels, x + 2, y))
+    expect(contrast(20, 20)).toBeGreaterThan(60)
+    expect(contrast(0, 0)).toBeLessThan(20)
+    const inverted = progressiveBlur(input(stripes()), 0, 6, [20, 0], [20, 40], false, true, all) as { pixels: Raster }
+    expect(at(inverted.pixels, 0, 39)).toBeGreaterThan(240); expect(at(inverted.pixels, 2, 39)).toBeLessThan(15)
   })
 
   it('Scanlines draws lines with dark gaps between them, and Dither still runs', () => {

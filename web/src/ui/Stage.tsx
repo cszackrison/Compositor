@@ -9,7 +9,7 @@ import { ContextMenu, type MenuItem } from './Menu'
 import { copyMerged } from '../editor/actions'
 import { copyLayersInto, paste } from '../editor/clipboard'
 import { draggedFromOtherProject, takeDraggedLayers } from './Tabs'
-import { actualSize, canvasDrag, canvasOnly, canvasPicker, compositor, fit, onFrame, renderFull, renderScaleFor, requestRender, setCompositor, snapLines, view, viewChanged, modifierHeld, releaseOnceModifiers, subscribeModifiers, tapModifier, touchModifiers, type ModifierKey } from './canvasState'
+import { actualSize, canvasDrag, canvasGesture, canvasOnly, canvasPicker, compositor, fit, onFrame, renderFull, renderScaleFor, requestRender, setCompositor, snapLines, view, viewChanged, modifierHeld, releaseOnceModifiers, subscribeModifiers, tapModifier, touchModifiers, type ModifierKey } from './canvasState'
 import { useCoarse } from './layout'
 import type { Pointer, ToolHandler } from '../tools/tool'
 import { eyedropper, paint } from '../tools/paint'
@@ -121,7 +121,8 @@ export function drawOverlay() {
     c.strokeStyle = '#000'; c.lineDashOffset = -(performance.now() / 60 % 8) + 4; c.stroke()
     c.setLineDash([])
   }
-  activeHandler().draw?.(c)
+  if (canvasGesture.current) canvasGesture.current.draw(c)
+  else activeHandler().draw?.(c)
   if (prefs.rulers && !canvasOnly) drawRulers(c)
 }
 
@@ -204,6 +205,7 @@ export function Stage() {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const overlayRef = useRef<HTMLCanvasElement>(null)
   const pan = useRef<{ x: number; y: number; offsetX: number; offsetY: number } | null>(null)
+  const gesturing = useRef(false)
   // A middle-button drag with ⌘ or Ctrl held zooms, as in Blender: up zooms in, doubling every 100 px, about where it was pressed.
   const middleZoom = useRef<{ screen: [number, number]; y: number; zoom: number; out: boolean } | null>(null)
   const guideGesture = useRef(false)
@@ -333,6 +335,7 @@ export function Stage() {
       if ((p.screen[0] >= rulerSize || p.screen[1] >= rulerSize) && !prefs.lockGuides) { startGuideDrag(p.screen[1] < rulerSize ? 'horizontal' : 'vertical', null, p); guideGesture.current = true }
       return
     }
+    if (canvasGesture.current && event.button === 0) { gesturing.current = true; canvasGesture.current.down(p.point, p.screen); requestRender(false); return }
     if (canvasPicker.current && event.button === 0) { canvasPicker.current(p.point, p.shift, p.alt); canvasDrag.startX = event.clientX; return }
     if (event.button === 2 && !brushTools.has(store.state.tool)) return
     activeHandler().down?.(p)
@@ -364,6 +367,7 @@ export function Stage() {
     }
     if (pan.current) { view.offsetX = pan.current.offsetX + event.clientX - pan.current.x; view.offsetY = pan.current.offsetY + event.clientY - pan.current.y; viewChanged(); requestRender(false); return }
     if (guideGesture.current) { moveGuideDrag(p); return }
+    if (gesturing.current) { canvasGesture.current?.move(p.point, p.shift); requestRender(false); return }
     if (canvasDrag.current && event.buttons) { canvasDrag.current.move(event.clientX - canvasDrag.startX, p.command); return }
     if (event.buttons) activeHandler().move?.(p)
     else { activeHandler().hover?.(p); updateCursor() }
@@ -385,6 +389,7 @@ export function Stage() {
     if (middleZoom.current) { middleZoom.current = null; updateCursor(); return }
     if (pan.current) { pan.current = null; updateCursor(); return }
     if (guideGesture.current) { guideGesture.current = false; endGuideDrag(p); return }
+    if (gesturing.current) { gesturing.current = false; canvasGesture.current?.up(); return }
     if (canvasDrag.current) { canvasDrag.current.up(); return }
     if (canvasPicker.current) return
     activeHandler().up?.(p)
@@ -421,7 +426,7 @@ export function Stage() {
   }, [])
 
   const handler = activeHandler()
-  const cursorFor = () => middleZoom.current ? (middleZoom.current.out ? 'zoom-out' : 'zoom-in') : pan.current ? 'grabbing' : space || store.state.tool === 'hand' ? 'grab' : canvasPicker.current ? 'crosshair' : activeHandler().cursor?.(lastPointer.current) ?? 'default'
+  const cursorFor = () => middleZoom.current ? (middleZoom.current.out ? 'zoom-out' : 'zoom-in') : pan.current ? 'grabbing' : space || store.state.tool === 'hand' ? 'grab' : canvasPicker.current || canvasGesture.current ? 'crosshair' : activeHandler().cursor?.(lastPointer.current) ?? 'default'
   useLayoutEffect(updateCursor)
   return (
     <div ref={ref} className="stage" tabIndex={0} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerUp}

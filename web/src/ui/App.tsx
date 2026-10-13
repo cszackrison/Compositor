@@ -238,7 +238,7 @@ export function App() {
       { label: 'Flip Canvas Horizontal', action: () => store.flipCanvas('x'), disabled: !doc },
       { label: 'Flip Canvas Vertical', action: () => store.flipCanvas('y'), disabled: !doc },
     ] },
-    { title: 'Filter', items: [item(lastFilterName() ? `Last Filter: ${lastFilterName()}` : 'Last Filter', 'Last Filter'), 'divider' as const, ...['Gaussian Blur', 'Motion Blur', 'Add Noise'].map(filter)].concat([
+    { title: 'Filter', items: [item(lastFilterName() ? `Last Filter: ${lastFilterName()}` : 'Last Filter', 'Last Filter'), 'divider' as const, ...['Gaussian Blur', 'Motion Blur', 'Progressive Blur', 'Add Noise'].map(filter)].concat([
       { label: 'Vignette…', action: open('Vignette'), disabled: !canVignette() },
       ...['Bloom / Glow', 'Dither', 'Scanlines', 'Tonal Contrast', 'Lens Correction', 'Remove Background'].map(filter),
     ]) },

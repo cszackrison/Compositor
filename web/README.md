@@ -50,7 +50,7 @@ edited one saves as 8-bit. Text and shape metadata are dropped once their pixels
   - Move the outline, or ⌘-drag to move the selected pixels (⌘⌥-drag duplicates them).
 - **Painting and retouching:** Brush and Eraser, Spot Healing, Clone Stamp, Smear (Liquify, Blur and Smudge), Gradient, and Shape layers that redraw when scaled. Plus right-drag to resize the tip, `[` `]` `{` `}`, and digit keys for opacity.
 - **Image menu:** Curves, Levels, Hue/Saturation, Black & White, Color Balance, Exposure, Gradient Map, Grain and Invert, applied to a layer's pixels. Also Canvas Size, Image Size, Trim, Crop to Selection and Flip Canvas.
-- **Filter menu:** Gaussian Blur, Motion Blur, Add Noise, Vignette, Bloom / Glow, Dither (all ten styles), Scanlines, Tonal Contrast and Lens Correction. Edit › Content-Aware Fill (⇧⌫). Each previews live and is limited to the selection.
+- **Filter menu:** Last Filter, Gaussian Blur, Motion Blur, Progressive Blur, Add Noise, Vignette, Bloom / Glow, Dither (all ten styles), Scanlines, Tonal Contrast and Lens Correction. Edit › Content-Aware Fill (⇧⌫). Each previews live and is limited to the selection.
 - **Canvas aids:** the Crop tool (ratios, ⌥ for symmetric cropping), rulers, guides dragged from them, a layout grid, and a pixel grid at 800% and above.
 - **Editing:**
   - Cut, Copy, Copy Merged and Paste (images from other apps too).
