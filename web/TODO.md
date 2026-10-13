@@ -70,7 +70,7 @@ new C needs. Hashes are upstream's commits; effort is a guess.
 
 ### Small
 
-- [ ] **Filter › Last Filter** (0415aa4, 6b81d4a): the last Filter-menu filter again with the same settings and no dialog, named in
+- [x] **Filter › Last Filter** (0415aa4, 6b81d4a): the last Filter-menu filter again with the same settings and no dialog, named in
   the menu ("Last Filter: Gaussian Blur"); not Content-Aware Fill or the Image menu's adjustments. `FilterSession.start()` and
   `commit()` already run a job without a dialog, so keep the last job from `FilterDialog`'s commit. The Mac's ⌃⌘F has no separate
   chord off the Mac, and Ctrl+F is the browser's Find. Small.

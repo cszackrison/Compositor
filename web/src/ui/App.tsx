@@ -16,7 +16,7 @@ import { ToolRail, ToolHeader } from './Tools'
 import { TabBar } from './Tabs'
 import { DialogHost } from './Dialogs'
 import { ColorPickerHost } from './ColorPicker'
-import { FilterHost } from './Filters'
+import { FilterHost, lastFilterName, repeatLastFilter } from './Filters'
 import { prefs, setPrefs, subscribePrefs } from '../editor/prefs'
 import { definitionFor, shortcutText, subscribeShortcuts } from '../editor/shortcuts'
 import { brushKey } from '../tools/paint'
@@ -34,6 +34,7 @@ const has = () => store.hasDocument
 const busy = () => !!activeHandler().busy?.()
 const pixelLayer = () => { const l = store.active; return !!l?.image && !l.isGroup && !l.adjustment && !store.state.editingMask }
 const filterable = () => has() && pixelLayer()
+const canVignette = () => { const a = store.active; return has() && !!a && !a.isGroup && !a.adjustment && !store.state.editingMask }
 
 // Every command a shortcut can run, by its title in the shortcut list.
 const commands: Record<string, { run: () => void; enabled?: () => boolean }> = {
@@ -62,6 +63,7 @@ const commands: Record<string, { run: () => void; enabled?: () => boolean }> = {
   Deselect: { run: () => store.deselect(), enabled: () => !!store.state.selection },
   'Inverse Selection': { run: () => store.invertSelection(), enabled: has },
   'Select Subject': { run: () => { selectSubject() }, enabled: has },
+  'Last Filter': { run: () => { repeatLastFilter() }, enabled: () => !!lastFilterName() && !store.state.panel && (lastFilterName() === 'Vignette' ? canVignette() : filterable()) },
   Curves: { run: open('Curves'), enabled: filterable },
   Levels: { run: open('Levels'), enabled: filterable },
   'Hue/Saturation': { run: open('Hue/Saturation'), enabled: filterable },
@@ -226,8 +228,8 @@ export function App() {
       { label: 'Flip Canvas Horizontal', action: () => store.flipCanvas('x'), disabled: !doc },
       { label: 'Flip Canvas Vertical', action: () => store.flipCanvas('y'), disabled: !doc },
     ] },
-    { title: 'Filter', items: ['Gaussian Blur', 'Motion Blur', 'Add Noise'].map(filter).concat([
-      { label: 'Vignette…', action: open('Vignette'), disabled: !doc || !active || active.isGroup || !!active.adjustment || state.editingMask },
+    { title: 'Filter', items: [item(lastFilterName() ? `Last Filter: ${lastFilterName()}` : 'Last Filter', 'Last Filter'), 'divider' as const, ...['Gaussian Blur', 'Motion Blur', 'Add Noise'].map(filter)].concat([
+      { label: 'Vignette…', action: open('Vignette'), disabled: !canVignette() },
       ...['Bloom / Glow', 'Dither', 'Scanlines', 'Tonal Contrast', 'Lens Correction', 'Remove Background'].map(filter),
     ]) },
     { title: 'Layer', items: [

@@ -3,8 +3,8 @@ import { store } from '../editor/store'
 import { FilterDialog } from './FilterDialog'
 import { Slider, AdjustmentEditor } from './Inspector'
 import { useEditor } from './hooks'
-import { defaultDither, defaultScanlines, ditherGroups, ditherStyles, ditherUses, type DitherSettings, type VignetteSettings } from '../editor/filterKinds'
-import { canvasSides, job } from '../editor/filters'
+import { defaultDither, defaultScanlines, ditherGroups, ditherStyles, ditherUses, type DitherSettings, type Sides, type VignetteSettings } from '../editor/filterKinds'
+import { FilterSession, canvasSides, job, type FilterJob } from '../editor/filters'
 import { RemoveBackgroundDialog } from '../ai/RemoveBackground'
 import { type Adjustment, type AdjustmentKind, type LevelRange, newAdjustment, identityRange } from '../model/types'
 import { applyRange } from '../model/adjustments'
@@ -21,29 +21,56 @@ function recall<T>(name: string, initial: T): T { return (remembered.get(name) a
 const close = () => store.set({ panel: null })
 const seed = () => Math.floor(Math.random() * 2 ** 32)
 
-function Simple<P extends object>({ name, initial, run, trim, children, masks }: { name: string; initial: P; run: Parameters<typeof FilterDialog<P>>[0]['run']; trim?: boolean; masks?: boolean; children: (p: P, set: (c: Partial<P>) => void) => React.ReactNode }) {
-  return <FilterDialog title={name} initial={recall(name, initial)} run={run} trim={trim} masks={masks} onClose={close} onCommit={p => remembered.set(name, p)}>{children}</FilterDialog>
+// What a Filter-menu filter reads from the layer it runs on, worked out when it starts: before a blur's preview grows the layer.
+type FilterContext = { sides: Sides; fillsClear: boolean; seed: number }
+const filterContext = (): FilterContext => ({ sides: canvasSides(), fillsClear: !store.active?.image, seed: seed() })
+
+// The Filter menu's own filters, by name: each one's job from its settings, so Last Filter can run it again on whatever layer is active.
+const repeatable: Record<string, { job: (p: any, context: FilterContext) => FilterJob; trim?: boolean; growEmpty?: boolean }> = {
+  'Gaussian Blur': { job: (p, c) => job('gaussianBlur', p.radius, p.preserveTransparency, c.sides), trim: true },
+  'Motion Blur': { job: (p, c) => job('motionBlur', p.angle, p.distance, c.sides), trim: true },
+  'Add Noise': { job: (p, c) => job('addNoise', p.amount, p.gaussian, p.monochromatic, c.seed) },
+  Vignette: { job: (p, c) => job('vignette', p, c.fillsClear), growEmpty: true },
+  'Bloom / Glow': { job: p => job('bloom', p.amount, p.radius), trim: true },
+  Dither: { job: p => job('dither', p) },
+  Scanlines: { job: p => job('scanlines', p) },
+  'Tonal Contrast': { job: p => job('tonalContrast', p.amount, p.shadows, p.midtones, p.highlights, p.radius) },
+  'Lens Correction': { job: p => job('lensCorrection', p.distortion) },
+}
+
+// Filter › Last Filter (⌃⌘F): the last of those applied, again with the same settings and no dialog, as in Photoshop.
+let lastFilter: { name: string; params: unknown } | null = null
+export const lastFilterName = () => lastFilter?.name ?? null
+export async function repeatLastFilter() {
+  if (!lastFilter || store.state.panel) return
+  const { name, params } = lastFilter, spec = repeatable[name], context = filterContext()
+  const session = FilterSession.start({ growEmpty: spec.growEmpty })
+  if (!session) return
+  session.onError = message => { if (message) store.notify(message) }
+  await session.commit(name, spec.job(params, context), spec.trim)
+}
+
+function Simple<P extends object>({ name, initial, children }: { name: string; initial: P; children: (p: P, set: (c: Partial<P>) => void) => React.ReactNode }) {
+  const context = useMemo(filterContext, []), spec = repeatable[name]
+  return <FilterDialog title={name} initial={recall(name, initial)} run={p => spec.job(p, context)} trim={spec.trim} growEmpty={spec.growEmpty} onClose={close} onCommit={p => { remembered.set(name, p); lastFilter = { name, params: p } }}>{children}</FilterDialog>
 }
 
 function GaussianBlurDialog() {
-  const sides = useMemo(canvasSides, [])
-  return <Simple name="Gaussian Blur" initial={{ radius: 5, preserveTransparency: false }} trim run={p => job('gaussianBlur', p.radius, p.preserveTransparency, sides)}>{(p, set) => <>
+  return <Simple name="Gaussian Blur" initial={{ radius: 5, preserveTransparency: false }}>{(p, set) => <>
     <Slider label="Radius" value={p.radius} min={0.1} max={250} digits={1} log onChange={radius => set({ radius })} />
     <label title="Blur only the colors and keep every pixel's transparency, so the outline stays where it is"><input type="checkbox" checked={!!p.preserveTransparency} onChange={e => set({ preserveTransparency: e.target.checked })} /> Preserve Transparency</label>
   </>}</Simple>
 }
 
 function MotionBlurDialog() {
-  const sides = useMemo(canvasSides, [])
-  return <Simple name="Motion Blur" initial={{ angle: 0, distance: 10 }} trim run={p => job('motionBlur', p.angle, p.distance, sides)}>{(p, set) => <>
+  return <Simple name="Motion Blur" initial={{ angle: 0, distance: 10 }}>{(p, set) => <>
     <Slider label="Angle" value={p.angle} min={-90} max={90} onChange={angle => set({ angle })} />
     <Slider label="Distance" value={p.distance} min={1} max={2000} log onChange={distance => set({ distance })} />
   </>}</Simple>
 }
 
 function AddNoiseDialog() {
-  const noiseSeed = useMemo(seed, [])
-  return <Simple name="Add Noise" initial={{ amount: 10, gaussian: false, monochromatic: false }} run={p => job('addNoise', p.amount, p.gaussian, p.monochromatic, noiseSeed)}>{(p, set) => <>
+  return <Simple name="Add Noise" initial={{ amount: 10, gaussian: false, monochromatic: false }}>{(p, set) => <>
     <Slider label="Amount" value={p.amount} min={0.1} max={400} digits={1} onChange={amount => set({ amount })} />
     <div className="row"><span className="muted">Distribution</span><select value={p.gaussian ? 'g' : 'u'} onChange={e => set({ gaussian: e.target.value === 'g' })}><option value="u">Uniform</option><option value="g">Gaussian</option></select><span /></div>
     <label><input type="checkbox" checked={p.monochromatic} onChange={e => set({ monochromatic: e.target.checked })} /> Monochromatic</label>
@@ -51,27 +78,26 @@ function AddNoiseDialog() {
 }
 
 function VignetteDialog() {
-  const fillsClear = useMemo(() => !store.active?.image, [])
   const initial: VignetteSettings = { color: [0, 0, 0], amount: 35, midpoint: 50, roundness: 100, feather: 60, highlights: 25 }
-  return <FilterDialog title="Vignette" initial={recall('Vignette', initial)} growEmpty onClose={close} onCommit={p => remembered.set('Vignette', p)} run={p => job('vignette', p, fillsClear)}>{(p, set) => <>
+  return <Simple name="Vignette" initial={initial}>{(p, set) => <>
     <div className="row"><span className="muted">Color</span><ColorSwatch title="Vignette Color" value={p.color} onChange={color => set({ color })} /><span /></div>
     <Slider label="Amount" value={p.amount} min={0} max={100} onChange={amount => set({ amount })} />
     <Slider label="Midpoint" value={p.midpoint} min={0} max={100} onChange={midpoint => set({ midpoint })} />
     <Slider label="Roundness" value={p.roundness} min={-100} max={100} onChange={roundness => set({ roundness })} />
     <Slider label="Feather" value={p.feather} min={0} max={100} onChange={feather => set({ feather })} />
     <Slider label="Highlights" value={p.highlights} min={0} max={100} onChange={highlights => set({ highlights })} />
-  </>}</FilterDialog>
+  </>}</Simple>
 }
 
 function BloomDialog() {
-  return <Simple name="Bloom / Glow" initial={{ amount: 40, radius: 24 }} trim run={p => job('bloom', p.amount, p.radius)}>{(p, set) => <>
+  return <Simple name="Bloom / Glow" initial={{ amount: 40, radius: 24 }}>{(p, set) => <>
     <Slider label="Amount" value={p.amount} min={0} max={100} onChange={amount => set({ amount })} />
     <Slider label="Radius" value={p.radius} min={1} max={150} log onChange={radius => set({ radius })} />
   </>}</Simple>
 }
 
 function TonalContrastDialog() {
-  return <Simple name="Tonal Contrast" initial={{ amount: 50, shadows: 40, midtones: 60, highlights: 30, radius: 16 }} run={p => job('tonalContrast', p.amount, p.shadows, p.midtones, p.highlights, p.radius)}>{(p, set) => <>
+  return <Simple name="Tonal Contrast" initial={{ amount: 50, shadows: 40, midtones: 60, highlights: 30, radius: 16 }}>{(p, set) => <>
     <Slider label="Amount" value={p.amount} min={0} max={100} onChange={amount => set({ amount })} />
     <Slider label="Shadows" value={p.shadows} min={-100} max={100} onChange={shadows => set({ shadows })} />
     <Slider label="Midtones" value={p.midtones} min={-100} max={100} onChange={midtones => set({ midtones })} />
@@ -81,7 +107,7 @@ function TonalContrastDialog() {
 }
 
 function LensDialog() {
-  return <Simple name="Lens Correction" initial={{ distortion: 0 }} run={p => job('lensCorrection', p.distortion)}>{(p, set) => <>
+  return <Simple name="Lens Correction" initial={{ distortion: 0 }}>{(p, set) => <>
     <Slider label="Remove Distortion" value={p.distortion} min={-100} max={100} onChange={distortion => set({ distortion })} />
     <span className="muted">Positive straightens lines that bow outward (barrel); negative, lines that bow inward (pincushion).</span>
   </>}</Simple>
@@ -96,7 +122,7 @@ function ContentAwareDialog() {
 }
 
 function DitherDialog() {
-  return <Simple name="Dither" initial={defaultDither} run={p => job('dither', p)}>{(p, set) => {
+  return <Simple name="Dither" initial={defaultDither}>{(p, set) => {
     const uses = ditherUses(p)
     return <>
       <div className="row"><span className="muted">Style</span>
@@ -117,7 +143,7 @@ function DitherDialog() {
 }
 
 function ScanlinesDialog() {
-  return <Simple name="Scanlines" initial={defaultScanlines} run={p => job('scanlines', p)}>{(p, set) => <>
+  return <Simple name="Scanlines" initial={defaultScanlines}>{(p, set) => <>
     <Slider label="Line Spacing" value={p.lineSpacing} min={2} max={32} onChange={lineSpacing => set({ lineSpacing })} />
     <Slider label="Thickness" value={p.thickness} min={5} max={100} onChange={thickness => set({ thickness })} />
     <Slider label="Glow" value={p.glow} min={0} max={100} onChange={glow => set({ glow })} />
