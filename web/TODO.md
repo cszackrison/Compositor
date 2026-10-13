@@ -141,7 +141,9 @@ new C needs. Hashes are upstream's commits; effort is a guess.
 - [x] **CMYK** (59025aa, dac3bc6): View › CMYK › Proof Colors and Gamut Warning on the canvas (a 3D lookup in the display shader, with a
   pill at the canvas's foot), and Export As writes JPEG, TIFF (new, under More) and PDF in a profile's inks with it embedded. Color
   management is LittleCMS (lcms-wasm, vendored in `web/vendor/lcms`). Browsers ship no CMYK profile, so profiles come from Load Profile and are kept in the browser.
-  - [ ] Opening CMYK files with their profile adopted (JPEG and TIFF open converted to RGB by the decoder, not through their profile).
+  - [x] CMYK JPEG and TIFF files open through their own profile, or the chosen one when they name none (the Mac's Generic CMYK has no
+    browser equivalent), and one that starts a project has its profile kept and chosen. TIFFs go through LittleCMS; JPEGs are
+    decoded by the browser with the profile embedded, as Chrome and Safari convert them (Firefox may not).
 - [ ] Open a Mac 1.5 project with an HDR layer and compare. The web reads EXR as premultiplied linear light, which upstream's EXR
   round-trip test implies ImageIO writes, but it was only checked against ImageMagick's files.
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { existsSync, readFileSync } from 'node:fs'
-import { flatten, fromInks, proofLookups, proofSize, readProfile, toInks, type CMYKProfile } from '../src/io/cmyk'
+import { flatten, fromInks, jpegColor, openCMYK, proofLookups, proofSize, readProfile, toInks, type CMYKProfile } from '../src/io/cmyk'
 import { encodeTIFF } from '../src/io/tiff'
 import { encodeCMYKJPEG } from '../src/io/jpeg'
 import { pdfOfImage } from '../src/io/pdf'
@@ -52,6 +52,25 @@ describe.skipIf(!existsSync(cmykPath))('CMYK', () => {
     expect(text.includes('Adobe')).toBe(true)
     const pdf = new TextDecoder('latin1').decode(pdfOfImage(inks, 16, 16, 72, 72, p.data))
     expect(pdf.includes('/ICCBased') && pdf.includes('/N 4')).toBe(true)
+  })
+})
+
+describe.skipIf(!existsSync(cmykPath))('Opening CMYK', () => {
+  it('opens a CMYK TIFF through its own profile', async () => {
+    const p = await profile(), inks = await toInks(new Uint8Array([200, 60, 40, 30, 120, 220]), p)
+    const opened = await openCMYK(new Blob([encodeTIFF({ width: 2, height: 1, samples: inks, cmyk: true, icc: p.data }) as BlobPart]))
+    expect(opened?.profile.data).toEqual(p.data)
+    const back = await fromInks(inks, p)
+    expect([...opened!.image.data]).toEqual([...back.subarray(0, 3), 255, ...back.subarray(3), 255])
+  })
+
+  it('finds a JPEG’s inks and its profile', async () => {
+    const p = await profile(), jpeg = encodeCMYKJPEG(new Uint8Array(8 * 8 * 4).fill(60), 8, 8, 0.9, p.data)
+    const color = jpegColor(jpeg)
+    expect(color?.cmyk).toBe(true)
+    expect(color?.icc).toEqual(p.data)
+    expect(jpegColor(encodeCMYKJPEG(new Uint8Array(8 * 8 * 4), 8, 8))).toEqual({ cmyk: true })
+    expect(await openCMYK(new Blob([new Uint8Array([0x89, 0x50, 0x4e, 0x47])]))).toBeNull()
   })
 })
 

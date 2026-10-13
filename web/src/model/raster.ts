@@ -1,3 +1,4 @@
+import type { CMYKProfile } from '../io/cmyk'
 import { decode, encode } from 'fast-png'
 import { call, withBuffers } from '../kernels'
 import { encodeEXR } from '../io/exr'
@@ -202,9 +203,10 @@ export async function decodeHDR(bytes: Uint8Array): Promise<Raster> {
 
 // An image file placed as a layer: its pixels, and for a 16-bit PNG or an HDR image the file the project keeps as the layer's image
 // until it's edited, as the Mac keeps 16-bit and HDR layers. Radiance HDR is kept as an OpenEXR, the format projects hold HDR in.
-export async function decodeLayerFile(file: File, fitting?: { width: number; height: number }): Promise<{ image: Raster; wide?: { file: 'png' | 'exr'; bytes: Uint8Array; version: number } }> {
+export async function decodeLayerFile(file: File, fitting?: { width: number; height: number }): Promise<{ image: Raster; wide?: { file: 'png' | 'exr'; bytes: Uint8Array; version: number }; profile?: CMYKProfile }> {
   const name = file.name.toLowerCase()
   if (file.type === 'image/svg+xml' || name.endsWith('.svg')) return { image: await decodeSVG(file, fitting) }
+  if (/\.(jpe?g|tiff?)$/.test(name) || /^image\/(jpeg|tiff)$/.test(file.type)) { const cmyk = await (await import('../io/cmyk')).openCMYK(file); if (cmyk) return cmyk }
   if (!name.endsWith('.exr') && !name.endsWith('.hdr') && !(file.type === 'image/png' || name.endsWith('.png'))) return { image: await decodeImageFile(file) }
   const bytes = new Uint8Array(await file.arrayBuffer())
   if (name.endsWith('.hdr')) {
@@ -235,13 +237,19 @@ export async function decodeImageFile(file: Blob): Promise<Raster> {
   return new Raster(bitmap.width, bitmap.height, 4, premultiply(data))
 }
 
-// A TIFF's main image (the largest, so not a thumbnail), at 8 bits a channel.
-export async function decodeTIFF(bytes: Uint8Array): Promise<Raster> {
+// A TIFF's main image: the largest, so not a thumbnail.
+export async function tiffMainPage(bytes: Uint8Array) {
   const module = await import('utif'), UTIF = (module as unknown as { default?: typeof module }).default ?? module
   const buffer = bytes.slice().buffer, pages = UTIF.decode(buffer)
   const size = (page: UTIF.IFD) => { const w = page.t256 as unknown as number[] | undefined, h = page.t257 as unknown as number[] | undefined; return (w?.[0] ?? 0) * (h?.[0] ?? 0) }
   const page = pages.reduce((best, p) => size(p) > size(best) ? p : best, pages[0])
   if (!page || !size(page)) throw new Error('This TIFF has no image Compositor can read.')
+  return { page, UTIF, buffer }
+}
+
+// A TIFF's main image at 8 bits a channel.
+export async function decodeTIFF(bytes: Uint8Array): Promise<Raster> {
+  const { page, UTIF, buffer } = await tiffMainPage(bytes)
   UTIF.decodeImage(buffer, page)
   return new Raster(page.width, page.height, 4, premultiply(new Uint8Array(UTIF.toRGBA8(page))))
 }
