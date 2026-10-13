@@ -88,7 +88,8 @@ opt-in pen pressure, a web app manifest for the home screen, a large-canvas warn
 
 - [ ] Try it all on a real iPhone, iPad and Android phone: touch was only exercised with synthetic events, and the phone layout
   in a 390 px frame on a desktop.
-- [ ] Phones in landscape get the desktop layout (they're wider than 760 px); a landscape phone layout may be worth it.
+- [x] Phones on their side get a phone layout of their own: the tools down the left, the bar above the canvas and the tool's options
+  below it (a coarse pointer and at most 500 px tall).
 - [ ] Reordering layers by dragging on touch (Move Up and Move Down in the long-press menu for now).
 - [ ] Offline use from the home screen would need a service worker.
 - [ ] iOS may clear browser storage for sites not added to the home screen after a week unused; projects saved in the browser

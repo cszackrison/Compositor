@@ -213,6 +213,13 @@ input[type="range"].track::-moz-range-thumb { width: 12px; height: 12px; border-
 .app.phone .welcome .card { width: calc(100vw - 32px); padding: 22px; }
 .app.phone .tabbar { display: none; }
 .app.phone .stage .status { display: none; }
+/* A phone on its side: the tools down the left, the bar above the canvas and the tool's options below it. */
+.app.phone.landscape { display: grid; grid-template-columns: auto minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr) auto; grid-template-areas: "rail bar" "rail canvas" "rail options"; padding-bottom: 0; }
+.app.phone.landscape .phonebar { grid-area: bar; height: 40px; padding-top: 0; }
+.app.phone.landscape .workspace { grid-area: canvas; }
+.app.phone.landscape .toolheader { grid-area: options; height: 44px; padding-right: max(10px, env(safe-area-inset-right)); padding-bottom: env(safe-area-inset-bottom); box-sizing: content-box; }
+.app.phone.landscape .toolrail { grid-area: rail; flex-direction: column; width: 52px; height: auto; padding: 6px 4px env(safe-area-inset-bottom) max(4px, env(safe-area-inset-left)); overflow-x: hidden; overflow-y: auto; border-top: none; border-right: 1px solid var(--line); }
+.app.phone.landscape .toolrail .swatches { margin: 8px 0 4px; }
 
 .sheet { position: fixed; left: 0; right: 0; bottom: 0; height: 55%; z-index: 90; display: flex; flex-direction: column; background: var(--panel); border-top: 1px solid var(--line); border-radius: 14px 14px 0 0; box-shadow: 0 -12px 40px rgba(0,0,0,0.45); padding-bottom: env(safe-area-inset-bottom); transition: height 0.2s; }
 .sheet.full { height: calc(100% - 56px - env(safe-area-inset-top)); }

@@ -26,7 +26,7 @@ import { beginTransformSelection } from '../editor/floating'
 import { clearGuides } from '../tools/guides'
 import { canvasOnly, proofing, requestRender, setCanvasOnly, setProofing, subscribeCanvasOnly, subscribeProofing } from './canvasState'
 import { chooseProfile, chosenProfile, cmykProfiles, loadProfiles, pickProfile, subscribeProfiles } from '../io/cmyk'
-import { useCompact } from './layout'
+import { useCompact, useLandscape } from './layout'
 import { selectSubject } from '../ai/RemoveBackground'
 import { PhoneMenu, Sheet } from './Phone'
 import { Icon } from './icons'
@@ -171,7 +171,7 @@ export function App() {
   const [, setShortcutVersion] = useState(0)
   useEffect(() => subscribeShortcuts(() => setShortcutVersion(v => v + 1)), [])
   const [dragging, setDragging] = useState(false)
-  const compact = useCompact()
+  const compact = useCompact(), landscape = useLandscape()
   const [phoneMenu, setPhoneMenu] = useState(false)
   const [sheet, setSheet] = useState(false)
   const active = store.active
@@ -375,7 +375,7 @@ export function App() {
   </>
 
   if (compact) return (
-    <div className="app phone" {...dropProps}>
+    <div className={`app phone ${landscape ? 'landscape' : ''}`} {...dropProps}>
       <header className="phonebar">
         <button className="icon" title="Menu" onClick={() => setPhoneMenu(true)}>☰</button>
         <button className="icon" title="Undo" disabled={!commands.Undo.enabled!()} onClick={() => { store.undo(); requestRender(false) }}>↶</button>
