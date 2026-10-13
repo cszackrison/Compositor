@@ -25,8 +25,17 @@ existing features were.
     a Light slider for the clipping view and on Masking for the sharpening mask, the clipping triangles, the vectorscope (right-click
     the histogram) and the RGB readout. Guides are measured in pixels here, so a line comes out level on any layer (the Mac takes
     their angle in fractions of the width and height).
-- [ ] **PSD/PSB import**, with the conversion report (about 1,500 lines of Swift in `Compositor/IO/PSD`). CMYK PSDs too, since 1.5
-  (896d5c8).
+- [x] **PSD/PSB import**, with the conversion report (`io/psd.ts`, `psdText.ts`, `psdVector.ts`, ported from `Compositor/IO/PSD`).
+  8-bit RGB and CMYK files (CMYK through the embedded profile, or the chosen one, adopted when the file starts a project); layers,
+  folders with their opacity, masks placed on the layer's grid, clipping, blend modes, PackBits, PSB's long lengths and the Mac's
+  pixel budget (cropping to the canvas when over it). Type layers become editable text set by the Type tool, fill rectangles and
+  ellipses live shape layers, other vector masks pixels, and Levels, Curves and Hue/Saturation adjustment layers. The report lists
+  what changes before anything is applied, worded as the Mac's; an open project takes the file as a folder. A file with no layer
+  records comes in as its merged image, read here rather than by ImageIO. ZIP channels are read too, which the Mac turns down.
+  - [ ] 16- and 32-bit files are turned down, as on the Mac, though the web could keep them as deep layers now.
+  - [ ] Whether a font is installed is asked of the browser by PostScript name (`local()`), which Safari and Firefox answer only
+    for system faces, so the report can say a font is missing that the Mac would find.
+  - [ ] Layers can't be dropped at a point (the Mac centers a dropped file's layers on the drop).
 - [x] **Camera RAW import** and its develop sheet: LibRaw in WebAssembly (`io/raw.ts`, libraw-wasm, loaded on first use) decodes to
   linear light at 16 bits; the sheet's Exposure, Temperature and Tint (from the camera's own reading), Boost, Noise Reduction and
   Highlight Recovery develop it (`model/rawDevelop.ts`), previewed small, and Import brings the full frame in as a 16-bit layer.

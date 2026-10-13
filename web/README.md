@@ -56,6 +56,8 @@ edited one saves as 8-bit. Text and shape metadata are dropped once their pixels
   - Cut, Copy, Copy Merged and Paste (images from other apps too).
   - Layer via Copy, fill and clear.
   - Undo and redo, with named steps.
+- **Photoshop files:** PSD and PSB (8-bit RGB and CMYK) open with their layers, folders, masks, clipping, text, shapes and
+  Levels, Curves and Hue/Saturation layers, after a report of what will be converted.
 - **Export and settings:**
   - Export As: JPEG, PNG or a one-page PDF, sized, previewed live (on the checkerboard for PNG) with the file's size. Export PNG saves at once.
   - Remappable keyboard shortcuts (Edit › Keyboard Shortcuts).

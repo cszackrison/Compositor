@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { Store, store, tabForOpening } from '../editor/store'
-import { answerUnsaved, encodeExport, newCanvas, documentName, placeImages, saveFile } from '../editor/actions'
+import { answerConversion, answerUnsaved, conversionRequest, encodeExport, subscribeConversion, newCanvas, documentName, placeImages, saveFile } from '../editor/actions'
 import { prefs, setPrefs, gridColors } from '../editor/prefs'
 import { chordLabel, chordOf, currentOverrides, definitions, effective, problem, saveOverrides, unassigned, type Chord } from '../editor/shortcuts'
 import { color_range, colorRangeMask } from './colorRange'
@@ -435,11 +435,33 @@ function ChangedOnDisk() {
   )
 }
 
+// Opening a Photoshop file (PSDConversionSheet.swift): up while it's read, then what will be converted, layer by layer. Escape or a
+// click outside cancels.
+function PhotoshopConversion() {
+  const request = useSyncExternalStore(subscribeConversion, conversionRequest)
+  useEffect(() => {
+    const escape = (event: KeyboardEvent) => { if (event.key === 'Escape') { event.preventDefault(); answerConversion(false) } }
+    window.addEventListener('keydown', escape)
+    return () => { window.removeEventListener('keydown', escape); answerConversion(false) }
+  }, [])
+  if (!request) return null
+  return (
+    <div className="modal-back" onPointerDown={e => { if (e.target === e.currentTarget) answerConversion(false) }}>
+      <form noValidate className="modal" style={{ width: 520, maxWidth: 'calc(100vw - 40px)' }} onSubmit={e => { e.preventDefault(); if (!request.reading) answerConversion(true) }}>
+        <h2>{request.title}</h2>
+        <span className="muted">{request.reading ? 'Reading the file to see what needs converting.' : 'Compositor will convert these Photoshop features. Nothing is applied until you continue.'}</span>
+        {request.reading ? <div className="muted conversions reading">Reading the Photoshop file…</div> : <ul className="conversions">{request.conversions.map((item, i) => <li key={i}><strong>{item.layerName}</strong><span>{item.message}</span></li>)}</ul>}
+        <div className="buttons"><button type="button" onClick={() => answerConversion(false)}>Cancel</button><button type="submit" className="primary" disabled={request.reading} autoFocus>Import</button></div>
+      </form>
+    </div>
+  )
+}
+
 export const panels: Record<string, () => React.ReactNode> = {
   'New Canvas': () => <NewCanvas />, 'Canvas Size': () => <CanvasSize />, 'Image Size': () => <ImageSize />, Trim: () => <Trim />, 'Export JPEG': () => <ExportAs start="JPEG" />, 'Export As': () => <ExportAs />,
   About: () => <About />, 'Expand Selection': () => <Amount kind="expand" />, 'Contract Selection': () => <Amount kind="contract" />, 'Feather Selection': () => <Amount kind="feather" />,
   Effect: () => <EffectPanel />, 'Grid Settings': () => <GridSettings />, 'Keyboard Shortcuts': () => <KeyboardShortcuts />, 'Color Range': () => <ColorRange />,
-  'Unsaved Changes': () => <UnsavedChanges />, 'Develop RAW': () => <RawDevelop />, 'Changed on Disk': () => <ChangedOnDisk />,
+  'Unsaved Changes': () => <UnsavedChanges />, 'Develop RAW': () => <RawDevelop />, 'Changed on Disk': () => <ChangedOnDisk />, 'Photoshop Conversion': () => <PhotoshopConversion />,
 }
 
 export function DialogHost() {

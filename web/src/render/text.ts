@@ -10,7 +10,8 @@ import { type TextStyle, colorAt, fontAt, lineHeight, textPadding } from '../mod
 
 // A PostScript name (what the Mac saves) to a family and face the browser can draw: the installed face itself through
 // @font-face's local(), which finds faces by PostScript name; failing that, a guess from the name ("Helvetica-Bold" → Helvetica, bold).
-const faces = new Map<string, { css: string; ready: boolean }>()
+type Face = { css: string; ready: boolean; loaded: Promise<boolean> }
+const faces = new Map<string, Face>()
 const fontListeners = new Set<() => void>()
 export function subscribeFonts(listener: () => void) { fontListeners.add(listener); return () => { fontListeners.delete(listener) } }
 
@@ -25,19 +26,21 @@ export function guessFace(name: string) {
   return { family, weight, italic: /italic|oblique/i.test(stylePart) }
 }
 
-function face(name: string): { css: string; ready: boolean } {
-  let found = faces.get(name)
+function face(name: string): Face {
+  const found = faces.get(name)
   if (found) return found
   const guess = guessFace(name), fallback = `${guess.italic ? 'italic ' : ''}${guess.weight} SIZE "${guess.family}", Helvetica, Arial, sans-serif`
-  found = { css: fallback, ready: false }
-  faces.set(name, found)
+  const entry: Face = { css: fallback, ready: false, loaded: Promise.resolve(true) }
+  faces.set(name, entry)
   const fonts = typeof document !== 'undefined' ? document.fonts : null
   if (fonts && typeof FontFace !== 'undefined') {
     const family = `ps ${name}`, loading = new FontFace(family, `local("${name.replace(/"/g, '')}")`)
-    loading.load().then(loaded => { fonts.add(loaded); found!.css = `SIZE "${family}", ${fallback.replace('SIZE ', '')}`; found!.ready = true; fontListeners.forEach(l => l()) }, () => { found!.ready = true })
-  } else found.ready = true
-  return found
+    entry.loaded = loading.load().then(loaded => { fonts.add(loaded); entry.css = `SIZE "${family}", ${fallback.replace('SIZE ', '')}`; entry.ready = true; fontListeners.forEach(l => l()); return true }, () => { entry.ready = true; return false })
+  } else entry.ready = true
+  return entry
 }
+// Whether the installed face itself was found by its PostScript name, once the browser has looked.
+export const faceInstalled = (name: string) => face(name).loaded
 const cssFont = (name: string, size: number) => face(name).css.replace('SIZE', `${size}px`)
 
 // Installed faces the browser lets the page list (Chrome and Edge, with permission): PostScript name, family and style.

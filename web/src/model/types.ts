@@ -3,6 +3,11 @@ import type { Raster } from './raster'
 
 export const formatVersion = 13
 export const maxSide = 30_000
+// DocumentLimits.swift: the largest single surface, and the raster one document may hold across its layers, a sixteenth of the
+// device's memory (as the browser reports it, 8 GB at most) between one surface and 800 MP.
+export const maxSurfacePixels = 200_000_000
+const deviceMemory = (globalThis.navigator as { deviceMemory?: number } | undefined)?.deviceMemory ?? 8
+export const documentPixelBudget = Math.min(800_000_000, Math.max(maxSurfacePixels, Math.floor(deviceMemory * 2 ** 30 / 16)))
 
 export type Sampling = 'Nearest' | 'Smooth' | 'High quality'
 export type Transform = { origin: [number, number]; size: [number, number]; rotation: number; flipX: boolean; flipY: boolean; sampling: Sampling }
