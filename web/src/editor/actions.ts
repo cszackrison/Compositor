@@ -2,7 +2,7 @@ import { commitFloating } from './floating'
 import { Store, activateTab, closeTab, store, tabForOpening, tabs } from './store'
 import { forgetRecent, noteRecent, type Recent } from '../io/recent'
 import { deleteFromBrowser, readFromBrowser, saveToBrowser, type BrowserProject } from '../io/browserProjects'
-import { canWriteDirectories, download, readDirectoryHandle, readFileList, rootedAtManifest, unzipPackage, writeDirectory, zipPackage, type PackageFiles, type PackageTarget } from '../io/files'
+import { canWriteDirectories, download, filesInHandle, imagesIn, readDirectoryHandle, readFileList, rootedAtManifest, unzipPackage, writeDirectory, zipPackage, type PackageFiles, type PackageTarget } from '../io/files'
 import { readProject, writeProject } from '../io/project'
 import { Raster, decodeImageFile, encodePNG } from '../model/raster'
 import { type Doc, fullTransform, newLayer, uuid, maxSide } from '../model/types'
@@ -75,8 +75,28 @@ export const placeImages = guard(async (files: File[]) => {
   }
 })
 
+// File › Import Folder…: the images directly inside a folder, as layers, in name order.
+export const importFolder = guard(async () => {
+  if (canWriteDirectories) {
+    const handle: FileSystemDirectoryHandle = await (window as any).showDirectoryPicker({ id: 'compositor-import', mode: 'read' })
+    const images = imagesIn(await filesInHandle(handle))
+    if (images.length) await placeImages(images)
+    else store.notify(`There are no images in “${handle.name}”.`)
+    return
+  }
+  const input = Object.assign(document.createElement('input'), { type: 'file', multiple: true })
+  input.setAttribute('webkitdirectory', '')
+  input.onchange = () => {
+    const files = [...input.files ?? []], name = files[0]?.webkitRelativePath.split('/')[0] ?? 'folder'
+    const images = imagesIn(files.filter(file => file.webkitRelativePath.split('/').length === 2))
+    if (images.length) placeImages(images)
+    else store.notify(`There are no images in “${name}”.`)
+  }
+  input.click()
+})
+
 export const importImage = guard(async () => {
-  const input = Object.assign(document.createElement('input'), { type: 'file', accept: 'image/*', multiple: true })
+  const input = Object.assign(document.createElement('input'), { type: 'file', accept: 'image/*,.hif,.heif,.heic', multiple: true })
   input.onchange = () => input.files?.length && placeImages([...input.files])
   input.click()
 })

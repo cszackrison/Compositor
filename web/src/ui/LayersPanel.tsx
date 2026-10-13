@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useRef, useState, useSyncExternalStore, type DragEvent } from 'react'
+import { Fragment, useCallback, useEffect, useRef, useState, useSyncExternalStore, type DragEvent } from 'react'
 import { useEditor } from './hooks'
 import { store } from '../editor/store'
 import { type Layer, adjustmentKinds, blendModeGroups, effectKinds, effectNames, type BlendMode, type EffectKind } from '../model/types'
@@ -73,6 +73,18 @@ export function LayersPanel() {
   const closeMenu = useCallback(() => setMenu(null), [])
   const list = rows(state.doc.layers, collapsed)
   const active = store.layer(state.activeId)
+  const listRef = useRef<HTMLDivElement>(null)
+  // A newly chosen layer (picked on the canvas, say) opens the folders it's in and scrolls into view, once: collapsing its folder
+  // afterwards stays collapsed.
+  const revealed = useRef<string | null>(null)
+  useEffect(() => {
+    const id = state.activeId
+    if (!id || revealed.current === id) return
+    revealed.current = id
+    const closed = store.ancestors(id).filter(a => collapsed.has(a.id))
+    if (closed.length) setCollapsed(c => { const next = new Set(c); closed.forEach(a => next.delete(a.id)); return next })
+    requestAnimationFrame(() => listRef.current?.querySelector(`[data-layer-id="${id}"]`)?.scrollIntoView({ block: 'nearest' }))
+  }, [state.activeId])
 
   // The Mac app's layer menu, in its order: right-clicking a row outside the selection selects it, inside it makes it primary.
   const openMenu = (event: React.MouseEvent, layer: Layer) => {
@@ -159,7 +171,7 @@ export function LayersPanel() {
     <aside className="side">
       <h2><span>Layers</span><span className="muted">{state.doc.layers.length}</span></h2>
       <Appearance />
-      <div className="layers" onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDrop(null) }}>
+      <div className="layers" ref={listRef} onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDrop(null) }}>
         {!store.hasDocument && <p className="muted" style={{ padding: 16, textAlign: 'center' }}>Create a canvas or open a project.</p>}
         {list.map(({ layer, depth, hiddenByParent }) => {
           const selected = state.selectedIds.includes(layer.id), isActive = layer.id === state.activeId
@@ -167,7 +179,7 @@ export function LayersPanel() {
           const editingMask = isActive && state.editingMask
           return (
             <Fragment key={layer.id}>
-            <div className={classes} style={{ paddingLeft: 4 + depth * 16 }} draggable={renaming !== layer.id && !coarse} onPointerMoveCapture={movePress} onPointerUp={cancelPress} onPointerCancel={cancelPress}
+            <div className={classes} data-layer-id={layer.id} style={{ paddingLeft: 4 + depth * 16 }} draggable={renaming !== layer.id && !coarse} onPointerMoveCapture={movePress} onPointerUp={cancelPress} onPointerCancel={cancelPress}
               onDragStart={e => { const ids = selected ? state.selectedIds : [layer.id]; e.dataTransfer.setData('application/x-compositor-layers', JSON.stringify(ids)); setDraggedLayers(ids); e.dataTransfer.effectAllowed = 'copyMove' }} onDragEnd={() => setDraggedLayers(null)}
               onDragOver={e => onDragOver(e, layer)} onDrop={onDrop} onContextMenu={e => openMenu(e, layer)}
               onPointerDown={e => { startPress(e, layer); if (e.button === 0 && e.altKey && !commandKey(e) && clipZone(e, layer) && !(e.target as HTMLElement).classList.contains('mask')) { store.set({ effectSelection: null }); store.toggleClip(layer.id); e.preventDefault(); return } if (e.button === 0 && !(e.target as HTMLElement).closest('button,input')) { store.setActive(layer.id, e.shiftKey ? 'range' : e.metaKey || e.ctrlKey ? 'toggle' : 'none'); if (!(e.target as HTMLElement).classList.contains('mask')) store.set({ editingMask: false }) } }}
@@ -213,8 +225,8 @@ export function LayersPanel() {
           ...(state.selection ? [{ label: 'Reveal Selection', action: () => active && store.addMask(active.id, false, true) }] : []),
           { label: 'Hide All', action: () => active && store.addMask(active.id, true) },
         ]} />
-        <Popup label="Layer effects" icon="fx" disabled={!active?.image || active.isGroup} items={effectKinds.map(kind => ({ label: `${effectNames[kind]}…`, action: () => { if (!active) return; const bg = state.background.map(v => v / 255); store.addEffect(active.id, kind, kind === 'stroke' || kind === 'colorOverlay' ? { ...defaultEffect(kind), red: bg[0], green: bg[1], blue: bg[2] } : defaultEffect(kind)) } }))} />
         <Popup label="New adjustment layer" icon="adjust" disabled={!store.hasDocument} items={adjustmentKinds.map(kind => ({ label: kind, action: () => store.addAdjustment(kind) }))} />
+        <Popup label="Layer effects" icon="fx" disabled={!active?.image || active.isGroup} items={effectKinds.map(kind => ({ label: `${effectNames[kind]}…`, action: () => { if (!active) return; const bg = state.background.map(v => v / 255); store.addEffect(active.id, kind, kind === 'stroke' || kind === 'colorOverlay' ? { ...defaultEffect(kind), red: bg[0], green: bg[1], blue: bg[2] } : defaultEffect(kind)) } }))} />
         <span className="spacer" />
         <button className="icon" title={state.effectSelection ? 'Delete selected effect' : 'Delete layer'} disabled={!active} onClick={() => store.deleteSelected()}><Icon name="trash" /></button>
       </div>

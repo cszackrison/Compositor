@@ -48,8 +48,40 @@ async function readEntry(entry: FileSystemEntry, prefix: string, files: PackageF
   }
 }
 
-// A drop is either a project folder, a zipped project, or image files to place as layers.
-export async function readDrop(transfer: DataTransfer): Promise<{ project?: { files: PackageFiles; target: PackageTarget }; images: File[] }> {
+// Images by type, or by name where the browser gives none (cameras' .hif and .heif often come without one). Hidden files aren't.
+export const isImageFile = (file: { name: string; type: string }) => !file.name.startsWith('.') && (file.type.startsWith('image/') || /\.(png|jpe?g|webp|gif|bmp|avif|heic|heif|hif|tiff?)$/i.test(file.name))
+// The images among `files` in the Finder's name order ("2" before "10").
+export const imagesIn = (files: File[]) => files.filter(isImageFile).sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }))
+
+export async function filesInHandle(handle: FileSystemDirectoryHandle) {
+  const files: File[] = []
+  for await (const entry of (handle as any).values() as AsyncIterable<FileSystemHandle>) if (entry.kind === 'file') files.push(await (entry as FileSystemFileHandle).getFile())
+  return files
+}
+
+async function filesInEntry(entry: FileSystemDirectoryEntry) {
+  const reader = entry.createReader(), files: File[] = []
+  for (;;) {
+    const batch = await new Promise<FileSystemEntry[]>((resolve, reject) => reader.readEntries(resolve, reject))
+    if (!batch.length) return files
+    for (const child of batch) if (child.isFile) files.push(await new Promise<File>((resolve, reject) => (child as FileSystemFileEntry).file(resolve, reject)))
+  }
+}
+
+// A plain folder (not a .comp project) brings in the images directly inside it, not its subfolders'.
+async function folderImages(name: string, files: () => Promise<File[]>, project: () => Promise<PackageFiles>): Promise<File[] | null> {
+  if (name.endsWith('.comp')) return null
+  const inside = await files()
+  if (inside.some(file => file.name === 'manifest.json')) return null
+  const images = imagesIn(inside)
+  if (images.length) return images
+  // A folder holding a project further down still opens it.
+  try { rootedAtManifest(await project()); return null } catch { throw new Error(`There are no images in “${name}”.`) }
+}
+
+// A drop is either a project folder, a zipped project, a folder of images, or image files to place as layers. `folder` names a folder
+// whose images these are, which opens as one project.
+export async function readDrop(transfer: DataTransfer): Promise<{ project?: { files: PackageFiles; target: PackageTarget }; images: File[]; folder?: string }> {
   const items = [...transfer.items].filter(item => item.kind === 'file')
   const handles = await Promise.all(items.map(item => 'getAsFileSystemHandle' in item ? (item as any).getAsFileSystemHandle().catch(() => null) as Promise<FileSystemHandle | null> : Promise.resolve(null)))
   const entries = items.map(item => item.webkitGetAsEntry())
@@ -58,9 +90,13 @@ export async function readDrop(transfer: DataTransfer): Promise<{ project?: { fi
     const handle = handles[index], entry = entries[index]
     if (handle?.kind === 'directory') {
       const directory = handle as FileSystemDirectoryHandle
+      const found = await folderImages(directory.name, () => filesInHandle(directory), () => readDirectoryHandle(directory))
+      if (found) return { images: found, folder: directory.name }
       return { project: { files: rootedAtManifest(await readDirectoryHandle(directory)), target: { kind: 'directory', handle: directory, name: directory.name } }, images }
     }
     if (entry?.isDirectory) {
+      const found = await folderImages(entry.name, () => filesInEntry(entry as FileSystemDirectoryEntry), async () => { const files: PackageFiles = new Map(); await readEntry(entry, '', files); return files })
+      if (found) return { images: found, folder: entry.name }
       const files: PackageFiles = new Map()
       await readEntry(entry, '', files)
       return { project: { files: rootedAtManifest(files), target: { kind: 'download', name: entry.name } }, images }
@@ -68,7 +104,7 @@ export async function readDrop(transfer: DataTransfer): Promise<{ project?: { fi
     const file = items[index].getAsFile()
     if (!file) continue
     if (file.name.endsWith('.zip')) return { project: { files: unzipPackage(new Uint8Array(await file.arrayBuffer())), target: { kind: 'download', name: file.name.replace(/\.zip$/, '') } }, images }
-    if (file.type.startsWith('image/')) images.push(file)
+    if (isImageFile(file)) images.push(file)
   }
   return { images }
 }

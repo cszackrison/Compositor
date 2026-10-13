@@ -3,7 +3,7 @@ import { store } from '../editor/store'
 import { newCanvas, documentName } from '../editor/actions'
 import { download } from '../io/files'
 import { prefs, setPrefs, gridColors } from '../editor/prefs'
-import { chordLabel, chordOf, currentOverrides, definitions, effective, problem, saveOverrides, type Chord } from '../editor/shortcuts'
+import { chordLabel, chordOf, currentOverrides, definitions, effective, problem, saveOverrides, unassigned, type Chord } from '../editor/shortcuts'
 import { color_range, colorRangeMask } from './colorRange'
 import { canvasPicker, renderFull, requestRender } from './canvasState'
 import { EffectPanel, Scrub } from './Inspector'
@@ -226,7 +226,7 @@ function KeyboardShortcuts() {
   const groups = ['Menus', 'Canvas & Layers'] as const
   return (
     <Modal title="Keyboard Shortcuts" wide submit="Save" disabled={!!issue || !!recording} onSubmit={() => saveOverrides(draft)}>
-      <span className="muted">Click a shortcut, then press its new key combination. Changes apply when you save.</span>
+      <span className="muted">Click a shortcut, then press its new key combination, or ⊗ to remove it. Changes apply when you save.</span>
       <input type="text" placeholder="Search shortcuts" value={search} onChange={e => setSearch(e.target.value)} />
       <div style={{ maxHeight: 420, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 2 }}>
         {groups.map(group => <div key={group}>
@@ -234,7 +234,10 @@ function KeyboardShortcuts() {
           {definitions.filter(d => d.group === group && d.title.toLowerCase().includes(search.toLowerCase())).map(d => (
             <div key={d.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '2px 0' }}>
               <span>{d.title}</span>
-              <button type="button" style={{ width: 150, background: recording === d.id ? 'var(--accent-soft)' : undefined }} onClick={() => setRecording(recording === d.id ? null : d.id)}>{recording === d.id ? 'Press keys…' : chordLabel(effective(d.id, draft))}</button>
+              <span style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+                {recording === d.id && effective(d.id, draft)?.key && <button type="button" className="icon" title="Remove this shortcut" onClick={() => { setDraft(dr => ({ ...dr, [d.id]: unassigned })); setRecording(null) }}>⊗</button>}
+                <button type="button" style={{ width: 150, background: recording === d.id ? 'var(--accent-soft)' : undefined }} onClick={() => setRecording(recording === d.id ? null : d.id)}>{recording === d.id ? 'Press keys…' : chordLabel(effective(d.id, draft))}</button>
+              </span>
             </div>
           ))}
         </div>)}

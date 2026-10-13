@@ -5,7 +5,9 @@ import { closeProject, documentName, openFiles, placeImages } from '../editor/ac
 import { readDrop } from '../io/files'
 import { useTabs } from './hooks'
 import { ContextMenu, type MenuItem } from './Menu'
-import { type Layer, uuid } from '../model/types'
+import { type Layer, maxSide, uuid } from '../model/types'
+import { pixelToDocument } from '../render/compositor'
+import { apply } from '../render/gl'
 
 // Layers being dragged from the Layers panel, so another project's tab (or canvas) can take a copy (Copy Layers from Project).
 let dragged: { from: Store; ids: string[] } | null = null
@@ -74,16 +76,20 @@ export function TabBar() {
       if (destination) { copyLayersInto(destination, layers); activateTab(destination) }
       return
     }
-    const { project, images } = await readDrop(e.dataTransfer)
+    const { project, images, folder } = await readDrop(e.dataTransfer).catch(error => { store.notify(error.message); return { project: undefined, images: [], folder: undefined } })
     if (project) { await openFiles(project.files, project.target); return }
     if (!images.length) return
-    if (tab === 'new') { for (const image of images) { tabForOpening(); store.close(); await placeImages([image]) } }
+    // Images open a tab each; a folder's open together, as one.
+    if (tab === 'new') { for (const group of folder ? [images] : images.map(image => [image])) { tabForOpening(); store.close(); await placeImages(group) } }
     else { activateTab(tab); await placeImages(images) }
   }
 
   const leave = () => { if (hover.current) { clearTimeout(hover.current.timer); hover.current = null } }
   return (
-    <div className="tabbar" ref={ref}>
+    <div className="tabbar" ref={ref}
+      onDragOver={e => { if (!airborne || dragging !== null || (e.target as HTMLElement).closest('.tab:not(.new-slot)')) return; e.preventDefault(); setTarget('new') }}
+      onDragLeave={e => { if (e.target === e.currentTarget) setTarget(t => t === 'new' ? null : t) }}
+      onDrop={e => { if (airborne && dragging === null) dropInto(e, 'new') }}>
       {hidden.length > 0 && <button className="tab overflow" onClick={e => setMenu({ x: e.clientX, y: e.clientY + 10, items: hidden.map(tab => ({ label: `${tab.state.saved ? '' : '• '}${documentName(tab)}`, action: () => activateTab(tab) })) })}>{hidden.length === 1 ? '1 more tab' : `${hidden.length} more tabs`} ▾</button>}
       {visible.map(tab => {
         const index = tabs.indexOf(tab)
@@ -117,10 +123,15 @@ export function TabBar() {
   )
 }
 
-// A new project the size of the one the layers come from, to copy them into.
+// A new project to copy the layers into: the size of their pixels as shown (rotation included), which copyLayersInto then centers so
+// they fill it. Adjustment and empty layers don't count; with nothing else, it's the size of the project they come from.
 function tabForNewCopy(layers: Layer[]): Store | null {
   const source = dragged?.from ?? tabs.find(t => t.doc.layers.some(l => l.id === layers[0]?.id)) ?? store
-  const { width, height } = source.doc
+  const corners = layers.filter(l => !l.isGroup && !l.adjustment && l.image).flatMap(l => [[0, 0], [1, 0], [0, 1], [1, 1]].map(([u, v]) => apply(pixelToDocument(l.transform, 1, 1), u, v)))
+  const xs = corners.map(c => c[0]), ys = corners.map(c => c[1])
+  const [width, height] = corners.length
+    ? [Math.ceil(Math.max(...xs)) - Math.floor(Math.min(...xs)), Math.ceil(Math.max(...ys)) - Math.floor(Math.min(...ys))].map(v => Math.max(1, Math.min(maxSide, v)))
+    : [source.doc.width, source.doc.height]
   const next = tabForOpening()
   next.open({ id: uuid(), width, height, resolution: source.doc.resolution, layers: [], guides: [], extra: {} }, null, null)
   return next

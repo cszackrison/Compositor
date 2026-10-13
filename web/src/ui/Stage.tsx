@@ -203,6 +203,8 @@ export function Stage() {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const overlayRef = useRef<HTMLCanvasElement>(null)
   const pan = useRef<{ x: number; y: number; offsetX: number; offsetY: number } | null>(null)
+  // A middle-button drag with ⌘ or Ctrl held zooms, as in Blender: up zooms in, doubling every 100 px, about where it was pressed.
+  const middleZoom = useRef<{ screen: [number, number]; y: number; zoom: number; out: boolean } | null>(null)
   const guideGesture = useRef(false)
   const lastPointer = useRef<Pointer | null>(null)
   const [space, setSpace] = useState(false)
@@ -324,6 +326,7 @@ export function Stage() {
     ;(event.target as Element).setPointerCapture(event.pointerId)
     const p = pointerFrom(event)
     lastPointer.current = p
+    if (event.button === 1 && (event.metaKey || event.ctrlKey)) { middleZoom.current = { screen: p.screen, y: event.clientY, zoom: view.zoom, out: false }; updateCursor(); return }
     if (space || store.state.tool === 'hand' || event.button === 1) { pan.current = { x: event.clientX, y: event.clientY, offsetX: view.offsetX, offsetY: view.offsetY }; updateCursor(); return }
     if (prefs.rulers && event.button === 0 && (p.screen[0] < rulerSize || p.screen[1] < rulerSize)) {
       if ((p.screen[0] >= rulerSize || p.screen[1] >= rulerSize) && !prefs.lockGuides) { startGuideDrag(p.screen[1] < rulerSize ? 'horizontal' : 'vertical', null, p); guideGesture.current = true }
@@ -354,6 +357,10 @@ export function Stage() {
     lastPointer.current = p
     // Straight to the DOM: re-rendering the canvas component on every pointer move just for this costs more than it shows.
     if (statusRef.current) statusRef.current.textContent = `${Math.floor(p.point[0])}, ${Math.floor(p.point[1])}  ·  ${Math.round(view.zoom * 100)}%`
+    if (middleZoom.current) {
+      const m = middleZoom.current, factor = Math.pow(2, (m.y - event.clientY) / 100)
+      view.zoomAt(m.zoom * factor / view.zoom, ...m.screen); m.out = factor < 1; updateCursor(); viewChanged(); requestRender(false); return
+    }
     if (pan.current) { view.offsetX = pan.current.offsetX + event.clientX - pan.current.x; view.offsetY = pan.current.offsetY + event.clientY - pan.current.y; viewChanged(); requestRender(false); return }
     if (guideGesture.current) { moveGuideDrag(p); return }
     if (canvasDrag.current && event.buttons) { canvasDrag.current.move(event.clientX - canvasDrag.startX, p.command); return }
@@ -374,6 +381,7 @@ export function Stage() {
     }
     const p = pointerFrom(event)
     releaseOnceModifiers()
+    if (middleZoom.current) { middleZoom.current = null; updateCursor(); return }
     if (pan.current) { pan.current = null; updateCursor(); return }
     if (guideGesture.current) { guideGesture.current = false; endGuideDrag(p); return }
     if (canvasDrag.current) { canvasDrag.current.up(); return }
@@ -412,7 +420,7 @@ export function Stage() {
   }, [])
 
   const handler = activeHandler()
-  const cursorFor = () => space || store.state.tool === 'hand' ? (pan.current ? 'grabbing' : 'grab') : canvasPicker.current ? 'crosshair' : activeHandler().cursor?.(lastPointer.current) ?? 'default'
+  const cursorFor = () => middleZoom.current ? (middleZoom.current.out ? 'zoom-out' : 'zoom-in') : pan.current ? 'grabbing' : space || store.state.tool === 'hand' ? 'grab' : canvasPicker.current ? 'crosshair' : activeHandler().cursor?.(lastPointer.current) ?? 'default'
   useLayoutEffect(updateCursor)
   return (
     <div ref={ref} className="stage" tabIndex={0} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerUp}

@@ -27,13 +27,16 @@ export function chordOf(event: KeyboardEvent): Chord | null {
 const keyNames: Record<string, string> = { '\u007f': 'Delete', '\r': 'Return', '\u001b': 'Esc', '\t': 'Tab', ' ': 'Space', '': '←', '': '→', '': '↓', '': '↑' }
 export function chordLabel(chord: Chord | undefined) {
   if (!chord) return ''
+  if (!chord.key) return 'None'
   const key = keyNames[chord.key] ?? chord.key.toUpperCase()
   const m = chord.modifiers
   if (isMac) return `${m & Control ? '⌃' : ''}${m & Option ? '⌥' : ''}${m & Shift ? '⇧' : ''}${m & Command ? '⌘' : ''}${key}`
   return `${m & Command ? 'Ctrl+' : ''}${m & Control ? 'Ctrl+' : ''}${m & Option ? 'Alt+' : ''}${m & Shift ? 'Shift+' : ''}${key === 'Delete' ? 'Backspace' : key}`
 }
 
-export const sameChord = (a?: Chord, b?: Chord) => !!a && !!b && a.key === b.key && a.modifiers === b.modifiers
+// No key: a shortcut the person cleared.
+export const unassigned: Chord = { key: '', modifiers: 0 }
+export const sameChord = (a?: Chord, b?: Chord) => !!a?.key && !!b && a.key === b.key && a.modifiers === b.modifiers
 const c = (key: string, modifiers = 0): Chord => ({ key, modifiers })
 
 export type ShortcutGroup = 'Menus' | 'Canvas & Layers'
@@ -67,18 +70,24 @@ export const definitions: ShortcutDefinition[] = ([
 
 const reserved = [c('q', 1), c(',', 1), ...['n', 'w', 't'].flatMap(key => [c(key, 1), c(key, 9)])]
 const storageKey = 'keyboardShortcuts.v1'
-let overrides: Record<string, Chord> = load()
 
+// Saved shortcuts are taken one at a time, keeping each that still fits: one for a command that has gone, or one a new default now
+// takes, drops alone rather than taking every other saved shortcut with it.
 function load(): Record<string, Chord> {
   try {
-    const raw = JSON.parse(localStorage.getItem(storageKey) ?? '{}')
-    return problem(raw) ? {} : raw
+    const raw = JSON.parse(localStorage.getItem(storageKey) ?? '{}') as Record<string, Chord>
+    const accepted: Record<string, Chord> = {}
+    for (const [id, chord] of Object.entries(raw).sort(([a], [b]) => a < b ? -1 : 1)) {
+      if (!definitions.some(d => d.id === id) || typeof chord?.key !== 'string' || typeof chord.modifiers !== 'number') continue
+      if (!problem({ ...accepted, [id]: chord })) accepted[id] = chord
+    }
+    return accepted
   } catch { return {} }
 }
 
 export const effective = (id: string, from = overrides) => from[id] ?? definitions.find(d => d.id === id)?.chord
 export const shortcut = (title: string, group: ShortcutGroup = 'Menus') => effective(`${group}:${title}`)
-export const shortcutText = (title: string, group: ShortcutGroup = 'Menus') => chordLabel(shortcut(title, group))
+export const shortcutText = (title: string, group: ShortcutGroup = 'Menus') => { const chord = shortcut(title, group); return chord?.key ? chordLabel(chord) : '' }
 export const currentOverrides = () => ({ ...overrides })
 
 // The first reason a set of overrides can't be saved, or null.
@@ -86,6 +95,7 @@ export function problem(draft: Record<string, Chord>): string | null {
   const seen = new Map<string, string>()
   for (const definition of definitions) {
     const chord = effective(definition.id, draft)!
+    if (!chord.key) continue
     if ([...chord.key].length !== 1 || chord.modifiers < 0 || chord.modifiers > 15) return 'Choose a single key with optional modifiers.'
     if (reserved.some(r => sameChord(r, chord))) return `${chordLabel(chord)} is reserved by the browser.`
     const key = `${chord.key}|${chord.modifiers}`
@@ -95,6 +105,9 @@ export function problem(draft: Record<string, Chord>): string | null {
   }
   return null
 }
+
+// Loaded below effective() and problem(), which load() calls: above them it threw, and every saved shortcut was lost.
+let overrides: Record<string, Chord> = load()
 
 const listeners = new Set<() => void>()
 export function subscribeShortcuts(listener: () => void) { listeners.add(listener); return () => { listeners.delete(listener) } }

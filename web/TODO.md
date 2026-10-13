@@ -89,21 +89,21 @@ new C needs. Hashes are upstream's commits; effort is a guess.
   setting a pill, always starting transparent in pixels at 72 DPI. The unit math is in the Image Size dialog. Small.
 - [ ] **Paste an image on the New Canvas screen** to make the canvas from it (2522e3b). `onPaste` skips text fields, and the width
   field has focus. Small.
-- [ ] **Reveal the selected layer in the Layers panel** (d2b8aaf): open its folders and scroll its row into view when it's chosen on
+- [x] **Reveal the selected layer in the Layers panel** (d2b8aaf): open its folders and scroll its row into view when it's chosen on
   the canvas. Small.
-- [ ] **Import a folder of images as layers** (b2a0c45): a dropped folder without `manifest.json` brings in the images directly in
+- [x] **Import a folder of images as layers** (b2a0c45): a dropped folder without `manifest.json` brings in the images directly in
   it, in natural name order, instead of failing. Plus File › Import Folder…. Small.
-- [ ] **A layer dragged into a new project sizes the canvas to it** (e580107), not to the document it came from. Small.
-- [ ] **Keyboard Shortcuts: clear a shortcut** to None (87e2283), and load saved shortcuts one at a time, so one bad entry doesn't
+- [x] **A layer dragged into a new project sizes the canvas to it** (e580107), not to the document it came from. Small.
+- [x] **Keyboard Shortcuts: clear a shortcut** to None (87e2283), and load saved shortcuts one at a time, so one bad entry doesn't
   throw them all away (`load()` in `editor/shortcuts.ts`). Small.
-- [ ] **HEIF from cameras** (.hif, .heif, 70b3e14): accept them by extension, as `file.type` is often empty. Decoding still needs
+- [x] **HEIF from cameras** (.hif, .heif, 70b3e14): accept them by extension, as `file.type` is often empty. Decoding still needs
   Safari, or a wasm decoder. Small.
 - [ ] Untitled projects numbered with the lowest free number (d0ec2f3), rather than all "Untitled". Small.
 - [ ] Save, Don't Save and Cancel on closing an unsaved project, instead of `window.confirm`, with Save the one colored button
   (283d360, 4e035bf). Small.
-- [ ] Adjustment layer button before the layer effects button in the Layers footer (067fca4). Trivial.
-- [ ] Drop anywhere on the tab bar to open in a new project (d3d0ce7). Trivial.
-- [ ] ⌘ or Ctrl with a middle drag zooms, 2^(dy/100) about the press point (e03923f); and the closed hand for a middle-button pan
+- [x] Adjustment layer button before the layer effects button in the Layers footer (067fca4). Trivial.
+- [x] Drop anywhere on the tab bar to open in a new project (d3d0ce7). Trivial.
+- [x] ⌘ or Ctrl with a middle drag zooms, 2^(dy/100) about the press point (e03923f); and the closed hand for a middle-button pan
   with any tool (c0a1cd0). Trivial.
 - [x] Image Size caps the effect sizes it scales (94e90bd): sizes and blurs at 500, distances at 5000, in `scaleEffects`. Trivial.
 
