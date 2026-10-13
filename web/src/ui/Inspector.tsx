@@ -253,7 +253,8 @@ export function EffectPanel() {
   useEffect(() => { if (picked && layer && !picked.before && !picked.isNew && effect) store.set({ effectSelection: { ...picked, before: effect } }) }, [])
   if (!picked || !layer || !effect) return null
   const kind = picked.kind as EffectKind
-  const write = (changes: object) => store.updateLayer(layer.id, { effects: { ...layer.effects, [kind]: { ...effect, ...changes } } }, `Edit ${effectNames[kind]}`, `effect-${kind}`)
+  // Each change is its own undo step, as on the Mac; only one setting's drag runs together.
+  const write = (changes: object) => store.updateLayer(layer.id, { effects: { ...layer.effects, [kind]: { ...effect, ...changes } } }, `Edit ${effectNames[kind]}`, `effect-${kind}-${Object.keys(changes).join()}`)
   const opacity = <Slider label="Opacity" value={Math.round(effect.opacity * 100)} min={0} max={100} onChange={v => write({ opacity: v / 100 })} />
   return (
     <div className="modal-back filter-back">

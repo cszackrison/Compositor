@@ -77,7 +77,7 @@ existing features were.
 
 - [ ] Shortcuts that browsers reserve moved to ⌥ variants: New Canvas ⌥⌘N, Close Project ⌥⌘W, Transform ⌥⌘T, New Blank Layer ⌥⇧⌘N.
 - [ ] Tabs have a right-click menu the Mac doesn't.
-- [ ] Each change in the effect editor coalesces into one undo step; the Mac records every change.
+- [x] Each change in the effect editor is its own undo step, as on the Mac; a drag of one setting stays one step.
 - [ ] Ctrl+R (Show Rulers) on Windows and Linux couldn't be confirmed; browsers may keep it for reload.
 
 ## Touch and phones
