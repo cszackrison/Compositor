@@ -1,26 +1,27 @@
-import type { Lcms } from 'lcms-wasm'
+import type { Lcms } from '../../vendor/lcms/lcms.js'
 import type { Raster } from '../model/raster'
 
 // CMYK for print from documents that stay RGB (CMYK.swift): a proof of a chosen profile on the canvas and export through it. Ink values
 // are never edited directly. Color management is LittleCMS (lcms-wasm), loaded on first use. Browsers ship no CMYK profiles, so they
-// come from Load Profile (a printer's, or one such as ISO Coated or U.S. Web Coated), kept in the browser.
+// come from Load Profile (a printer's, or one such as ISO Coated or U.S. Web Coated), kept in the browser. LittleCMS is vendored in
+// web/vendor/lcms.
 
 export type CMYKProfile = { name: string; data: Uint8Array }
 
 let engine: Promise<Lcms> | null = null
 export function lcms(): Promise<Lcms> {
   return engine ??= (async () => {
-    const module = await import('lcms-wasm')
+    const module = await import('../../vendor/lcms/lcms.js')
     // Node (the tests) finds the wasm beside the module; the page is told where Vite put it.
     if (typeof window === 'undefined' && typeof process === 'object' && process.versions?.node) return module.instantiate()
-    const url = (await import('lcms-wasm/dist/lcms.wasm?url')).default
+    const url = (await import('../../vendor/lcms/lcms.wasm?url')).default
     return module.instantiate({ locateFile: () => url })
   })()
 }
 
 // A CMYK output profile from an ICC file, named as it names itself; null for any other profile.
 export async function readProfile(fileName: string, data: Uint8Array): Promise<CMYKProfile | null> {
-  const l = await lcms(), { cmsSigCmykData, cmsInfoDescription } = await import('lcms-wasm')
+  const l = await lcms(), { cmsSigCmykData, cmsInfoDescription } = await import('../../vendor/lcms/lcms.js')
   const handle = l.cmsOpenProfileFromMem(data, data.byteLength)
   if (!handle) return null
   try {
@@ -101,7 +102,7 @@ function run(l: Lcms, transform: number, colors: Uint8Array, inChannels: number,
 }
 
 async function transform<T>(profile: CMYKProfile, toInks: boolean, body: (l: Lcms, transform: number) => T): Promise<T> {
-  const l = await lcms(), { TYPE_RGB_8, TYPE_CMYK_8, INTENT_RELATIVE_COLORIMETRIC, cmsFLAGS_BLACKPOINTCOMPENSATION } = await import('lcms-wasm')
+  const l = await lcms(), { TYPE_RGB_8, TYPE_CMYK_8, INTENT_RELATIVE_COLORIMETRIC, cmsFLAGS_BLACKPOINTCOMPENSATION } = await import('../../vendor/lcms/lcms.js')
   const srgb = l.cmsCreate_sRGBProfile(), cmyk = l.cmsOpenProfileFromMem(profile.data, profile.data.byteLength)
   if (!cmyk) { l.cmsCloseProfile(srgb); throw new Error(`The profile “${profile.name}” could not be read.`) }
   const t = toInks ? l.cmsCreateTransform(srgb, TYPE_RGB_8, cmyk, TYPE_CMYK_8, INTENT_RELATIVE_COLORIMETRIC, cmsFLAGS_BLACKPOINTCOMPENSATION) : l.cmsCreateTransform(cmyk, TYPE_CMYK_8, srgb, TYPE_RGB_8, INTENT_RELATIVE_COLORIMETRIC, cmsFLAGS_BLACKPOINTCOMPENSATION)
