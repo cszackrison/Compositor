@@ -3,6 +3,7 @@ import * as kinds from './filterKinds'
 import { Raster } from '../model/raster'
 import type { FilterInput, FilterOutput } from './filters'
 import { multiply, scale as scaleBy } from '../render/gl'
+import { loadCameraRawTables } from '../model/cameraRaw'
 
 // Filter previews off the main thread: the same filter functions and wasm kernels, so a slow one never freezes the page.
 type Request = { id: number; name: keyof typeof kinds; args: unknown[]; scale?: number; scaled?: number[]; input: Omit<FilterInput, 'pixels'> & { pixels: { width: number; height: number; channels: 1 | 4; data: Uint8Array } } }
@@ -14,6 +15,7 @@ self.onmessage = async (event: MessageEvent<Request | WebAssembly.Module>) => {
   const { id, name, args, input, scale = 1, scaled = [] } = event.data
   try {
     await ready
+    if (name === 'cameraRaw') await loadCameraRawTables()
     const full = new Raster(input.pixels.width, input.pixels.height, input.pixels.channels, input.pixels.data)
     const run = kinds[name] as unknown as (input: FilterInput, ...args: unknown[]) => FilterOutput
     // A preview of a large layer runs on a copy at most 2048 px on its longest side, its pixel-sized settings scaled to match,

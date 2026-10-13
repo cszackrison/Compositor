@@ -57,7 +57,7 @@ const channelColors = ['#ddd', '#ff5d5d', '#5dde6a', '#5d9bff']
 
 // CurvesControls: press within 14 units of a point to grab it, or add one (up to 32, not within 1 of another); interior points stay
 // between their neighbors, the end points move only up and down.
-function CurvesEditor({ adjustment, onChange }: { adjustment: Adjustment; onChange: (a: Adjustment) => void }) {
+export function CurvesEditor({ adjustment, onChange }: { adjustment: Adjustment; onChange: (a: Adjustment) => void }) {
   const ref = useRef<HTMLCanvasElement>(null)
   const channel = channelNames.indexOf(adjustment.curves.channel)
   const points = adjustment.curves.channels[channel]

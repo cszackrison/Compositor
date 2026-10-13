@@ -54,7 +54,7 @@ function filterWorker(): Worker | null {
 // Runs a filter job in the worker, or here where workers can't start. The input's pixels move to the worker.
 // The filters whose settings are in pixels, by which arguments: a preview of a large layer scales those with the copy it runs on.
 const previewLimit = 2048
-const pixelSettings: Partial<Record<keyof typeof kinds, number[]>> = { gaussianBlur: [0], motionBlur: [1], progressiveBlur: [0, 1], bloom: [1], tonalContrast: [4] }
+const pixelSettings: Partial<Record<keyof typeof kinds, number[]>> = { gaussianBlur: [0], motionBlur: [1], progressiveBlur: [0, 1], bloom: [1], tonalContrast: [4], cameraRaw: [2] }
 const previewScale = (j: FilterJob, input: FilterInput) => pixelSettings[j.job] ? Math.min(1, previewLimit / Math.max(input.pixels.width, input.pixels.height)) : 1
 
 function runJob(j: FilterJob, input: FilterInput, scale = 1): Promise<FilterOutput> {

@@ -244,7 +244,7 @@ export function App() {
     ] },
     { title: 'Filter', items: [item(lastFilterName() ? `Last Filter: ${lastFilterName()}` : 'Last Filter', 'Last Filter'), 'divider' as const, ...['Gaussian Blur', 'Motion Blur', 'Progressive Blur', 'Add Noise'].map(filter)].concat([
       { label: 'Vignette…', action: open('Vignette'), disabled: !canVignette() },
-      ...['Bloom / Glow', 'Dither', 'Scanlines', 'Tonal Contrast', 'Lens Correction', 'Remove Background'].map(filter),
+      ...['Bloom / Glow', 'Dither', 'Scanlines', 'Tonal Contrast', 'Lens Correction', 'Camera Raw Filter', 'Remove Background'].map(filter),
     ]) },
     { title: 'Layer', items: [
       { label: 'New Adjustment Layer', disabled: !doc, submenu: adjustmentKinds.map(kind => ({ label: kind === 'Invert' ? kind : `${kind}…`, action: () => store.addAdjustment(kind) })) },

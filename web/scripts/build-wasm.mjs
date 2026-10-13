@@ -1,11 +1,14 @@
 import { runClang } from '@yowasp/clang'
-import { readFileSync, readdirSync, writeFileSync, mkdirSync, statSync, existsSync } from 'node:fs'
+import { readFileSync, readdirSync, writeFileSync, mkdirSync, statSync, existsSync, copyFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const web = join(dirname(fileURLToPath(import.meta.url)), '..')
 const kernels = join(web, '../Compositor/Rendering')
 const output = join(web, 'public/kernels.wasm')
+// Camera Raw's measured color tables go beside the page as the Mac keeps them; the browser unpacks them on first use.
+const tables = join(web, '../Compositor/Resources/CameraRawTables.bin'), tablesOut = join(web, 'public/CameraRawTables.bin')
+if (!existsSync(tablesOut) || statSync(tablesOut).mtimeMs < statSync(tables).mtimeMs) { mkdirSync(dirname(tablesOut), { recursive: true }); copyFileSync(tables, tablesOut) }
 const sources = readdirSync(kernels).filter(name => /\.[ch]$/.test(name))
 const newest = Math.max(...[...sources.map(name => join(kernels, name)), join(web, 'wasm/runtime.c'), join(web, 'wasm/include/dispatch/dispatch.h'), import.meta.filename].map(path => statSync(path).mtimeMs))
 if (existsSync(output) && statSync(output).mtimeMs > newest) process.exit(0)

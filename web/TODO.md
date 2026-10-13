@@ -10,10 +10,12 @@ existing features were.
   exactly, so re-rendered text will differ slightly from the Mac.
   - [ ] Fill with Foreground/Background on a live text layer recolors the text ("Fill Text") instead of filling pixels.
   - [ ] The foreground color picker previews into a text draft's selected letters.
-- [ ] **Camera Raw filter.** All of its C kernels already run in `kernels.wasm`; the panel (light, color, curves, mixer, grading,
-  detail, optics, geometry, calibration) and the Swift glue that drives the kernels need porting. Since 1.4.9 its Light, Color,
-  Mixer and Grading go through measured color tables (`Compositor/Resources/CameraRawTables.bin`, 1.25 MB, read by
-  `CameraRawTables.swift`), which the web would download on first use. Each section resets from its header (f745d65, b8ff682).
+- [x] **Camera Raw filter.** Filter › Camera Raw Filter docks its column at the window's right: the histogram, then Light, Color,
+  Color Grading, Effects, Curve, Color Mixer, Detail, Optics, Geometry and Calibration, each with an eye and a reset. The measured
+  tables (`Compositor/Resources/CameraRawTables.bin`) are copied beside the page at build time and unpacked on first use; the
+  results match the Mac's tests of Photoshop's numbers.
+  - [ ] Still missing: the targeted adjustment drag, Point Color, Upright › Guided with guide lines, the Option-key clipping and
+    sharpening-mask views, the clipping triangles, the vectorscope and the RGB readout.
 - [ ] **PSD/PSB import**, with the conversion report (about 1,500 lines of Swift in `Compositor/IO/PSD`). CMYK PSDs too, since 1.5
   (896d5c8).
 - [ ] **Camera RAW import** and its develop step. Needs a wasm decoder (LibRaw or similar).

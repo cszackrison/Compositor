@@ -13,6 +13,8 @@ import type { Raster } from '../model/raster'
 import { canvasGesture, canvasPicker, requestRender, view } from './canvasState'
 import { ColorSwatch } from './ColorPicker'
 import { apply, invert } from '../render/gl'
+import { CameraRawPanel, type CameraRawParams } from './CameraRaw'
+import { defaultCameraRaw, hiding } from '../model/cameraRaw'
 import { pixelToDocument } from '../render/compositor'
 
 // Settings are remembered between openings for the rest of the session, as the Mac app does.
@@ -37,6 +39,7 @@ const repeatable: Record<string, { job: (p: any, context: FilterContext) => Filt
   Scanlines: { job: p => job('scanlines', p) },
   'Tonal Contrast': { job: p => job('tonalContrast', p.amount, p.shadows, p.midtones, p.highlights, p.radius) },
   'Lens Correction': { job: p => job('lensCorrection', p.distortion) },
+  'Camera Raw Filter': { job: (p, c) => job('cameraRaw', hiding(p.settings, p.hidden), c.seed, 1) },
 }
 
 // Filter › Last Filter (⌃⌘F): the last of those applied, again with the same settings and no dialog, as in Photoshop.
@@ -52,9 +55,9 @@ export async function repeatLastFilter() {
 }
 
 // `fresh` settings start anew at each opening, over the remembered ones.
-function Simple<P extends object>({ name, initial, fresh, children }: { name: string; initial: P; fresh?: Partial<P>; children: (p: P, set: (c: Partial<P>) => void) => React.ReactNode }) {
+function Simple<P extends object>({ name, initial, fresh, docked, children }: { name: string; initial: P; fresh?: Partial<P>; docked?: boolean; children: (p: P, set: (c: Partial<P>) => void) => React.ReactNode }) {
   const context = useMemo(filterContext, []), spec = repeatable[name]
-  return <FilterDialog title={name} initial={{ ...recall(name, initial), ...fresh }} run={p => spec.job(p, context)} trim={spec.trim} growEmpty={spec.growEmpty} onClose={close} onCommit={p => { remembered.set(name, p); lastFilter = { name, params: p } }}>{children}</FilterDialog>
+  return <FilterDialog title={name} initial={{ ...recall(name, initial), ...fresh }} run={p => spec.job(p, context)} trim={spec.trim} growEmpty={spec.growEmpty} docked={docked} onClose={close} onCommit={p => { remembered.set(name, p); lastFilter = { name, params: p } }}>{children}</FilterDialog>
 }
 
 function GaussianBlurDialog() {
@@ -159,6 +162,13 @@ function BloomDialog() {
     <Slider label="Amount" value={p.amount} min={0} max={100} onChange={amount => set({ amount })} />
     <Slider label="Radius" value={p.radius} min={1} max={150} log onChange={radius => set({ radius })} />
   </>}</Simple>
+}
+
+// Filter › Camera Raw Filter: the Mac's adjustment column, docked at the window's right. Its settings are remembered; hidden sections
+// show again at each opening.
+function CameraRawDialog() {
+  const layerId = useMemo(() => store.active?.id ?? '', [])
+  return <Simple name="Camera Raw Filter" docked initial={{ settings: defaultCameraRaw(), hidden: [] } as CameraRawParams} fresh={{ hidden: [] }}>{(p, set) => <CameraRawPanel params={p} set={set} layerId={layerId} />}</Simple>
 }
 
 function TonalContrastDialog() {
@@ -362,7 +372,7 @@ export function LevelsTools({ source, toSource, adjustment, onChange }: { source
 
 export const filterPanels: Record<string, () => React.ReactNode> = {
   'Gaussian Blur': () => <GaussianBlurDialog />, 'Motion Blur': () => <MotionBlurDialog />, 'Add Noise': () => <AddNoiseDialog />, Vignette: () => <VignetteDialog />,
-  'Progressive Blur': () => <ProgressiveBlurDialog />, 'Bloom / Glow': () => <BloomDialog />, Dither: () => <DitherDialog />, Scanlines: () => <ScanlinesDialog />, 'Tonal Contrast': () => <TonalContrastDialog />, 'Lens Correction': () => <LensDialog />,
+  'Progressive Blur': () => <ProgressiveBlurDialog />, 'Bloom / Glow': () => <BloomDialog />, Dither: () => <DitherDialog />, Scanlines: () => <ScanlinesDialog />, 'Tonal Contrast': () => <TonalContrastDialog />, 'Lens Correction': () => <LensDialog />, 'Camera Raw Filter': () => <CameraRawDialog />,
   'Content-Aware Fill': () => <ContentAwareDialog />, 'Remove Background': () => <RemoveBackgroundDialog />,
   ...Object.fromEntries((['Curves', 'Levels', 'Hue/Saturation', 'Black & White', 'Color Balance', 'Exposure', 'Gradient Map', 'Grain'] as AdjustmentKind[]).map(kind => [kind, () => <AdjustmentFilterDialog kind={kind} />])),
 }
