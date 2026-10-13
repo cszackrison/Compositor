@@ -647,7 +647,7 @@ export class Compositor {
       this.pass(target, this.mixProgram, {
         original: { texture: original.texture, unit: 0 }, adjusted: { texture: adjusted.texture, unit: 1 }, blendMode: blendModes.indexOf(layer.blendMode), opacity: this.opacity(entry),
         hasMask: hasMask ? 1 : 0, mask: { texture: hasMask ? this.texture(layer.mask!) : this.white, unit: 2 }, targetToMask: invert(multiply(this.docToTarget, unitToDocument(layer.transform))), targetSize: [target.width, target.height],
-        hasClip: clip ? 1 : 0, clip: { texture: clip?.texture ?? this.white, unit: 3 },
+        hasClip: clip ? 1 : 0, clip: { texture: clip?.texture ?? this.white, unit: 3 }, hdr: this.hdr ? 1 : 0,
       })
       this.pool.give(adjusted)
     }

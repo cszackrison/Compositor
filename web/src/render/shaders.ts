@@ -5,7 +5,7 @@ float lum(vec3 c) { return dot(c, vec3(0.3, 0.59, 0.11)); }
 vec3 clipColor(vec3 c) {
   float l = lum(c), n = min(min(c.r, c.g), c.b), x = max(max(c.r, c.g), c.b);
   if (n < 0.0) c = l + (c - l) * l / (l - n);
-  if (x > 1.0) c = l + (c - l) * (1.0 - l) / (x - l);
+  if (x > 1.0 && hdr == 0) c = l + (c - l) * (1.0 - l) / (x - l);
   return c;
 }
 vec3 setLum(vec3 c, float l) { return clipColor(c + (l - lum(c))); }
@@ -27,7 +27,7 @@ float blend1(int mode, float b, float s) {
   if (mode == 5) return max(b, s);
   if (mode == 6) return b + s - b * s;
   if (mode == 7) return dodge(b, s);
-  if (mode == 8) return min(1.0, b + s);
+  if (mode == 8) return hdr == 1 ? b + s : min(1.0, b + s);
   if (mode == 9) return b <= 0.5 ? 2.0 * s * b : 1.0 - 2.0 * (1.0 - s) * (1.0 - b);
   if (mode == 10) return s <= 0.5 ? b - (1.0 - 2.0 * s) * b * (1.0 - b) : b + (2.0 * s - 1.0) * (softD(b) - b);
   if (mode == 11) return s <= 0.5 ? 2.0 * b * s : 1.0 - 2.0 * (1.0 - b) * (1.0 - s);
@@ -38,7 +38,7 @@ float blend1(int mode, float b, float s) {
   if (mode == 16) return abs(b - s);
   if (mode == 17) return b + s - 2.0 * b * s;
   if (mode == 18) return max(0.0, b - s);
-  if (mode == 19) return s <= 0.0 ? (b > 0.0 ? 1.0 : 0.0) : min(1.0, b / s);
+  if (mode == 19) return s <= 0.0 ? (b > 0.0 ? 1.0 : 0.0) : hdr == 1 ? b / s : min(1.0, b / s);
   return s;
 }
 vec3 blendColor(int mode, vec3 b, vec3 s) {
@@ -48,7 +48,9 @@ vec3 blendColor(int mode, vec3 b, vec3 s) {
   if (mode == 23) return setLum(b, lum(s));
   return vec3(blend1(mode, b.r, s.r), blend1(mode, b.g, s.g), blend1(mode, b.b, s.b));
 }
-vec3 unpremul(vec4 c) { return c.a > 0.0 ? min(c.rgb / c.a, 1.0) : vec3(0.0); }
+// An HDR document's light brighter than white carries through the blends that can hold it (Multiply, Lighten, Linear Dodge and the
+// rest) rather than being cut to white first.
+vec3 unpremul(vec4 c) { return c.a > 0.0 ? (hdr == 1 ? max(c.rgb / c.a, 0.0) : min(c.rgb / c.a, 1.0)) : vec3(0.0); }
 vec4 composite(int mode, vec4 backdrop, vec4 source) {
   if (mode == 0) return source + backdrop * (1.0 - source.a);
   vec3 B = blendColor(mode, unpremul(backdrop), unpremul(source));
@@ -288,6 +290,7 @@ uniform mat3 targetToMask;
 uniform vec2 targetSize;
 uniform int hasClip;
 uniform sampler2D clip;
+uniform int hdr;
 out vec4 color;
 ${blendGLSL}
 void main() {

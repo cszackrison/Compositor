@@ -128,16 +128,24 @@ new C needs. Hashes are upstream's commits; effort is a guess.
 
 ### Large
 
-- [ ] **16-bit and HDR layers at full depth** (d9cdb81, 6aea90a, 2b9603f, 3d2ada4, 2fe3524, a10fcb7, 905efc5). The web edits the
-  8-bit copy, so an edited layer saves as 8-bit PNG. Full depth means 16-bit and half-float pixels through edits (the `deep_*`
-  kernels are already in `kernels.wasm`), 16-bit textures dithered to the screen, Convert to 8/16 Bits and the depth tag.
+- [x] **16-bit and HDR layers at full depth** (d9cdb81, 6aea90a, 2b9603f, 3d2ada4, 2fe3524, a10fcb7, 905efc5). `model/deep.ts` keeps
+  a layer's 16-bit or half-float pixels beside its dithered 8-bit copy; painting is taken over them at 8 bits (`deep_take_painted`),
+  and the canvas draws them from half-float textures, dithered to the screen. Filters and adjustments run at full depth on OK
+  (`editor/deepFilters.ts`: floats for the blurs and Bloom, color lookups, exact HDR Exposure, the 8-bit runs read between for the
+  rest), as do Fill, Invert, Apply Mask, Image Size, Merge, floating selections, the clipboard, pixel moves, Distort and the
+  Gradient tool. Convert to 8/16-Bit and the 16-Bit / HDR tag are in the Layers panel; Export As writes 16-bit PNG.
+  - [ ] Liquify, Smudge and the Blur tool still work at 8 bits on a 16-bit layer (their strokes are taken as 8-bit paint); the Mac
+    runs a 16-bit working copy on the GPU.
+  - [ ] Filter previews on an HDR layer are made from its 8-bit copy, highlights clipped; OK is made from the HDR pixels. The Mac
+    previews from them too.
 - [x] **Import 16-bit images, EXR and Radiance HDR** (d9cdb81, 7f239dc). They come in dithered to 8 bits as the Mac shows them, and a
   16-bit PNG or EXR is kept as the layer's file until it's edited, so saving keeps its depth.
   - [x] Radiance HDR is kept as an OpenEXR (`io/exr.ts` writes half-float, ZIP-compressed EXR; ImageMagick and OpenEXR read it).
 - [x] **EXR export** for documents with HDR layers (b9186f7). A document with an unedited HDR layer composites in half floats, the
   layer drawn from its own pixels: Exposure works past white and the tonal adjustments divide highlights down and back, so turning
   Exposure down shows them, and Export As offers EXR.
-  - [ ] Blend modes other than Normal, and layer effects on an HDR layer, still clip it to white.
+  - [x] Blend modes carry light brighter than white through (Multiply, Lighten, Linear Dodge and the rest). Layer effects pass
+    through 8 bits, as the Mac's export does.
 - [x] **CMYK** (59025aa, dac3bc6): View › CMYK › Proof Colors and Gamut Warning on the canvas (a 3D lookup in the display shader, with a
   pill at the canvas's foot), and Export As writes JPEG, TIFF (new, under More) and PDF in a profile's inks with it embedded. Color
   management is LittleCMS (lcms-wasm, vendored in `web/vendor/lcms`). Browsers ship no CMYK profile, so profiles come from Load Profile and are kept in the browser.
