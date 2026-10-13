@@ -112,7 +112,7 @@ new C needs. Hashes are upstream's commits; effort is a guess.
 - [x] **Command palette** on ⌘F, Search Commands (cb139a1, 384632d, 07b8b1e, 94b57f7, bba92dc, 720c121): every menu command, tool
   and tool mode, whole words first, disabled ones last, checkmarks for toggles, Return runs the chosen row. Build it from `menus`
   in `App.tsx`; needs a key other than Ctrl+F off the Mac.
-- [ ] **File › Export As…** (450af5f, b1db93d, f5ae5ba, dac3bc6): JPEG and PNG first, PDF under More, sized with the ratio locked
+- [x] **File › Export As…** (450af5f, b1db93d, f5ae5ba, dac3bc6): JPEG and PNG first, PDF under More, sized with the ratio locked
   or by percent, previewed on the checkerboard with the file size. Grow `ExportJPEG` into it; PDF needs a small writer (fflate
   for its streams).
 - [ ] **Navigator** (3e09948): a minimap in the canvas's top-right corner from 300% zoom, the visible part boxed, click or drag to

@@ -57,7 +57,7 @@ edited one saves as 8-bit. Text and shape metadata are dropped once their pixels
   - Layer via Copy, fill and clear.
   - Undo and redo, with named steps.
 - **Export and settings:**
-  - PNG export, and JPEG export with a live preview.
+  - Export As: JPEG, PNG or a one-page PDF, sized, previewed live (on the checkerboard for PNG) with the file's size. Export PNG saves at once.
   - Remappable keyboard shortcuts (Edit › Keyboard Shortcuts).
   - Drag a field's label to scrub its number.
 - **Phones and tablets:**

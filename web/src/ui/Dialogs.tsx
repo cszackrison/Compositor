@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { store, tabForOpening } from '../editor/store'
-import { answerUnsaved, newCanvas, documentName, placeImages } from '../editor/actions'
-import { download } from '../io/files'
+import { answerUnsaved, encodeExport, newCanvas, documentName, placeImages, saveFile } from '../editor/actions'
 import { prefs, setPrefs, gridColors } from '../editor/prefs'
 import { chordLabel, chordOf, currentOverrides, definitions, effective, problem, saveOverrides, unassigned, type Chord } from '../editor/shortcuts'
 import { color_range, colorRangeMask } from './colorRange'
@@ -166,43 +165,81 @@ function Trim() {
 }
 
 // Export JPEG with a live preview of the encoded file, so its artifacts and size show before saving.
-function ExportJPEG() {
+// File › Export As… (ExportAsSheet.swift): the flattened canvas as a JPEG, a PNG or a one-page PDF, at its own size or scaled,
+// previewed as it will be written, on the checkerboard where it keeps transparency.
+type ExportFormat = 'JPEG' | 'PNG' | 'PDF'
+let lastExportFormat: ExportFormat = 'PNG'
+function ExportAs({ start }: { start?: ExportFormat }) {
   const pixels = useMemo(() => renderFull(store.state.doc), [])
+  const resolution = store.state.doc.resolution || 72
+  const [format, setFormat] = useState<ExportFormat>(start ?? lastExportFormat)
+  const [width, setWidth] = useState(pixels.width), [height, setHeight] = useState(pixels.height)
   const [quality, setQuality] = useState(prefs.jpegQuality)
-  const [background, setBackground] = useState('#ffffff')
-  const [result, setResult] = useState<{ blob: Blob; url: string } | null>(null)
-  const [busy, setBusy] = useState(true)
+  const [background, setBackground] = useState<[number, number, number]>([255, 255, 255])
+  const [result, setResult] = useState<{ blob: Blob; url: string; key: string } | null>(null)
+  const shownUrl = useRef<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
   const [zoom, setZoom] = useState<'fit' | number>('fit')
+  const key = JSON.stringify([format, width, height, format === 'JPEG' ? quality : 0, format === 'PNG' ? 0 : background])
+  const ready = result?.key === key && !error
   useEffect(() => {
-    setBusy(true)
     const timer = setTimeout(async () => {
-      const canvas = new OffscreenCanvas(pixels.width, pixels.height), context = canvas.getContext('2d')!
-      const image = context.createImageData(pixels.width, pixels.height)
-      const bg = [1, 3, 5].map(i => parseInt(background.slice(i, i + 2), 16))
-      for (let i = 0; i < pixels.data.length; i += 4) { const a = pixels.data[i + 3] / 255; for (let c = 0; c < 3; c++) image.data[i + c] = Math.round(pixels.data[i + c] + bg[c] * (1 - a)); image.data[i + 3] = 255 }
-      context.putImageData(image, 0, 0)
-      const blob = await canvas.convertToBlob({ type: 'image/jpeg', quality })
-      setResult(old => { if (old) URL.revokeObjectURL(old.url); return { blob, url: URL.createObjectURL(blob) } })
-      setBusy(false)
+      try {
+        const encoded = await encodeExport(pixels, format, width, height, quality, background, resolution)
+        if (shownUrl.current) URL.revokeObjectURL(shownUrl.current)
+        shownUrl.current = URL.createObjectURL(encoded.preview)
+        setResult({ blob: encoded.blob, url: shownUrl.current, key })
+        setError(null)
+      } catch (e) { setError((e as Error).message) }
     }, 200)
     return () => clearTimeout(timer)
-  }, [quality, background])
-  useEffect(() => () => { if (result) URL.revokeObjectURL(result.url) }, [])
+  }, [key])
+  useEffect(() => () => { if (shownUrl.current) URL.revokeObjectURL(shownUrl.current) }, [])
+  // Both sides follow one, keeping the canvas's proportions, within the export limits.
+  const setScale = (scale: number) => {
+    const largest = Math.min(maxSide / Math.max(pixels.width, pixels.height), Math.sqrt(200_000_000 / (pixels.width * pixels.height)))
+    const clamped = Math.min(largest, Math.max(0.01, Number.isFinite(scale) ? scale : 1))
+    setWidth(Math.max(1, Math.round(pixels.width * clamped))); setHeight(Math.max(1, Math.round(pixels.height * clamped)))
+  }
+  const percent = Math.round(width / pixels.width * 100)
   const steps = [0.25, 0.5, 1, 2, 4, 8]
   const step = (up: boolean) => setZoom(z => { const current = z === 'fit' ? 0.25 : z; return up ? steps.find(s => s > current * 1.001) ?? current : [...steps].reverse().find(s => s < current * 0.999) ?? current })
+  const size = result?.blob.size ?? 0
+  const finish = () => {
+    lastExportFormat = format
+    if (format === 'JPEG') setPrefs({ jpegQuality: quality })
+    if (result) saveFile(`${documentName()}.${format === 'JPEG' ? 'jpg' : format.toLowerCase()}`, result.blob).catch(e => store.notify((e as Error).message))
+  }
   return (
-    <Modal title="Export JPEG" wide submit="Export…" disabled={busy || !result} onSubmit={() => { setPrefs({ jpegQuality: quality }); if (result) download(`${documentName()}.jpg`, result.blob) }}>
+    <Modal title="Export As" wide submit="Export…" disabled={!ready} onSubmit={finish}>
       <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end', marginTop: -30 }}>
         <button type="button" disabled={zoom === 'fit'} onClick={() => setZoom('fit')}>Fit</button>
         <button type="button" onClick={() => step(false)}>−</button><button type="button" onClick={() => step(true)}>+</button>
       </div>
-      <div style={{ width: '100%', height: 330, background: 'rgb(31,31,31)', overflow: zoom === 'fit' ? 'hidden' : 'auto', borderRadius: 6, position: 'relative', display: zoom === 'fit' ? 'flex' : 'block', alignItems: 'center', justifyContent: 'center' }} onDoubleClick={() => setZoom(zoom === 'fit' ? 1 : 'fit')} title="Double-click switches between Fit and 100%">
-        {result && <img src={result.url} alt="" style={zoom === 'fit' ? { maxWidth: '100%', maxHeight: '100%' } : { width: pixels.width * zoom / devicePixelRatio, imageRendering: zoom >= 1 ? 'pixelated' : 'auto' }} />}
-        {busy && <span className="muted" style={{ position: 'absolute', right: 10, bottom: 8 }}>Updating…</span>}
+      <div className="export-preview" style={{ overflow: zoom === 'fit' ? 'hidden' : 'auto', display: zoom === 'fit' ? 'flex' : 'block' }} onDoubleClick={() => setZoom(zoom === 'fit' ? 1 : 'fit')} title="Double-click switches between Fit and 100%">
+        {result && <img src={result.url} alt="" className={format === 'PNG' ? 'checkered' : ''} style={zoom === 'fit' ? { maxWidth: '100%', maxHeight: '100%' } : { width: width * zoom / devicePixelRatio, imageRendering: zoom >= 1 ? 'pixelated' : 'auto' }} />}
+        {!ready && !error && <span className="muted" style={{ position: 'absolute', right: 10, bottom: 8 }}>Updating…</span>}
       </div>
-      <div className="row" style={{ gridTemplateColumns: '92px 1fr 52px' }}><span className="muted">Quality</span><input type="range" min={0} max={1} step={0.01} value={quality} onChange={e => setQuality(+e.target.value)} /><span>{Math.round(quality * 100)}%</span></div>
-      <label><span className="muted">Background for transparency</span><ColorSwatch title="JPEG Background" sampling={false} value={[1, 3, 5].map(i => parseInt(background.slice(i, i + 2), 16)) as [number, number, number]} onChange={c => setBackground('#' + c.map(v => v.toString(16).padStart(2, '0')).join(''))} /></label>
-      <div style={{ display: 'flex', justifyContent: 'space-between' }}><span className="muted">{pixels.width} × {pixels.height} px · sRGB</span><span className="muted">{busy ? 'Updating…' : result ? `${(result.blob.size / 1024 / 1024).toFixed(result.blob.size > 1e6 ? 1 : 2)} MB` : ''}</span></div>
+      <div className="grid">
+        <span className="muted">Format</span>
+        <span style={{ display: 'flex', gap: 10 }}>
+          <span className="segmented">{(['JPEG', 'PNG'] as const).map(f => <button key={f} type="button" className={format === f ? 'on' : ''} onClick={() => setFormat(f)}>{f}</button>)}</span>
+          <select title="Other formats" className={format === 'PDF' ? 'on' : ''} value={format === 'PDF' ? 'PDF' : ''} onChange={e => e.target.value && setFormat(e.target.value as ExportFormat)}><option value="" disabled>More</option><option>PDF</option></select>
+        </span>
+        <span className="muted">Size</span>
+        <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <input type="number" min={1} style={{ width: 72 }} value={width} title="Width in pixels; the height follows, keeping the proportions" onChange={e => setScale(+e.target.value / pixels.width)} />×
+          <input type="number" min={1} style={{ width: 72 }} value={height} title="Height in pixels; the width follows, keeping the proportions" onChange={e => setScale(+e.target.value / pixels.height)} /><span className="muted">px</span>
+          <select title="Scale the export: the document stays as it is" value="" onChange={e => setScale(+e.target.value / 100)}><option value="" disabled>{percent}%</option>{[25, 50, 75, 100, 200].map(p => <option key={p} value={p}>{p}%</option>)}</select>
+        </span>
+        {format === 'JPEG' && <><span className="muted">Quality</span><span style={{ display: 'flex', alignItems: 'center', gap: 8 }}><input type="range" min={0} max={1} step={0.01} value={quality} onChange={e => setQuality(+e.target.value)} style={{ width: 300 }} /><span>{Math.round(quality * 100)}%</span></span></>}
+        {format === 'PDF' && <><span className="muted">Page</span><span className="muted">{+(width / resolution).toFixed(2)} × {+(height / resolution).toFixed(2)} in at {Math.round(resolution)} DPI</span></>}
+        {format !== 'PNG' && <><span className="muted">Background</span><ColorSwatch title="Export Background" sampling={false} value={background} onChange={setBackground} /></>}
+      </div>
+      <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+        <span className="muted">{format === 'PNG' ? 'Transparency kept · sRGB' : 'sRGB'}</span>
+        {error ? <span style={{ color: 'var(--danger)' }}>{error}</span> : <span className="muted">{ready ? (size > 1e6 ? `${(size / 1e6).toFixed(1)} MB` : `${Math.max(1, Math.round(size / 1e3))} KB`) : 'Updating…'}</span>}
+      </div>
     </Modal>
   )
 }
@@ -360,7 +397,7 @@ function UnsavedChanges() {
 }
 
 export const panels: Record<string, () => React.ReactNode> = {
-  'New Canvas': () => <NewCanvas />, 'Canvas Size': () => <CanvasSize />, 'Image Size': () => <ImageSize />, Trim: () => <Trim />, 'Export JPEG': () => <ExportJPEG />,
+  'New Canvas': () => <NewCanvas />, 'Canvas Size': () => <CanvasSize />, 'Image Size': () => <ImageSize />, Trim: () => <Trim />, 'Export JPEG': () => <ExportAs start="JPEG" />, 'Export As': () => <ExportAs />,
   About: () => <About />, 'Expand Selection': () => <Amount kind="expand" />, 'Contract Selection': () => <Amount kind="contract" />, 'Feather Selection': () => <Amount kind="feather" />,
   Effect: () => <EffectPanel />, 'Grid Settings': () => <GridSettings />, 'Keyboard Shortcuts': () => <KeyboardShortcuts />, 'Color Range': () => <ColorRange />,
   'Unsaved Changes': () => <UnsavedChanges />,

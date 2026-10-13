@@ -4,6 +4,7 @@ import { forgetRecent, noteRecent, type Recent } from '../io/recent'
 import { deleteFromBrowser, readFromBrowser, saveToBrowser, type BrowserProject } from '../io/browserProjects'
 import { canWriteDirectories, download, filesInHandle, imagesIn, readDirectoryHandle, readFileList, rootedAtManifest, unzipPackage, writeDirectory, zipPackage, type PackageFiles, type PackageTarget } from '../io/files'
 import { readProject, writeProject } from '../io/project'
+import { pdfOfImage } from '../io/pdf'
 import { Raster, decodeImageFile, encodePNG } from '../model/raster'
 import { type Doc, fullTransform, newLayer, uuid, maxSide } from '../model/types'
 import { renderFull } from '../ui/Stage'
@@ -168,32 +169,57 @@ export const downloadZip = guard(() => {
   download(`${documentName()}.comp.zip`, zipPackage(documentName(), writeProject(store.state.doc, store.state.activeId)), 'application/zip')
 })
 
-export const exportImage = guard(async (format: 'png' | 'jpeg', quality: number = 0.85) => {
+// A save dialog where the browser has one (Chrome, Edge); otherwise a download. Choosing Cancel in the dialog saves nothing.
+export async function saveFile(name: string, blob: Blob) {
+  if (!('showSaveFilePicker' in window)) { download(name, blob); return }
+  const extension = name.slice(name.lastIndexOf('.'))
+  try {
+    const handle: FileSystemFileHandle = await (window as any).showSaveFilePicker({ suggestedName: name, types: [{ description: `${extension.slice(1).toUpperCase()} file`, accept: { [blob.type || 'application/octet-stream']: [extension] } }] })
+    const writable = await handle.createWritable()
+    await writable.write(blob)
+    await writable.close()
+  } catch (error) { if ((error as Error).name !== 'AbortError') throw error }
+}
+
+export const exportImage = guard(async () => {
   if (!store.hasDocument) return
   commitFloating()
-  const pixels = renderFull(store.state.doc)
-  if (format === 'png') {
-    const png = encodePNG(pixels)
-    // A save dialog where the browser has one (Chrome, Edge); otherwise a download.
-    if ('showSaveFilePicker' in window) {
-      const handle: FileSystemFileHandle = await (window as any).showSaveFilePicker({ suggestedName: `${documentName()}.png`, types: [{ description: 'PNG image', accept: { 'image/png': ['.png'] } }] })
-      const writable = await handle.createWritable()
-      await writable.write(png as Uint8Array<ArrayBuffer>)
-      await writable.close()
-    } else download(`${documentName()}.png`, png, 'image/png')
-    return
-  }
-  const canvas = new OffscreenCanvas(pixels.width, pixels.height)
-  const context = canvas.getContext('2d')!
-  const image = context.createImageData(pixels.width, pixels.height)
-  for (let i = 0; i < pixels.data.length; i += 4) {
-    const a = pixels.data[i + 3]
-    for (let c = 0; c < 3; c++) image.data[i + c] = pixels.data[i + c] + (255 - a)
-    image.data[i + 3] = 255
-  }
-  context.putImageData(image, 0, 0)
-  download(`${documentName()}.jpg`, await canvas.convertToBlob({ type: 'image/jpeg', quality }))
+  await saveFile(`${documentName()}.png`, new Blob([encodePNG(renderFull(store.state.doc)) as Uint8Array<ArrayBuffer>], { type: 'image/png' }))
 })
+
+// Premultiplied pixels to straight RGBA ImageData, laid over `background` when given (JPEG and PDF have no transparency).
+function imageData(pixels: Raster, background?: [number, number, number]) {
+  const out = new ImageData(pixels.width, pixels.height), d = out.data, p = pixels.data
+  for (let i = 0; i < p.length; i += 4) {
+    const a = p[i + 3]
+    if (background) { for (let c = 0; c < 3; c++) d[i + c] = Math.round(p[i + c] + background[c] * (1 - a / 255)); d[i + 3] = 255 }
+    else if (a) { for (let c = 0; c < 3; c++) d[i + c] = Math.min(255, Math.round(p[i + c] * 255 / a)); d[i + 3] = a }
+  }
+  return out
+}
+
+// Export As's file and an image to preview it by: the flattened canvas sized at high quality, then PNG keeping transparency, or JPEG
+// or a one-page PDF (at the document's resolution) over `background`.
+export async function encodeExport(pixels: Raster, format: 'JPEG' | 'PNG' | 'PDF', width: number, height: number, quality: number, background: [number, number, number], resolution: number): Promise<{ blob: Blob; preview: Blob }> {
+  let sized = pixels
+  if (width !== pixels.width || height !== pixels.height) {
+    const source = new OffscreenCanvas(pixels.width, pixels.height), target = new OffscreenCanvas(width, height), context = target.getContext('2d')!
+    source.getContext('2d')!.putImageData(imageData(pixels), 0, 0)
+    context.imageSmoothingQuality = 'high'
+    context.drawImage(source, 0, 0, width, height)
+    const data = new Uint8Array(context.getImageData(0, 0, width, height).data.buffer)
+    for (let i = 0; i < data.length; i += 4) { const a = data[i + 3]; for (let c = 0; c < 3; c++) data[i + c] = Math.round(data[i + c] * a / 255) }
+    sized = new Raster(width, height, 4, data)
+  }
+  if (format === 'PNG') { const blob = new Blob([encodePNG(sized) as Uint8Array<ArrayBuffer>], { type: 'image/png' }); return { blob, preview: blob } }
+  const flat = imageData(sized, background), canvas = new OffscreenCanvas(width, height)
+  canvas.getContext('2d')!.putImageData(flat, 0, 0)
+  if (format === 'JPEG') { const blob = await canvas.convertToBlob({ type: 'image/jpeg', quality }); return { blob, preview: blob } }
+  const rgb = new Uint8Array(width * height * 3)
+  for (let i = 0, j = 0; i < flat.data.length; i += 4, j += 3) { rgb[j] = flat.data[i]; rgb[j + 1] = flat.data[i + 1]; rgb[j + 2] = flat.data[i + 2] }
+  const pdf = pdfOfImage(rgb, width, height, width * 72 / resolution, height * 72 / resolution)
+  return { blob: new Blob([pdf as Uint8Array<ArrayBuffer>], { type: 'application/pdf' }), preview: await canvas.convertToBlob({ type: 'image/png' }) }
+}
 
 export const copyMerged = guard(async () => {
   if (!store.hasDocument) return
