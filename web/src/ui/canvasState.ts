@@ -2,7 +2,7 @@ import { store } from '../editor/store'
 import { isCoarse } from './layout'
 import { Compositor } from '../render/compositor'
 import { Viewport } from '../render/viewport'
-import type { LinearImage, Raster } from '../model/raster'
+import { type LinearImage, Raster } from '../model/raster'
 import type { Doc } from '../model/types'
 import { chosenProfile, pickProfile, proofLookups, subscribeProfiles } from '../io/cmyk'
 
@@ -36,42 +36,66 @@ export function renderScaleFor(doc: Doc, maxSize: number) {
 }
 
 
-// Composites `doc` at full size and reads it back, for export, merging and sampling. The live view redraws afterwards.
-export function renderFull(doc: Doc): Raster {
-  if (!compositor) throw new Error('The canvas is not ready')
-  if (Math.max(doc.width, doc.height) > compositor.maxSize) throw new Error(`This canvas is larger than this GPU can render in one piece (${compositor.maxSize} px).`)
-  compositor.render(doc, 1)
-  const pixels = compositor.read()
-  requestRender()
-  return pixels
+// How far into a tile the document's blur adjustments reach from outside it, in its pixels: each tile is rendered with that much
+// around it, so the seams don't show.
+export function blurReach(doc: Doc) {
+  let reach = 2
+  for (const layer of doc.layers) {
+    const a = layer.adjustment
+    if (!a || !layer.visible) continue
+    if (a.kind === 'Gaussian Blur') reach += 3 * Math.max(0.1, a.blurRadius ?? 10)
+    else if (a.kind === 'Motion Blur') reach += a.motionDistance ?? 10
+  }
+  return Math.ceil(reach)
 }
+
+// Composites `doc` at full size and reads it back: in one piece when the GPU allows, otherwise a tile at a time. The live view's own
+// frame is left as it is. Floats (premultiplied, extended sRGB) are null for a document with no deep layer, or a GPU without floats.
+function composite(doc: Doc, floats: true): Float32Array | null
+function composite(doc: Doc, floats: false): Raster
+function composite(doc: Doc, floats: boolean): Raster | Float32Array | null {
+  const c = compositor
+  if (!c) throw new Error('The canvas is not ready')
+  const { width, height } = doc, fits = Math.max(width, height) <= c.maxSize
+  const margin = fits ? 0 : blurReach(doc), size = fits ? Math.max(width, height) : Math.min(4096, c.maxSize - 2 * margin - 32)
+  if (size < 256) throw new Error('A blur on this canvas reaches too far to render it in pieces this GPU can take.')
+  let out: Raster | Float32Array | null = null
+  for (let ty = 0; ty < height; ty += size) for (let tx = 0; tx < width; tx += size) {
+    const x0 = Math.max(0, tx - margin), y0 = Math.max(0, ty - margin), x1 = Math.min(width, tx + size + margin), y1 = Math.min(height, ty + size + margin)
+    const target = c.renderRegion(doc, x0, y0, x1 - x0, y1 - y0)
+    try {
+      if (floats && !c.hdr) return null
+      const tile = floats ? c.readFloat(target) : c.read(target).data
+      if (fits) return floats ? tile as Float32Array : new Raster(width, height, 4, tile as Uint8Array)
+      out ??= floats ? new Float32Array(width * height * 4) : new Raster(width, height, 4)
+      const into = out instanceof Raster ? out.data : out, w = Math.min(width, tx + size) - tx
+      for (let y = ty; y < Math.min(height, ty + size); y++) {
+        const from = ((y - y0) * (x1 - x0) + tx - x0) * 4
+        into.set(tile.subarray(from, from + w * 4), (y * width + tx) * 4)
+      }
+    } finally { target.dispose() }
+  }
+  return out
+}
+
+// The composite at full size, for export, merging and sampling.
+export const renderFull = (doc: Doc): Raster => composite(doc, false)
 
 // The composite at full depth, for merging 16-bit and HDR layers: premultiplied floats in extended sRGB, top row first. Null for a
 // document without such a layer, or a GPU that can't render floats.
-export function renderDeep(doc: Doc): Float32Array | null {
-  if (!compositor) throw new Error('The canvas is not ready')
-  if (Math.max(doc.width, doc.height) > compositor.maxSize) throw new Error(`This canvas is larger than this GPU can render in one piece (${compositor.maxSize} px).`)
-  compositor.render(doc, 1)
-  const data = compositor.hdr ? compositor.readFloat() : null
-  requestRender()
-  return data
-}
+export const renderDeep = (doc: Doc): Float32Array | null => composite(doc, true)
 
 // The composite in linear light with what's brighter than white kept, for an EXR export: premultiplied floats, top row first. Null
 // for a document without an HDR layer, or a GPU that can't render floats.
 export function renderLinear(doc: Doc): LinearImage | null {
-  if (!compositor) throw new Error('The canvas is not ready')
-  if (Math.max(doc.width, doc.height) > compositor.maxSize) throw new Error(`This canvas is larger than this GPU can render in one piece (${compositor.maxSize} px).`)
-  compositor.render(doc, 1)
-  const data = compositor.hdr ? compositor.readFloat() : null
-  requestRender()
+  const data = composite(doc, true)
   if (!data) return null
   const linear = (v: number) => v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4)
   for (let i = 0; i < data.length; i += 4) {
     const a = data[i + 3]
     for (let c = 0; c < 3; c++) { const v = a > 0 ? data[i + c] / a : 0; data[i + c] = (v < 0 ? -linear(-v) : linear(v)) * a }
   }
-  return { width: compositor.output!.width, height: compositor.output!.height, data }
+  return { width: doc.width, height: doc.height, data }
 }
 
 // View › CMYK: Proof Colors shows the canvas as the chosen profile will print it, on white paper; Gamut Warning marks gray what it can't

@@ -60,8 +60,11 @@ existing features were.
 
 ## Rendering
 
-- [ ] **Tiled rendering**, so canvases over about 36 MP preview at full resolution and export isn't capped by the GPU's texture
-  limit (usually 16,384 px a side). It would also stop brush strokes allocating two full-layer buffers.
+- [x] **Tiled rendering.** The compositor renders any rectangle of the document. Export, merging and sampling of canvases larger than
+  the GPU's texture limit (usually 16,384 px a side) go a tile at a time, each with room around it for blur adjustments to reach in.
+  Layers larger than the limit are cut to the part each tile shows (reduced to fit in the live view). Over a canvas the live view
+  shows reduced (over about 36 MP), the part in view is rendered at the screen's detail once the view settles. A brush stroke keeps
+  its coverage and the layer's original pixels in 64 px tiles where it reaches, not two full-layer buffers.
 - [ ] **Check against Mac exports.** These approximate Apple framework behavior and may be a level or two off:
   - [ ] Core Image blend modes (Color Burn and Dodge, Soft Light, Hard Mix, Divide and the rest)
   - [ ] Core Graphics high-quality resampling (Catmull-Rom here)

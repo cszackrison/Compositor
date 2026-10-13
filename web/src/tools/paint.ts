@@ -123,11 +123,12 @@ function blurSigma(raster: Raster, toDoc: Mat3) {
   return Math.min(Math.min(50, Math.max(0.5, store.state.blurRadius)) / perPixel, Math.max(raster.width, raster.height) / 2)
 }
 
-function strokeMode(tool: string, raster: Raster, toDoc: Mat3, isMask: boolean, original: Uint8Array, point: [number, number]): StrokeMode | null {
+// `original` copies the layer as the stroke finds it, for the tools that sample it.
+function strokeMode(tool: string, raster: Raster, toDoc: Mat3, isMask: boolean, original: () => Uint8Array, point: [number, number]): StrokeMode | null {
   if (tool === 'heal') return { kind: 'wash' }
   if (tool === 'smear') {
     // The Smear tool's Blur: a Gaussian of the layer as the stroke found it, painted back through the tip.
-    const blurred = lazyBlur(new Raster(raster.width, raster.height, raster.channels, original), blurSigma(raster, toDoc), isMask)
+    const blurred = lazyBlur(new Raster(raster.width, raster.height, raster.channels, original()), blurSigma(raster, toDoc), isMask)
     return { kind: 'source', sample: raster.channels === 1 ? (x, y, out) => { blurred(x, y, out); out[3] = 255 } : blurred, gpu: { kind: 'blurred', prepare: blurred.tiles } }
   }
   if (tool === 'clone') {
@@ -138,8 +139,8 @@ function strokeMode(tool: string, raster: Raster, toDoc: Mat3, isMask: boolean, 
       return { kind: 'source', sample: (x, y, out) => bilinear(composite, composite.width, composite.height, 4, toDoc[0] * (x + 0.5) + toDoc[3] * (y + 0.5) + toDoc[6] + offset[0], toDoc[1] * (x + 0.5) + toDoc[4] * (y + 0.5) + toDoc[7] + offset[1], out), gpu: { kind: 'composite', image: composite, offset } }
     }
     const toPixel = invert(toDoc), [ox, oy] = apply(toPixel, 0, 0), [qx, qy] = apply(toPixel, offset[0], offset[1])
-    const lx = qx - ox, ly = qy - oy
-    return { kind: 'source', sample: (x, y, out) => bilinear(original, raster.width, raster.height, raster.channels, x + 0.5 + lx, y + 0.5 + ly, out), gpu: { kind: 'layer', shift: [lx, ly] } }
+    const lx = qx - ox, ly = qy - oy, pixels = original()
+    return { kind: 'source', sample: (x, y, out) => bilinear(pixels, raster.width, raster.height, raster.channels, x + 0.5 + lx, y + 0.5 + ly, out), gpu: { kind: 'layer', shift: [lx, ly] } }
   }
   return { kind: 'paint' }
 }
@@ -154,12 +155,7 @@ function finishHeal(s: Stroke) {
   const x1 = Math.min(raster.width, Math.ceil(painted.x + painted.w + reach)), y1 = Math.min(raster.height, Math.ceil(painted.y + painted.h + reach))
   const w = x1 - x0, h = y1 - y0
   stroke.leaveGPU()
-  const original = stroke.originalPixels, coverage = stroke.coverageBytes()
-  const pixels = new Uint8Array(w * h * 4), gray = new Uint8Array(w * h)
-  for (let y = 0; y < h; y++) {
-    pixels.set(original.subarray(((y + y0) * raster.width + x0) * 4, ((y + y0) * raster.width + x1) * 4), y * w * 4)
-    gray.set(coverage.subarray((y + y0) * raster.width + x0, (y + y0) * raster.width + x1), y * w)
-  }
+  const pixels = stroke.originalPixels({ x: x0, y: y0, w, h }), gray = stroke.coverageBytes({ x: x0, y: y0, w, h })
   const modes = ['Content-Aware', 'Create Texture', 'Proximity Match']
   const unhealed = pixels.slice()
   const status = withBuffers([{ data: pixels, out: true }, { data: gray }], ([p, g]) => call('spot_heal', p, g, w, h, w * 4, store.state.brush.opacity, modes.indexOf(store.state.healMode), (Math.random() * 2 ** 32) >>> 0))
@@ -184,9 +180,8 @@ export const paint: ToolHandler = {
     const layer = store.layer(target.layer.id)!
     const raster = target.isMask ? layer.mask! : layer.image!
     const toDoc = target.isMask ? (maskGrowth ? pixelToDocument(maskGrowth.base, raster.width, raster.height) : target.toDocument) : pixelToDocument(layer.transform, raster.width, raster.height)
-    const original = raster.data.slice()
     const deep = target.isMask || tool !== 'smear' ? null : deepOf(layer), blur = deep ? { hdr: deep.hdr, before: deepToFloats(flattened(deep), deep.hdr), sigma: blurSigma(raster, toDoc) } : undefined
-    const mode = strokeMode(tool, raster, toDoc, target.isMask, original, p.point)!
+    const mode = strokeMode(tool, raster, toDoc, target.isMask, () => raster.data.slice(), p.point)!
     const settings = { ...store.state.brush, erasing: tool === 'eraser', smoothing: tool === 'brush' || tool === 'eraser' ? store.state.brush.smoothing : 0 }
     const color = store.paletteColor('foreground')
     const stroke = new BrushStroke(raster, toDoc, settings, color, store.state.selection, mode)

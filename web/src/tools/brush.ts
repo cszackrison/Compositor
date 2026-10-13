@@ -11,6 +11,21 @@ export type StrokeMode = { kind: 'paint' } | { kind: 'source'; sample: (x: numbe
 
 type Rect = { x0: number; y0: number; x1: number; y1: number }
 
+// A layer-sized buffer kept only where a stroke reaches, in 64-pixel tiles, so a stroke on a large layer doesn't hold the whole
+// layer's worth twice over.
+class Tiles<A extends Float32Array | Uint8Array> {
+  readonly columns: number
+  readonly tiles: (A | undefined)[]
+  constructor(width: number, height: number, readonly channels: number, private make: (length: number) => A) {
+    this.columns = Math.ceil(width / 64)
+    this.tiles = new Array(this.columns * Math.ceil(height / 64))
+  }
+  get(x: number, y: number) { return this.tiles[(y >> 6) * this.columns + (x >> 6)] }
+  at(x: number, y: number) { return this.tiles[(y >> 6) * this.columns + (x >> 6)] ??= this.make(4096 * this.channels) }
+}
+// A pixel's place within its tile.
+const inTile = (x: number, y: number) => ((y & 63) << 6) + (x & 63)
+
 // Soft-brush falloff across the region between the hardness radius and the rim: a normalized Gaussian that reaches zero at the rim.
 export function falloff(u: number) {
   const k = 2.5
@@ -22,8 +37,9 @@ const falloffSteps = 16384, falloffTable = Float64Array.from({ length: falloffSt
 // One brush stroke on a layer's pixels or mask. Dabs build coverage (lighten for a hard tip, screen for a soft one), and the
 // stroke's color is laid over the untouched original at coverage × opacity, so overlapping dabs never pass the stroke's opacity.
 export class BrushStroke {
-  private coverage: Float32Array
-  private original: Uint8Array
+  private coverage: Tiles<Float32Array>
+  // The raster as the stroke found it, kept a tile at a time just before the stroke first writes there.
+  private original: Tiles<Uint8Array>
   private dirty: Rect | null = null
   private touched: Rect | null = null
   private toPixel: Mat3
@@ -34,11 +50,13 @@ export class BrushStroke {
   // A pen's pressure (0–1) for the dabs being laid now; it scales the tip, and stays 1 without a pen or with pressure off.
   pressure = 1
   // The coverage and the pixels live on the GPU when it can take the stroke (see gpuBrush.ts).
-  gpu: GPUBrush | null = null
+  private brush: GPUBrush | null = null
+  get gpu() { return this.brush }
+  set gpu(gpu: GPUBrush | null) { this.brush = gpu; if (gpu) gpu.beforeRead = rect => this.keep(rect) }
 
   constructor(readonly raster: Raster, readonly pixelToDocument: Mat3, readonly settings: BrushSettings, readonly color: [number, number, number], readonly selection: Raster | null, readonly mode: StrokeMode = { kind: 'paint' }) {
-    this.coverage = new Float32Array(raster.width * raster.height)
-    this.original = raster.data.slice()
+    this.coverage = new Tiles(raster.width, raster.height, 1, n => new Float32Array(n))
+    this.original = new Tiles(raster.width, raster.height, raster.channels, n => new Uint8Array(n))
     this.toPixel = invert(pixelToDocument)
     const [ox, oy] = apply(this.toPixel, 0, 0), [ux, uy] = apply(this.toPixel, 1, 0), [vx, vy] = apply(this.toPixel, 0, 1)
     this.pixelScale = Math.sqrt(Math.abs((ux - ox) * (vy - oy) - (uy - oy) * (vx - ox)))
@@ -79,9 +97,8 @@ export class BrushStroke {
     const pixels = [from, ...points].map(p => apply(this.toPixel, ...p))
     const xs = pixels.map(p => p[0]), ys = pixels.map(p => p[1])
     const rect = { x0: Math.max(0, Math.floor(Math.min(...xs) - r)), y0: Math.max(0, Math.floor(Math.min(...ys) - r)), x1: Math.min(width, Math.ceil(Math.max(...xs) + r)), y1: Math.min(height, Math.ceil(Math.max(...ys) + r)) }
-    const w = Math.max(0, rect.x1 - rect.x0), h = Math.max(0, rect.y1 - rect.y0), data = this.gpu ? new Float32Array(0) : new Float32Array(w * h)
+    const data = this.gpu ? new Float32Array(0) : this.readCoverage(rect)
     if (this.gpu) this.gpu.saveTail(rect)
-    else for (let y = 0; y < h; y++) data.set(this.coverage.subarray((y + rect.y0) * width + rect.x0, (y + rect.y0) * width + rect.x0 + w), y * w)
     this.tail = { last: this.last, carry: this.carry, rect, data }
     for (const p of points) this.lineTo(p[0], p[1])
     this.last = this.tail.last
@@ -101,10 +118,49 @@ export class BrushStroke {
     const tail = this.tail
     if (!tail) return
     this.tail = null
-    const { rect, data } = tail, w = rect.x1 - rect.x0, width = this.raster.width
+    const { rect, data } = tail
     if (this.gpu) this.gpu.restoreTail(rect)
-    else for (let y = 0; y < rect.y1 - rect.y0; y++) this.coverage.set(data.subarray(y * w, (y + 1) * w), (y + rect.y0) * width + rect.x0)
-    if (w > 0 && rect.y1 > rect.y0) this.include(rect)
+    else this.writeCoverage(rect, data)
+    if (rect.x1 > rect.x0 && rect.y1 > rect.y0) this.include(rect)
+  }
+
+  // The coverage over `rect`, a row of its width at a time, and back.
+  private readCoverage(rect: Rect) {
+    const w = Math.max(0, rect.x1 - rect.x0), h = Math.max(0, rect.y1 - rect.y0), out = new Float32Array(w * h)
+    for (let y = rect.y0; y < rect.y1; y++) for (let x = rect.x0; x < rect.x1; x++) { const t = this.coverage.get(x, y); if (t) out[(y - rect.y0) * w + x - rect.x0] = t[inTile(x, y)] }
+    return out
+  }
+  private writeCoverage(rect: Rect, values: Float32Array) {
+    const w = rect.x1 - rect.x0
+    for (let y = rect.y0; y < rect.y1; y++) for (let x = rect.x0; x < rect.x1; x++) {
+      const v = values[(y - rect.y0) * w + x - rect.x0], t = v ? this.coverage.at(x, y) : this.coverage.get(x, y)
+      if (t) t[inTile(x, y)] = v
+    }
+  }
+  private coverageAt(x: number, y: number) { const t = this.coverage.get(x, y); return t ? t[inTile(x, y)] : 0 }
+
+  // Keeps the raster's pixels in `rect` as they are now, where they haven't been kept already: called before the stroke writes them.
+  private keep(rect: Rect) {
+    const { width, height, channels, data } = this.raster
+    const x0 = Math.max(0, rect.x0), y0 = Math.max(0, rect.y0), x1 = Math.min(width, rect.x1), y1 = Math.min(height, rect.y1)
+    if (x1 <= x0 || y1 <= y0) return
+    for (let ty = y0 >> 6; ty <= (y1 - 1) >> 6; ty++) for (let tx = x0 >> 6; tx <= (x1 - 1) >> 6; tx++) {
+      if (this.original.get(tx << 6, ty << 6)) continue
+      const tile = this.original.at(tx << 6, ty << 6), w = Math.min(64, width - (tx << 6))
+      for (let y = 0; y < 64 && (ty << 6) + y < height; y++) {
+        const from = (((ty << 6) + y) * width + (tx << 6)) * channels
+        tile.set(data.subarray(from, from + w * channels), y * 64 * channels)
+      }
+    }
+  }
+  // The raster as the stroke found it over `rect`, `channels` bytes a pixel, a row of its width at a time.
+  originalPixels(rect: { x: number; y: number; w: number; h: number }) {
+    const { width, channels, data } = this.raster, out = new Uint8Array(rect.w * rect.h * channels)
+    for (let y = rect.y; y < rect.y + rect.h; y++) for (let x = rect.x; x < rect.x + rect.w; x++) {
+      const t = this.original.get(x, y), o = (((y - rect.y) * rect.w) + x - rect.x) * channels, i = t ? inTile(x, y) * channels : (y * width + x) * channels, from = t ?? data
+      for (let c = 0; c < channels; c++) out[o + c] = from[i + c]
+    }
+    return out
   }
 
   private curveTo(point: [number, number]) {
@@ -177,8 +233,8 @@ export class BrushStroke {
       // Only the pixels on this row that the circle reaches.
       const chord = Math.sqrt(outer2 - dy2)
       const from = Math.max(x0, Math.floor(cx - chord - 0.5)), to = Math.min(x1, Math.ceil(cx + chord + 0.5))
-      let i = y * width + from
-      for (let x = from; x < to; x++, i++) {
+      const row = (y & 63) << 6
+      for (let x = from; x < to; x++) {
         const dx = x + 0.5 - cx, d2 = dx * dx + dy2
         let v: number
         if (hard) {
@@ -186,15 +242,15 @@ export class BrushStroke {
           v = d2 <= solid2 ? 1 : radius - Math.sqrt(d2) + 0.5
           if (v > 1) v = 1
           if (v <= 0) continue
-          const c = coverage[i]
-          if (v > c) coverage[i] = v
+          const tile = coverage.at(x, y), i = row + (x & 63), c = tile[i]
+          if (v > c) tile[i] = v
         } else {
           if (d2 >= radius * radius) continue
           if (d2 <= inner2) v = 1
           else { const t = (Math.sqrt(d2) - inner) * lutScale, j = t | 0; v = falloffTable[j] + (falloffTable[j + 1] - falloffTable[j]) * (t - j) }
           if (v <= 0) continue
-          const c = coverage[i]
-          coverage[i] = c + v - c * v
+          const tile = coverage.at(x, y), i = row + (x & 63), c = tile[i]
+          tile[i] = c + v - c * v
         }
       }
     }
@@ -216,44 +272,45 @@ export class BrushStroke {
       this.gpu.composite(dirty)
       return { x: dirty.x0, y: dirty.y0, w: dirty.x1 - dirty.x0, h: dirty.y1 - dirty.y0 }
     }
-    const { raster, coverage, original, selection, settings } = this
+    this.keep(dirty)
+    const { raster, coverage, selection, settings } = this
     const { width, data, channels } = raster
     const opacity = this.mode.kind === 'wash' ? 0.45 : settings.opacity, [r, g, b] = this.color
     const gray = Math.round(0.299 * r + 0.587 * g + 0.114 * b)
     const toDoc = this.pixelToDocument
     const mode = this.mode, sample = new Float32Array(4), washed = Math.round(0.12 * 255)
-    const restore = channels === 1 ? (i: number) => { data[i] = original[i] } : (i: number) => { const p = i * 4; data[p] = original[p]; data[p + 1] = original[p + 1]; data[p + 2] = original[p + 2]; data[p + 3] = original[p + 3] }
     for (let y = dirty.y0; y < dirty.y1; y++) {
       for (let x = dirty.x0; x < dirty.x1; x++) {
-        const i = y * width + x
-        let a = coverage[i] * opacity
+        const i = y * width + x, t = inTile(x, y), covered = coverage.get(x, y), original = this.original.get(x, y)!, q = t * channels
+        const restore = () => { if (channels === 1) data[i] = original[q]; else { const p = i * 4; data[p] = original[q]; data[p + 1] = original[q + 1]; data[p + 2] = original[q + 2]; data[p + 3] = original[q + 3] } }
+        let a = covered ? covered[t] * opacity : 0
         // Nothing here (any more: a provisional tail taken back leaves none), so the pixel is as the stroke found it.
-        if (a <= 0) { restore(i); continue }
+        if (a <= 0) { restore(); continue }
         if (selection) {
           const px = x + 0.5, py = y + 0.5
           const sx = Math.floor(toDoc[0] * px + toDoc[3] * py + toDoc[6]), sy = Math.floor(toDoc[1] * px + toDoc[4] * py + toDoc[7])
           a *= sx >= 0 && sy >= 0 && sx < selection.width && sy < selection.height ? selection.data[sy * selection.width + sx] / 255 : 0
-          if (a <= 0) { restore(i); continue }
+          if (a <= 0) { restore(); continue }
         }
         if (mode.kind === 'source') {
           mode.sample(x, y, sample)
-          if (channels === 1) { data[i] = Math.round(sample[0] * a + original[i] * (1 - a)); continue }
+          if (channels === 1) { data[i] = Math.round(sample[0] * a + original[q] * (1 - a)); continue }
           const p = i * 4, keep = 1 - sample[3] / 255 * a
-          for (let c = 0; c < 4; c++) data[p + c] = Math.round(sample[c] * a + original[p + c] * keep)
+          for (let c = 0; c < 4; c++) data[p + c] = Math.round(sample[c] * a + original[q + c] * keep)
           continue
         }
         if (channels === 1) {
           const target = mode.kind === 'wash' ? washed : settings.erasing ? 0 : gray
-          data[i] = Math.round(target * a + original[i] * (1 - a))
+          data[i] = Math.round(target * a + original[q] * (1 - a))
           continue
         }
         const p = i * 4, keep = 1 - a
         if (mode.kind === 'wash') {
-          data[p] = Math.round(washed * a + original[p] * keep); data[p + 1] = Math.round(washed * a + original[p + 1] * keep); data[p + 2] = Math.round(washed * a + original[p + 2] * keep); data[p + 3] = Math.round(255 * a + original[p + 3] * keep)
+          data[p] = Math.round(washed * a + original[q] * keep); data[p + 1] = Math.round(washed * a + original[q + 1] * keep); data[p + 2] = Math.round(washed * a + original[q + 2] * keep); data[p + 3] = Math.round(255 * a + original[q + 3] * keep)
         } else if (settings.erasing) {
-          data[p] = Math.round(original[p] * keep); data[p + 1] = Math.round(original[p + 1] * keep); data[p + 2] = Math.round(original[p + 2] * keep); data[p + 3] = Math.round(original[p + 3] * keep)
+          data[p] = Math.round(original[q] * keep); data[p + 1] = Math.round(original[q + 1] * keep); data[p + 2] = Math.round(original[q + 2] * keep); data[p + 3] = Math.round(original[q + 3] * keep)
         } else {
-          data[p] = Math.round(r * a + original[p] * keep); data[p + 1] = Math.round(g * a + original[p + 1] * keep); data[p + 2] = Math.round(b * a + original[p + 2] * keep); data[p + 3] = Math.round(255 * a + original[p + 3] * keep)
+          data[p] = Math.round(r * a + original[q] * keep); data[p + 1] = Math.round(g * a + original[q + 1] * keep); data[p + 2] = Math.round(b * a + original[q + 2] * keep); data[p + 3] = Math.round(255 * a + original[q + 3] * keep)
         }
       }
     }
@@ -262,24 +319,24 @@ export class BrushStroke {
     return rect
   }
 
-  // The raster as the stroke found it, and its coverage as bytes (for Spot Healing).
-  get originalPixels() { return this.original }
   // Ends the GPU's part early, leaving its texture to be drawn again from the bytes (Spot Healing writes its result itself), its
   // coverage brought back first.
   leaveGPU() {
     const t = this.touched
     if (!this.gpu) return
-    if (t) this.gpu.readCoverage(t, this.coverage)
+    if (t) this.takeCoverage(t)
     this.gpu.dispose(); this.gpu = null
   }
-  coverageBytes() {
-    const out = new Uint8Array(this.coverage.length)
-    for (let i = 0; i < out.length; i++) out[i] = Math.round(Math.min(1, this.coverage[i]) * 255)
+  private takeCoverage(rect: Rect) { const read = this.gpu!.readCoverage(rect); if (read) this.writeCoverage(read, read.values) }
+  // The coverage over `rect` as bytes (for Spot Healing).
+  coverageBytes(rect: { x: number; y: number; w: number; h: number }) {
+    const values = this.readCoverage({ x0: rect.x, y0: rect.y, x1: rect.x + rect.w, y1: rect.y + rect.h }), out = new Uint8Array(values.length)
+    for (let i = 0; i < out.length; i++) out[i] = Math.round(Math.min(1, values[i]) * 255)
     return out
   }
   // How much of the stroke's source a pixel took: its coverage times the stroke's opacity, within the selection.
   weight(x: number, y: number) {
-    let a = Math.min(1, this.coverage[y * this.raster.width + x]) * (this.mode.kind === 'wash' ? 0.45 : this.settings.opacity)
+    let a = Math.min(1, this.coverageAt(x, y)) * (this.mode.kind === 'wash' ? 0.45 : this.settings.opacity)
     const selection = this.selection, m = this.pixelToDocument
     if (a > 0 && selection) {
       const sx = Math.floor(m[0] * (x + 0.5) + m[3] * (y + 0.5) + m[6]), sy = Math.floor(m[1] * (x + 0.5) + m[4] * (y + 0.5) + m[7])
@@ -291,7 +348,8 @@ export class BrushStroke {
 
   // Replaces what the stroke drew in `rect` (raster pixels) with `pixels`, clipped by the selection, before `finish`.
   replace(rect: { x: number; y: number; w: number; h: number }, pixels: Uint8Array) {
-    const { raster, selection, original } = this, c = raster.channels
+    const { raster, selection } = this, c = raster.channels, original = this.originalPixels(rect)
+    this.keep({ x0: rect.x, y0: rect.y, x1: rect.x + rect.w, y1: rect.y + rect.h })
     const m = this.pixelToDocument
     for (let y = 0; y < rect.h; y++) for (let x = 0; x < rect.w; x++) {
       const gx = x + rect.x, gy = y + rect.y, i = gy * raster.width + gx
@@ -300,7 +358,7 @@ export class BrushStroke {
         const sx = Math.floor(m[0] * (gx + 0.5) + m[3] * (gy + 0.5) + m[6]), sy = Math.floor(m[1] * (gx + 0.5) + m[4] * (gy + 0.5) + m[7])
         k = sx >= 0 && sy >= 0 && sx < selection.width && sy < selection.height ? selection.data[sy * selection.width + sx] / 255 : 0
       }
-      for (let ch = 0; ch < c; ch++) raster.data[i * c + ch] = Math.round(original[i * c + ch] + (pixels[(y * rect.w + x) * c + ch] - original[i * c + ch]) * k)
+      for (let ch = 0; ch < c; ch++) raster.data[i * c + ch] = Math.round(original[(y * rect.w + x) * c + ch] + (pixels[(y * rect.w + x) * c + ch] - original[(y * rect.w + x) * c + ch]) * k)
     }
     raster.markDirty(rect)
   }
@@ -309,19 +367,21 @@ export class BrushStroke {
     if (this.samples.length > 1 || this.tail) this.settle()
     if (this.mode.kind !== 'wash') this.render()
     const t = this.touched
-    if (this.gpu) { if (t) { this.gpu.read(t); this.gpu.readCoverage(t, this.coverage) } this.gpu.dispose(); this.gpu = null }
+    if (this.gpu) { if (t) { this.gpu.read(t); this.takeCoverage(t) } this.gpu.dispose(); this.gpu = null }
     if (!t) return null
-    const { raster, original } = this
-    const x = t.x0, y = t.y0, w = t.x1 - t.x0, h = t.y1 - t.y0, c = raster.channels
-    const before = new Uint8Array(w * h * c)
-    for (let j = 0; j < h; j++) before.set(original.subarray(((y + j) * raster.width + x) * c, ((y + j) * raster.width + x + w) * c), j * w * c)
-    return { raster, x, y, w, h, before, after: raster.read(x, y, w, h) }
+    const raster = this.raster, x = t.x0, y = t.y0, w = t.x1 - t.x0, h = t.y1 - t.y0
+    return { raster, x, y, w, h, before: this.originalPixels({ x, y, w, h }), after: raster.read(x, y, w, h) }
   }
 
   cancel() {
     this.gpu?.dispose()
     this.gpu = null
-    this.raster.data.set(this.original)
+    const { width, height, channels, data } = this.raster
+    this.original.tiles.forEach((tile, k) => {
+      if (!tile) return
+      const tx = (k % this.original.columns) << 6, ty = Math.floor(k / this.original.columns) << 6, w = Math.min(64, width - tx)
+      for (let y = 0; y < 64 && ty + y < height; y++) data.set(tile.subarray(y * 64 * channels, (y * 64 + w) * channels), ((ty + y) * width + tx) * channels)
+    })
     this.raster.touch()
   }
 }

@@ -95,4 +95,4 @@ See [TODO.md](TODO.md) for what's left, largest first.
 
 The renderer follows `docs/project-format.md` and the export path in the Swift source, but a few steps approximate Apple framework behavior: Catmull-Rom for Core Graphics' high-quality interpolation, standard formulas for Core Image's blend modes, and a Gaussian smear for `CIMotionBlur`. Color-only adjustments run through lookup tables, as the Mac app's live canvas does. Expect occasional one- or two-level differences from a Mac export.
 
-Canvases over about 36 megapixels preview at reduced resolution. Export renders at full size up to the GPU's texture limit (usually 16,384 px on a side).
+Canvases over about 36 megapixels preview at reduced resolution until the view settles, when the part in view is drawn at full detail. Canvases larger than the GPU's texture limit (usually 16,384 px on a side) export and merge a tile at a time.

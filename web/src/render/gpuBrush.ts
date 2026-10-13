@@ -125,6 +125,8 @@ export class GPUBrush {
   private sourceTexture: WebGLTexture | null = null
   // What the stroke has written to the layer's texture and not yet brought back.
   private written: Rect | null = null
+  // Told before the layer's bytes are overwritten, so the stroke can keep what was there.
+  beforeRead: ((rect: Rect) => void) | null = null
 
   static create(compositor: Compositor | null, raster: Raster, options: { erasing: boolean; color: [number, number, number]; opacity: number; toDocument: Mat3; selection: Raster | null; source?: GPUSource }): GPUBrush | null {
     if (!compositor) return null
@@ -281,6 +283,7 @@ export class GPUBrush {
 
   // Brings `rect` of the layer's texture back into the raster's bytes, without counting as a change to them.
   read(rect: Rect) {
+    this.beforeRead?.(rect)
     const gl = this.gl, { raster } = this
     const x0 = Math.max(0, rect.x0), y0 = Math.max(0, rect.y0), x1 = Math.min(raster.width, rect.x1), y1 = Math.min(raster.height, rect.y1)
     if (x0 >= x1 || y0 >= y1) return
@@ -301,18 +304,19 @@ export class GPUBrush {
     this.done()
   }
 
-  // The stroke's coverage in `rect`, copied into `into` (one float a pixel, the layer's width a row), for what reads it on the CPU (Spot
-  // Healing's heal, a 16-bit layer's Blur).
-  readCoverage(rect: Rect, into: Float32Array) {
+  // The stroke's coverage in `rect` (clipped to the layer), one float a pixel, for what reads it on the CPU (Spot Healing's heal, a
+  // 16-bit layer's Blur).
+  readCoverage(rect: Rect): { x0: number; y0: number; x1: number; y1: number; values: Float32Array } | null {
     const gl = this.gl, { width, height } = this.raster
     const x0 = Math.max(0, rect.x0), y0 = Math.max(0, rect.y0), x1 = Math.min(width, rect.x1), y1 = Math.min(height, rect.y1), w = x1 - x0, h = y1 - y0
-    if (w <= 0 || h <= 0) return
-    const rgba = new Float32Array(w * h * 4)
+    if (w <= 0 || h <= 0) return null
+    const rgba = new Float32Array(w * h * 4), values = new Float32Array(w * h)
     gl.bindFramebuffer(gl.READ_FRAMEBUFFER, this.coverageFramebuffer)
     gl.readBuffer(gl.COLOR_ATTACHMENT0)
     gl.readPixels(x0, y0, w, h, gl.RGBA, gl.FLOAT, rgba)
     this.done()
-    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) into[(y + y0) * width + x + x0] = rgba[(y * w + x) * 4]
+    for (let i = 0; i < values.length; i++) values[i] = rgba[i * 4]
+    return { x0, y0, x1, y1, values }
   }
 
   dispose() {

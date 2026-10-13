@@ -145,8 +145,9 @@ export class Compositor {
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([255, 255, 255, 255]))
   }
 
-  // Uploads a raster (or just what changed in it) and returns its texture.
+  // Uploads a raster (or just what changed in it) and returns its texture. One larger than the GPU takes comes reduced to fit.
   texture(raster: Raster, mipmaps = false): WebGLTexture {
+    if (Math.max(raster.width, raster.height) > this.maxSize) return this.part(raster, 0, 0, raster.width, raster.height).texture
     const gl = this.gl
     let record = this.textures.get(raster)
     const format = raster.channels === 4 ? [gl.RGBA8, gl.RGBA] : [gl.R8, gl.RED]
@@ -178,6 +179,61 @@ export class Compositor {
     gl.bindTexture(gl.TEXTURE_2D, record.texture)
     if (mipmaps && record.mipVersion !== record.version) { gl.generateMipmap(gl.TEXTURE_2D); record.mipVersion = record.version }
     return record.texture
+  }
+
+  // The part of a raster too large for the GPU that's at `x`, `y`, `w` × `h` (its pixels), reduced by whole steps until it fits: the
+  // part a tile or the view shows. The last one made for each raster is kept.
+  private parts = new WeakMap<Raster, { key: string; version: number; texture: WebGLTexture; step: number; width: number; height: number }>()
+  private releasedParts = new FinalizationRegistry<{ texture: WebGLTexture }>(part => this.gl.deleteTexture(part.texture))
+  private part(raster: Raster, x: number, y: number, w: number, h: number) {
+    const gl = this.gl, key = `${x},${y},${w},${h}`, kept = this.parts.get(raster)
+    if (kept?.key === key && kept.version === raster.version) return kept
+    if (kept) gl.deleteTexture(kept.texture)
+    const step = Math.ceil(Math.max(w, h) / this.maxSize), width = Math.ceil(w / step), height = Math.ceil(h / step), channels = raster.channels
+    const texture = gl.createTexture()!
+    gl.bindTexture(gl.TEXTURE_2D, texture)
+    gl.texStorage2D(gl.TEXTURE_2D, Math.floor(Math.log2(Math.max(width, height))) + 1, channels === 4 ? gl.RGBA8 : gl.R8, width, height)
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1)
+    if (step === 1) {
+      gl.pixelStorei(gl.UNPACK_ROW_LENGTH, raster.width); gl.pixelStorei(gl.UNPACK_SKIP_PIXELS, x); gl.pixelStorei(gl.UNPACK_SKIP_ROWS, y)
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, width, height, channels === 4 ? gl.RGBA : gl.RED, gl.UNSIGNED_BYTE, raster.data)
+      gl.pixelStorei(gl.UNPACK_ROW_LENGTH, 0); gl.pixelStorei(gl.UNPACK_SKIP_PIXELS, 0); gl.pixelStorei(gl.UNPACK_SKIP_ROWS, 0)
+    } else {
+      const out = new Uint8Array(width * height * channels), sums = new Float64Array(width * channels), counts = new Uint32Array(width), src = raster.data
+      for (let ty = 0; ty < height; ty++) {
+        sums.fill(0); counts.fill(0)
+        for (let sy = y + ty * step; sy < Math.min(y + h, y + (ty + 1) * step); sy++) for (let sx = x; sx < x + w; sx++) {
+          const tx = Math.floor((sx - x) / step), i = (sy * raster.width + sx) * channels
+          counts[tx]++
+          for (let c = 0; c < channels; c++) sums[tx * channels + c] += src[i + c]
+        }
+        for (let tx = 0; tx < width; tx++) for (let c = 0; c < channels; c++) out[(ty * width + tx) * channels + c] = Math.round(sums[tx * channels + c] / Math.max(1, counts[tx]))
+      }
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, width, height, channels === 4 ? gl.RGBA : gl.RED, gl.UNSIGNED_BYTE, out)
+    }
+    gl.generateMipmap(gl.TEXTURE_2D)
+    setSampling(gl, gl.LINEAR)
+    const part = { key, version: raster.version, texture, step, width, height }
+    this.parts.set(raster, part)
+    this.releasedParts.register(raster, part)
+    return part
+  }
+
+  // A source too large for the GPU, cut to what `target` shows of it (on a coarse grid, so a view that pans a little keeps it).
+  private fitted(source: Source, target: Target): Source | null {
+    const raster = source.raster!, W = raster.width, H = raster.height, toTarget = multiply(this.docToTarget, source.unitToDoc), toUnit = invert(toTarget)
+    const [ox, oy] = apply(toTarget, 0, 0), [ux, uy] = apply(toTarget, 1, 0), perPixel = Math.hypot(ux - ox, uy - oy) / W
+    const corners = [[0, 0], [target.width, 0], [0, target.height], [target.width, target.height]].map(([x, y]) => apply(toUnit, x, y))
+    const margin = 4 + 2 / Math.max(1e-6, perPixel)
+    const span = (grid: number) => [
+      Math.max(0, Math.floor((Math.min(...corners.map(c => c[0])) * W - margin) / grid) * grid), Math.max(0, Math.floor((Math.min(...corners.map(c => c[1])) * H - margin) / grid) * grid),
+      Math.min(W, Math.ceil((Math.max(...corners.map(c => c[0])) * W + margin) / grid) * grid), Math.min(H, Math.ceil((Math.max(...corners.map(c => c[1])) * H + margin) / grid) * grid),
+    ]
+    let [x0, y0, x1, y1] = span(1024)
+    if (Math.max(x1 - x0, y1 - y0) > this.maxSize) [x0, y0, x1, y1] = span(1)
+    if (x1 <= x0 || y1 <= y0) return null
+    const part = this.part(raster, x0, y0, x1 - x0, y1 - y0)
+    return { texture: part.texture, mipmapped: true, width: part.width, height: part.height, unitToDoc: multiply(source.unitToDoc, chain(translate(x0 / W, y0 / H), scale(part.width * part.step / W, part.height * part.step / H))), sampling: source.sampling, rotation: source.rotation }
   }
 
   // A 16-bit or HDR layer's pixels as a half-float texture with mipmaps: its deep pixels, uploaded once, with its paint laid over them
@@ -299,7 +355,9 @@ export class Compositor {
     if (record) { this.released.unregister(record); this.gl.deleteTexture(record.texture); this.textures.delete(raster) }
   }
 
-  private get docToTarget(): Mat3 { return scale(this.renderScale) }
+  // Where the target's top-left corner is in the document: the origin for the whole canvas, a tile's corner for a region.
+  private origin: [number, number] = [0, 0]
+  private get docToTarget(): Mat3 { return chain(scale(this.renderScale), translate(-this.origin[0], -this.origin[1])) }
   private get targetToClip(): Mat3 { return chain(translate(-1, -1), scale(2 / this.width, 2 / this.height)) }
   private bindQuad() { this.gl.bindVertexArray(this.quad) }
 
@@ -323,6 +381,13 @@ export class Compositor {
   // Draws a source quad into `target` with its opacity, mask, clips and blend mode.
   private draw(target: Target, source: Source, options: { opacity: number; blendMode: Layer['blendMode']; mask?: MaskSpec; clip?: Target | null; coverage?: Target | null }) {
     const gl = this.gl
+    if (source.raster && Math.max(source.raster.width, source.raster.height) > this.maxSize) {
+      // Cut down, the source no longer spans the layer: its mask is placed over the layer's own rectangle instead.
+      if (options.mask?.mode === 1) options = { ...options, mask: { mode: 2, texture: options.mask.texture, unitToDoc: source.unitToDoc, outside: 0 } }
+      const fitted = this.fitted(source, target)
+      if (!fitted) return
+      source = fitted
+    }
     const toTarget = multiply(this.docToTarget, source.unitToDoc)
     const [ox, oy] = apply(toTarget, 0, 0), [ux, uy] = apply(toTarget, 1, 0)
     const factor = Math.hypot(ux - ox, uy - oy) / source.width
@@ -506,7 +571,7 @@ export class Compositor {
       const { width, height } = target, both = this.pool.take(width, height), lt = layer.transform
       this.draw(both, withEffects, { opacity: 1, blendMode: 'Normal' })
       this.draw(both, { texture: this.texture(layer.image), raster: layer.image, width: layer.image.width, height: layer.image.height, unitToDoc: unitToDocument(lt), sampling: lt.sampling, rotation: lt.rotation }, { opacity: 1, blendMode: 'Normal', mask: this.layerMask(layer) })
-      this.draw(target, { texture: both.texture, width, height, unitToDoc: unitToDocument({ origin: [0, 0], size: [width / this.renderScale, height / this.renderScale], rotation: 0, flipX: false, flipY: false, sampling: 'Nearest' }), sampling: 'Exact', rotation: 0 }, { opacity, blendMode, clip: options.clip, coverage: options.coverage })
+      this.draw(target, { texture: both.texture, width, height, unitToDoc: unitToDocument({ origin: [...this.origin], size: [width / this.renderScale, height / this.renderScale], rotation: 0, flipX: false, flipY: false, sampling: 'Nearest' }), sampling: 'Exact', rotation: 0 }, { opacity, blendMode, clip: options.clip, coverage: options.coverage })
       this.pool.give(both)
       return
     }
@@ -617,7 +682,7 @@ export class Compositor {
     gl.bindTexture(gl.TEXTURE_2D, original.texture)
     setSampling(gl, gl.NEAREST)
     // The 3D lookup's sampler always gets its own unit: left on unit 0 with the 2D source, every draw would fail.
-    const base = { source: { texture: original.texture, unit: 0 }, table: { texture: this.white, unit: 1 }, cube: { texture: undefined, unit: 2, target: gl.TEXTURE_3D }, unitsPerPixel: 1 / this.renderScale, hdr: this.hdr ? 1 : 0 }
+    const base = { source: { texture: original.texture, unit: 0 }, table: { texture: this.white, unit: 1 }, cube: { texture: undefined, unit: 2, target: gl.TEXTURE_3D }, unitsPerPixel: 1 / this.renderScale, offset: [Math.round(this.origin[0] * this.renderScale), Math.round(this.origin[1] * this.renderScale)], hdr: this.hdr ? 1 : 0 }
     if (kind === 'Exposure' && this.hdr) {
       const e = adjustment.exposureSettings ?? { exposure: 0, offset: 0, gamma: 1 }
       this.pass(out, this.adjustProgram, { ...base, mode: 6, params: [2 ** e.exposure, e.offset, 1 / Math.max(0.01, e.gamma), 0] })
@@ -654,30 +719,54 @@ export class Compositor {
     this.pool.give(original)
   }
 
+  // Half-float targets while a layer has kept deep pixels, still current or not, so a filter's 8-bit preview doesn't switch them back
+  // and forth.
+  private matchDepth(doc: Doc) {
+    const hdr = this.floatTargets && doc.layers.some(l => !!l.deep)
+    if (hdr === this.hdr) return
+    this.hdr = hdr
+    this.pool.trim(-1, -1)
+    this.pool = new TargetPool(this.gl, this.format)
+    this.prefix?.target.dispose(); this.prefix = null
+    this.previous = null
+    this.width = 0
+  }
+
+  // Composites a rectangle of the document (`x`, `y`, `w` × `h` in its pixels) at `renderScale` into a target of its own: a tile of an
+  // export too large for one texture, or the view's detail over a canvas too large to show whole. The live frame's caches stay as
+  // they are. The caller disposes of the target. `live` draws effects still being redone as the live view does, from the last result.
+  renderRegion(doc: Doc, x: number, y: number, w: number, h: number, renderScale = 1, live = false): Target {
+    this.matchDepth(doc)
+    const saved = { output: this.output, width: this.width, height: this.height, renderScale: this.renderScale, origin: this.origin, prefix: this.prefix, previous: this.previous, lastSignatures: this.lastSignatures, live: this.live, clipCache: this.clipCache, gpuChanges: this.gpuChanges }
+    const width = Math.max(1, Math.round(w * renderScale)), height = Math.max(1, Math.round(h * renderScale)), target = new Target(this.gl, width, height, this.format, true)
+    Object.assign(this, { output: target, width, height, renderScale, origin: [x, y], prefix: null, previous: null, lastSignatures: [], live, clipCache: new Map(), gpuChanges: new Map() })
+    try { this.compose(doc, target, width, height) } finally {
+      this.clipCache.forEach(t => t.dispose())
+      Object.assign(this, saved)
+      this.pool.trim(saved.width, saved.height)
+    }
+    return target
+  }
+
   // Composites the document into `output` at `renderScale`. `hidden` leaves layers out (e.g. while a tool previews them elsewhere).
   render(doc: Doc, renderScale = 1): Target {
-    const gl = this.gl
     this.renderScale = renderScale
+    this.origin = [0, 0]
     const width = Math.max(1, Math.round(doc.width * renderScale)), height = Math.max(1, Math.round(doc.height * renderScale))
-    // Any layer that has kept deep pixels, still current or not, so a filter's 8-bit preview doesn't switch the targets back and forth.
-    const hdr = this.floatTargets && doc.layers.some(l => !!l.deep)
-    if (hdr !== this.hdr) {
-      this.hdr = hdr
-      this.pool.trim(-1, -1)
-      this.pool = new TargetPool(gl, this.format)
-      this.prefix?.target.dispose(); this.prefix = null
-      this.previous = null
-      this.width = 0
-    }
+    this.matchDepth(doc)
     if (width !== this.width || height !== this.height) {
       this.output?.dispose()
-      this.output = new Target(gl, width, height, this.format, true)
+      this.output = new Target(this.gl, width, height, this.format, true)
       this.pool.trim(width, height)
       this.clipCache.forEach(t => t.dispose())
       this.clipCache.clear()
       this.width = width; this.height = height
     }
-    const canvas = this.output!
+    return this.compose(doc, this.output!, width, height)
+  }
+
+  private compose(doc: Doc, canvas: Target, width: number, height: number): Target {
+    const gl = this.gl, renderScale = this.renderScale
     const entries = drawOrder(doc)
     // Exports and merges draw it all: the last live frame may show effects that are still being redone.
     const changed = this.live ? this.changes(doc, entries) : 'all'
@@ -776,7 +865,7 @@ export class Compositor {
     }
     const restored = this.pool.take(width, height)
     this.pass(restored, this.copyProgram, { source: { texture: group.texture, unit: 0 }, mode: 2, alpha: { texture: alpha.texture, unit: 1 } })
-    this.draw(canvas, { texture: restored.texture, width, height, unitToDoc: unitToDocument({ origin: [0, 0], size: [width / this.renderScale, height / this.renderScale], rotation: 0, flipX: false, flipY: false, sampling: 'Nearest' }), sampling: 'Exact', rotation: 0 }, { opacity: 1, blendMode: base.layer.blendMode, clip })
+    this.draw(canvas, { texture: restored.texture, width, height, unitToDoc: unitToDocument({ origin: [...this.origin], size: [width / this.renderScale, height / this.renderScale], rotation: 0, flipX: false, flipY: false, sampling: 'Nearest' }), sampling: 'Exact', rotation: 0 }, { opacity: 1, blendMode: base.layer.blendMode, clip })
     ;[group, alpha, restored].forEach(t => this.pool.give(t))
   }
 
@@ -790,6 +879,16 @@ export class Compositor {
     gl.bindTexture(gl.TEXTURE_3D, this.proofCube)
     gl.texImage3D(gl.TEXTURE_3D, 0, gl.RGBA16F, 33, 33, 33, 0, gl.RGBA, gl.FLOAT, lookup)
     for (const [p, v] of [[gl.TEXTURE_MIN_FILTER, gl.LINEAR], [gl.TEXTURE_MAG_FILTER, gl.LINEAR], [gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_R, gl.CLAMP_TO_EDGE]]) gl.texParameteri(gl.TEXTURE_3D, p, v)
+  }
+
+  // Over a canvas the live view shows reduced (too large to render whole), the part in view at the screen's detail, rendered once
+  // the view settles and drawn over the reduced frame until the document changes.
+  private detail: { target: Target; x: number; y: number; w: number; h: number; key: string } | null = null
+  get detailKey() { return this.detail?.key ?? null }
+  get liveScale() { return this.renderScale }
+  setDetail(detail: { target: Target; x: number; y: number; w: number; h: number; key: string } | null) {
+    if (this.detail?.target !== detail?.target) this.detail?.target.dispose()
+    this.detail = detail
   }
 
   // Draws the composite into the visible canvas: `documentToScreen` maps document pixels to device pixels.
@@ -807,6 +906,13 @@ export class Compositor {
     const toClip = chain(translate(-1, 1), scale(2 / screenWidth, -2 / screenHeight), documentToScreen, scale(docWidth, docHeight))
     use(gl, this.displayProgram, { toClip, toSource: identity(), image: { texture: this.output.texture, unit: 0 }, docSize: [docWidth, docHeight], zoom, proof: this.proofCube ? 1 : 0, dither: this.hdr ? 1 : 0, proofCube: { texture: this.proofCube ?? undefined, unit: 1, target: gl.TEXTURE_3D } })
     this.bindQuad()
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4)
+    const d = this.detail
+    if (!d || d.target.format !== this.format) return
+    const detailZoom = zoom / this.renderScale * d.w / d.target.width
+    gl.bindTexture(gl.TEXTURE_2D, d.target.texture)
+    setSampling(gl, detailZoom >= 1 ? gl.NEAREST : gl.LINEAR_MIPMAP_LINEAR)
+    use(gl, this.displayProgram, { toClip: chain(translate(-1, 1), scale(2 / screenWidth, -2 / screenHeight), documentToScreen, translate(d.x, d.y), scale(d.w, d.h)), toSource: identity(), image: { texture: d.target.texture, unit: 0 }, docSize: [d.w, d.h], zoom: detailZoom, proof: this.proofCube ? 1 : 0, dither: this.hdr ? 1 : 0, proofCube: { texture: this.proofCube ?? undefined, unit: 1, target: gl.TEXTURE_3D } })
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4)
   }
 

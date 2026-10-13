@@ -10,7 +10,7 @@ import { copyMerged } from '../editor/actions'
 import { copyLayersInto, paste } from '../editor/clipboard'
 import { draggedFromOtherProject, takeDraggedLayers } from './Tabs'
 import { chosenProfile, subscribeProfiles } from '../io/cmyk'
-import { proofing, setProofing, subscribeProofing, actualSize, canvasDrag, canvasGesture, canvasOnly, canvasPicker, compositor, fit, onFrame, renderFull, renderDeep, renderScaleFor, requestRender, setCompositor, snapLines, view, viewChanged, modifierHeld, releaseOnceModifiers, subscribeModifiers, tapModifier, touchModifiers, type ModifierKey } from './canvasState'
+import { proofing, setProofing, subscribeProofing, actualSize, blurReach, canvasDrag, canvasGesture, canvasOnly, canvasPicker, compositor, fit, onFrame, renderFull, renderDeep, renderScaleFor, requestRender, setCompositor, snapLines, view, viewChanged, modifierHeld, releaseOnceModifiers, subscribeModifiers, tapModifier, touchModifiers, type ModifierKey } from './canvasState'
 import { useCoarse } from './layout'
 import type { Pointer, ToolHandler } from '../tools/tool'
 import { eyedropper, paint } from '../tools/paint'
@@ -54,11 +54,36 @@ function frame(contentDirty: boolean) {
   if (!compositor || !stageCanvas) return
   const { doc } = store.state
   const dpr = window.devicePixelRatio || 1
-  if (store.hasDocument && contentDirty) { compositor.live = true; compositor.render(doc, renderScaleFor(doc, compositor.maxSize)); compositor.live = false }
+  if (store.hasDocument && contentDirty) { compositor.setDetail(null); compositor.live = true; compositor.render(doc, renderScaleFor(doc, compositor.maxSize)); compositor.live = false }
+  if (store.hasDocument) scheduleDetail(contentDirty)
   const rgb = canvasColor()
   if (store.hasDocument) compositor.present([view.zoom * dpr, 0, 0, 0, view.zoom * dpr, 0, view.offsetX * dpr, view.offsetY * dpr, 1], stageCanvas.width, stageCanvas.height, rgb)
   else { const gl = compositor.gl; gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.clearColor(...rgb, 1); gl.clear(gl.COLOR_BUFFER_BIT) }
   drawOverlay()
+}
+
+// A canvas too large for the live view to render whole shows reduced; zoomed in, once the view has settled, the part in view is
+// rendered again at the screen's detail and drawn over it.
+let detailTimer = 0, detailPending: string | null = null
+function scheduleDetail(contentDirty: boolean) {
+  const c = compositor!, { doc } = store.state, detail = Math.min(1, view.zoom * (window.devicePixelRatio || 1))
+  const v = view.visible(doc.width, doc.height), margin = blurReach(doc)
+  const x0 = Math.max(0, Math.floor(v.x) - margin), y0 = Math.max(0, Math.floor(v.y) - margin), x1 = Math.min(doc.width, Math.ceil(v.x + v.w) + margin), y1 = Math.min(doc.height, Math.ceil(v.y + v.h) + margin)
+  const wanted = detail > c.liveScale * 1.05 && x1 > x0 && y1 > y0 && Math.max(x1 - x0, y1 - y0) * detail <= c.maxSize
+  if (!wanted) c.setDetail(null)
+  const key = wanted ? `${x0},${y0},${x1},${y1},${detail}` : null
+  // Frames that only redraw the overlay (the ants, a cursor) leave a pending render to run.
+  if (!contentDirty && key === detailPending) return
+  clearTimeout(detailTimer)
+  detailPending = null
+  if (!key || c.detailKey === key) return
+  detailPending = key
+  detailTimer = window.setTimeout(() => {
+    detailPending = null
+    if (store.state.doc !== doc || compositor !== c) return
+    c.setDetail({ target: c.renderRegion(doc, x0, y0, x1 - x0, y1 - y0, detail, true), x: x0, y: y0, w: x1 - x0, h: y1 - y0, key })
+    requestRender(false)
+  }, 150)
 }
 
 export function drawOverlay() {

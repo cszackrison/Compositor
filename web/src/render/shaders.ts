@@ -201,6 +201,7 @@ uniform sampler3D cube;
 uniform vec4 params;
 uniform uint seed;
 uniform float unitsPerPixel;
+uniform vec2 offset;
 uniform int gaussian;
 uniform int monochromatic;
 uniform int hdr;
@@ -227,7 +228,7 @@ void main() {
   } else if (mode == 3) {
     c = 1.0 - c;
   } else if (mode == 4) {
-    vec2 at = (floor(gl_FragCoord.xy) + 0.5) * unitsPerPixel;
+    vec2 at = (floor(gl_FragCoord.xy) + offset + 0.5) * unitsPerPixel;
     float amount = params.x, size = params.y, rough = clamp(params.z / 100.0, 0.0, 1.0);
     float strength = min(amount, 100.0) / 100.0 * 0.35 * 255.0;
     float smooth1 = grainField(at, size, seed), fine = grainField(at, max(0.5, size * 0.35), mix32(seed ^ 0xA511E9B3u));
@@ -236,7 +237,7 @@ void main() {
     float level = min(1.0, dot(v, vec3(0.2126, 0.7152, 0.0722)) / 255.0);
     c = clamp(v + n * strength * (0.4 + 2.4 * level * (1.0 - level)), 0.0, 255.0) / 255.0;
   } else if (mode == 5) {
-    uvec2 px = uvec2(floor(gl_FragCoord.xy));
+    uvec2 px = uvec2(floor(gl_FragCoord.xy) + offset);
     uint base = mix32(seed ^ mix32(px.x * 0x9e3779b9u ^ mix32(px.y * 0x85ebca6bu)));
     float spread = params.x / 100.0 * 127.5;
     vec3 v = c * 255.0;
