@@ -61,6 +61,7 @@ export function drawOrder(doc: Doc): Entry[] {
 
 export const effectivelyVisible = (entry: Entry) => entry.layer.visible && entry.ancestors.every(a => a.visible)
 
+type Part = { key: string; version: number; texture: WebGLTexture; step: number; width: number; height: number }
 type TextureRecord = { texture: WebGLTexture; version: number; mipVersion: number; width: number; height: number; channels: number }
 
 export class Compositor {
@@ -181,41 +182,61 @@ export class Compositor {
     return record.texture
   }
 
+  // A source's texture: one too large for the GPU is cut down when it's drawn (`fitted`), so none is made for it here.
+  private sourceTexture(raster: Raster) { return Math.max(raster.width, raster.height) > this.maxSize ? this.white : this.texture(raster) }
+
   // The part of a raster too large for the GPU that's at `x`, `y`, `w` × `h` (its pixels), reduced by whole steps until it fits: the
   // part a tile or the view shows. The last one made for each raster is kept.
-  private parts = new WeakMap<Raster, { key: string; version: number; texture: WebGLTexture; step: number; width: number; height: number }>()
+  private parts = new WeakMap<Raster, Part>()
   private releasedParts = new FinalizationRegistry<{ texture: WebGLTexture }>(part => this.gl.deleteTexture(part.texture))
+  // A region's own parts (renderRegion), let go when it's done, so the live view's stay as they are.
+  private regionParts: Map<Raster, Part> | null = null
   private part(raster: Raster, x: number, y: number, w: number, h: number) {
-    const gl = this.gl, key = `${x},${y},${w},${h}`, kept = this.parts.get(raster)
+    const gl = this.gl, key = `${x},${y},${w},${h}`, parts = this.regionParts ?? this.parts, kept = parts.get(raster)
     if (kept?.key === key && kept.version === raster.version) return kept
-    if (kept) gl.deleteTexture(kept.texture)
-    const step = Math.ceil(Math.max(w, h) / this.maxSize), width = Math.ceil(w / step), height = Math.ceil(h / step), channels = raster.channels
-    const texture = gl.createTexture()!
-    gl.bindTexture(gl.TEXTURE_2D, texture)
-    gl.texStorage2D(gl.TEXTURE_2D, Math.floor(Math.log2(Math.max(width, height))) + 1, channels === 4 ? gl.RGBA8 : gl.R8, width, height)
-    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1)
-    if (step === 1) {
-      gl.pixelStorei(gl.UNPACK_ROW_LENGTH, raster.width); gl.pixelStorei(gl.UNPACK_SKIP_PIXELS, x); gl.pixelStorei(gl.UNPACK_SKIP_ROWS, y)
-      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, width, height, channels === 4 ? gl.RGBA : gl.RED, gl.UNSIGNED_BYTE, raster.data)
-      gl.pixelStorei(gl.UNPACK_ROW_LENGTH, 0); gl.pixelStorei(gl.UNPACK_SKIP_PIXELS, 0); gl.pixelStorei(gl.UNPACK_SKIP_ROWS, 0)
-    } else {
-      const out = new Uint8Array(width * height * channels), sums = new Float64Array(width * channels), counts = new Uint32Array(width), src = raster.data
-      for (let ty = 0; ty < height; ty++) {
-        sums.fill(0); counts.fill(0)
-        for (let sy = y + ty * step; sy < Math.min(y + h, y + (ty + 1) * step); sy++) for (let sx = x; sx < x + w; sx++) {
-          const tx = Math.floor((sx - x) / step), i = (sy * raster.width + sx) * channels
-          counts[tx]++
-          for (let c = 0; c < channels; c++) sums[tx * channels + c] += src[i + c]
-        }
-        for (let tx = 0; tx < width; tx++) for (let c = 0; c < channels; c++) out[(ty * width + tx) * channels + c] = Math.round(sums[tx * channels + c] / Math.max(1, counts[tx]))
-      }
-      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, width, height, channels === 4 ? gl.RGBA : gl.RED, gl.UNSIGNED_BYTE, out)
+    const channels = raster.channels, format = channels === 4 ? gl.RGBA : gl.RED
+    // What changed since the part was made, when that's known (a stroke on the layer), or all of it.
+    const changed = kept?.key === key && raster.dirty && raster.dirtyFrom <= kept.version ? raster.dirty : null
+    let part = kept
+    if (!part || !changed) {
+      if (kept) gl.deleteTexture(kept.texture)
+      const step = Math.ceil(Math.max(w, h) / this.maxSize), width = Math.ceil(w / step), height = Math.ceil(h / step)
+      const texture = gl.createTexture()!
+      gl.bindTexture(gl.TEXTURE_2D, texture)
+      gl.texStorage2D(gl.TEXTURE_2D, Math.floor(Math.log2(Math.max(width, height))) + 1, channels === 4 ? gl.RGBA8 : gl.R8, width, height)
+      part = { key, version: raster.version, texture, step, width, height }
+      parts.set(raster, part)
+      if (!this.regionParts) this.releasedParts.register(raster, part)
     }
-    gl.generateMipmap(gl.TEXTURE_2D)
+    const { step } = part
+    // The texels to bring up to date, and the pixels they average.
+    const t0 = changed ? Math.max(0, Math.floor((changed.x - x) / step)) : 0, u0 = changed ? Math.max(0, Math.floor((changed.y - y) / step)) : 0
+    const t1 = changed ? Math.min(part.width, Math.ceil((changed.x + changed.w - x) / step)) : part.width, u1 = changed ? Math.min(part.height, Math.ceil((changed.y + changed.h - y) / step)) : part.height
+    if (t1 > t0 && u1 > u0) {
+      const tw = t1 - t0, th = u1 - u0, out = new Uint8Array(tw * th * channels), src = raster.data
+      if (step === 1) for (let r = 0; r < th; r++) { const from = ((y + u0 + r) * raster.width + x + t0) * channels; out.set(src.subarray(from, from + tw * channels), r * tw * channels) }
+      else {
+        const sums = new Float64Array(tw * channels), counts = new Uint32Array(tw)
+        for (let r = 0; r < th; r++) {
+          sums.fill(0); counts.fill(0)
+          const sy0 = y + (u0 + r) * step, sx0 = x + t0 * step, sx1 = Math.min(x + w, x + t1 * step)
+          for (let sy = sy0; sy < Math.min(y + h, sy0 + step); sy++) for (let sx = sx0; sx < sx1; sx++) {
+            const t = Math.floor((sx - sx0) / step), i = (sy * raster.width + sx) * channels
+            counts[t]++
+            for (let c = 0; c < channels; c++) sums[t * channels + c] += src[i + c]
+          }
+          for (let t = 0; t < tw; t++) for (let c = 0; c < channels; c++) out[(r * tw + t) * channels + c] = Math.round(sums[t * channels + c] / Math.max(1, counts[t]))
+        }
+      }
+      gl.bindTexture(gl.TEXTURE_2D, part.texture)
+      gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1)
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, t0, u0, tw, th, format, gl.UNSIGNED_BYTE, out)
+      gl.generateMipmap(gl.TEXTURE_2D)
+    }
+    gl.bindTexture(gl.TEXTURE_2D, part.texture)
     setSampling(gl, gl.LINEAR)
-    const part = { key, version: raster.version, texture, step, width, height }
-    this.parts.set(raster, part)
-    this.releasedParts.register(raster, part)
+    part.version = raster.version
+    if (!this.regionParts) raster.dirty = null
     return part
   }
 
@@ -564,13 +585,13 @@ export class Compositor {
       const same = effects.from.width === layer.image.width && effects.from.height === layer.image.height
       const t = same ? layer.transform : effects.from.transform, sx = raster.width / (raster.width - 2 * inset), sy = raster.height / (raster.height - 2 * inset)
       const grown: Transform = { ...t, origin: [t.origin[0] + t.size[0] / 2 - t.size[0] * sx / 2, t.origin[1] + t.size[1] / 2 - t.size[1] * sy / 2], size: [t.size[0] * sx, t.size[1] * sy] }
-      const withEffects: Source = { texture: this.texture(raster), raster, width: raster.width, height: raster.height, unitToDoc: unitToDocument(grown), sampling: t.sampling, rotation: t.rotation }
+      const withEffects: Source = { texture: this.sourceTexture(raster), raster, width: raster.width, height: raster.height, unitToDoc: unitToDocument(grown), sampling: t.sampling, rotation: t.rotation }
       if (!this.staleEffects(layer, effects)) { this.draw(target, withEffects, { opacity, blendMode, clip: options.clip, coverage: options.coverage }); return }
       // Effects still being redone (a stroke on the layer): the last result with the layer's pixels as they are now over it, so the
       // stroke shows at once; the new result replaces it when the worker has it.
       const { width, height } = target, both = this.pool.take(width, height), lt = layer.transform
       this.draw(both, withEffects, { opacity: 1, blendMode: 'Normal' })
-      this.draw(both, { texture: this.texture(layer.image), raster: layer.image, width: layer.image.width, height: layer.image.height, unitToDoc: unitToDocument(lt), sampling: lt.sampling, rotation: lt.rotation }, { opacity: 1, blendMode: 'Normal', mask: this.layerMask(layer) })
+      this.draw(both, { texture: this.sourceTexture(layer.image), raster: layer.image, width: layer.image.width, height: layer.image.height, unitToDoc: unitToDocument(lt), sampling: lt.sampling, rotation: lt.rotation }, { opacity: 1, blendMode: 'Normal', mask: this.layerMask(layer) })
       this.draw(target, { texture: both.texture, width, height, unitToDoc: unitToDocument({ origin: [...this.origin], size: [width / this.renderScale, height / this.renderScale], rotation: 0, flipX: false, flipY: false, sampling: 'Nearest' }), sampling: 'Exact', rotation: 0 }, { opacity, blendMode, clip: options.clip, coverage: options.coverage })
       this.pool.give(both)
       return
@@ -578,7 +599,7 @@ export class Compositor {
     const t = layer.transform
     const deep = this.hdr ? deepOf(layer) : null
     if (deep) { this.draw(target, { texture: this.deepTexture(layer, deep), mipmapped: true, width: layer.image.width, height: layer.image.height, unitToDoc: unitToDocument(t), sampling: t.sampling, rotation: t.rotation }, { opacity, blendMode, mask: this.layerMask(layer), clip: options.clip, coverage: options.coverage }); return }
-    this.draw(target, { texture: this.texture(layer.image), raster: layer.image, width: layer.image.width, height: layer.image.height, unitToDoc: unitToDocument(t), sampling: t.sampling, rotation: t.rotation }, { opacity, blendMode, mask: this.layerMask(layer), clip: options.clip, coverage: options.coverage })
+    this.draw(target, { texture: this.sourceTexture(layer.image), raster: layer.image, width: layer.image.width, height: layer.image.height, unitToDoc: unitToDocument(t), sampling: t.sampling, rotation: t.rotation }, { opacity, blendMode, mask: this.layerMask(layer), clip: options.clip, coverage: options.coverage })
   }
 
   // The product of enclosing folders' masks, each over its folder's own rectangle.
@@ -739,9 +760,11 @@ export class Compositor {
     this.matchDepth(doc)
     const saved = { output: this.output, width: this.width, height: this.height, renderScale: this.renderScale, origin: this.origin, prefix: this.prefix, previous: this.previous, lastSignatures: this.lastSignatures, live: this.live, clipCache: this.clipCache, gpuChanges: this.gpuChanges }
     const width = Math.max(1, Math.round(w * renderScale)), height = Math.max(1, Math.round(h * renderScale)), target = new Target(this.gl, width, height, this.format, true)
-    Object.assign(this, { output: target, width, height, renderScale, origin: [x, y], prefix: null, previous: null, lastSignatures: [], live, clipCache: new Map(), gpuChanges: new Map() })
+    Object.assign(this, { output: target, width, height, renderScale, origin: [x, y], prefix: null, previous: null, lastSignatures: [], live, clipCache: new Map(), gpuChanges: new Map(), regionParts: new Map() })
     try { this.compose(doc, target, width, height) } finally {
       this.clipCache.forEach(t => t.dispose())
+      this.regionParts!.forEach(part => this.gl.deleteTexture(part.texture))
+      this.regionParts = null
       Object.assign(this, saved)
       this.pool.trim(saved.width, saved.height)
     }
