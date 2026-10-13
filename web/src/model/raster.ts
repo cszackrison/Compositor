@@ -1,6 +1,7 @@
 import { decode, encode } from 'fast-png'
 import { call, withBuffers } from '../kernels'
 import { encodeEXR } from '../io/exr'
+import { maxSide } from './types'
 
 let nextVersion = 1
 
@@ -201,8 +202,9 @@ export async function decodeHDR(bytes: Uint8Array): Promise<Raster> {
 
 // An image file placed as a layer: its pixels, and for a 16-bit PNG or an HDR image the file the project keeps as the layer's image
 // until it's edited, as the Mac keeps 16-bit and HDR layers. Radiance HDR is kept as an OpenEXR, the format projects hold HDR in.
-export async function decodeLayerFile(file: File): Promise<{ image: Raster; wide?: { file: 'png' | 'exr'; bytes: Uint8Array; version: number } }> {
+export async function decodeLayerFile(file: File, fitting?: { width: number; height: number }): Promise<{ image: Raster; wide?: { file: 'png' | 'exr'; bytes: Uint8Array; version: number } }> {
   const name = file.name.toLowerCase()
+  if (file.type === 'image/svg+xml' || name.endsWith('.svg')) return { image: await decodeSVG(file, fitting) }
   if (!name.endsWith('.exr') && !name.endsWith('.hdr') && !(file.type === 'image/png' || name.endsWith('.png'))) return { image: await decodeImageFile(file) }
   const bytes = new Uint8Array(await file.arrayBuffer())
   if (name.endsWith('.hdr')) {
@@ -219,13 +221,52 @@ export function encodePNG(raster: Raster) {
   return encode({ width: raster.width, height: raster.height, data, channels: raster.channels, depth: 8 }, { zlib: { level: 3 } })
 }
 
-// JPEG, HEIC (where supported), WebP, GIF and the like, through the browser's decoder. Opaque images lose nothing to the canvas's premultiplication.
+// JPEG, HEIC (where supported), WebP, GIF and the like, through the browser's decoder; TIFF here where the browser can't (all but
+// Safari). Opaque images lose nothing to the canvas's premultiplication.
 export async function decodeImageFile(file: Blob): Promise<Raster> {
   if (file.type === 'image/png') return decodePNG(new Uint8Array(await file.arrayBuffer()), 4)
-  const bitmap = await createImageBitmap(file, { premultiplyAlpha: 'premultiply', colorSpaceConversion: 'default' })
+  const tiff = file.type === 'image/tiff' || /\.tiff?$/i.test((file as File).name ?? '')
+  const bitmap = await createImageBitmap(file, { premultiplyAlpha: 'premultiply', colorSpaceConversion: 'default' }).catch(e => { if (tiff) return null; throw e })
+  if (!bitmap) return decodeTIFF(new Uint8Array(await file.arrayBuffer()))
   const canvas = new OffscreenCanvas(bitmap.width, bitmap.height)
   const context = canvas.getContext('2d')!
   context.drawImage(bitmap, 0, 0)
   const data = new Uint8Array(context.getImageData(0, 0, bitmap.width, bitmap.height).data.buffer)
   return new Raster(bitmap.width, bitmap.height, 4, premultiply(data))
+}
+
+// A TIFF's main image (the largest, so not a thumbnail), at 8 bits a channel.
+export async function decodeTIFF(bytes: Uint8Array): Promise<Raster> {
+  const module = await import('utif'), UTIF = (module as unknown as { default?: typeof module }).default ?? module
+  const buffer = bytes.slice().buffer, pages = UTIF.decode(buffer)
+  const size = (page: UTIF.IFD) => { const w = page.t256 as unknown as number[] | undefined, h = page.t257 as unknown as number[] | undefined; return (w?.[0] ?? 0) * (h?.[0] ?? 0) }
+  const page = pages.reduce((best, p) => size(p) > size(best) ? p : best, pages[0])
+  if (!page || !size(page)) throw new Error('This TIFF has no image Compositor can read.')
+  UTIF.decodeImage(buffer, page)
+  return new Raster(page.width, page.height, 4, premultiply(new Uint8Array(UTIF.toRGBA8(page))))
+}
+
+// An SVG drawn once into pixels by the browser: fitted to `fitting` (the canvas) when there is one, otherwise at the size the file
+// declares, as the Mac imports one. It comes in as an ordinary image layer, so it doesn't stay vector.
+export async function decodeSVG(file: Blob, fitting?: { width: number; height: number }): Promise<Raster> {
+  const text = await file.text(), svg = new DOMParser().parseFromString(text, 'image/svg+xml').documentElement
+  const length = (value: string | null) => { const n = parseFloat(value ?? ''); return n > 0 && !/%$/.test(value!.trim()) ? n : 0 }
+  const box = (svg.getAttribute('viewBox') ?? '').split(/[\s,]+/).map(Number)
+  let width = length(svg.getAttribute('width')), height = length(svg.getAttribute('height'))
+  if (box.length === 4 && box[2] > 0 && box[3] > 0) {
+    if (!width && !height) { width = box[2]; height = box[3] } else if (!width) width = height * box[2] / box[3]; else if (!height) height = width * box[3] / box[2]
+  }
+  if (!width || !height) { width = width || 300; height = height || 150 }
+  const scale = fitting ? Math.min(fitting.width / width, fitting.height / height) : 1
+  const w = Math.max(1, Math.round(width * scale)), h = Math.max(1, Math.round(height * scale))
+  if (Math.max(w, h) > maxSide) throw new Error('This SVG is too large to import.')
+  const url = URL.createObjectURL(new Blob([text], { type: 'image/svg+xml' }))
+  try {
+    const image = new Image()
+    image.src = url
+    await image.decode().catch(() => { throw new Error('This SVG could not be read.') })
+    const canvas = new OffscreenCanvas(w, h), context = canvas.getContext('2d')!
+    context.drawImage(image, 0, 0, w, h)
+    return new Raster(w, h, 4, premultiply(new Uint8Array(context.getImageData(0, 0, w, h).data.buffer)))
+  } finally { URL.revokeObjectURL(url) }
 }

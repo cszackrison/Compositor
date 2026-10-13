@@ -92,7 +92,7 @@ export const openZip = guard(async () => {
 // Opens an image as a new document when nothing is open, or places it as a layer.
 export const placeImages = guard(async (files: File[]) => {
   for (const file of files) {
-    const { image, wide } = await decodeLayerFile(file)
+    const { image, wide } = await decodeLayerFile(file, store.hasDocument ? store.state.doc : undefined)
     const name = file.name.replace(/\.[^.]+$/, '')
     if (!store.hasDocument) {
       const layer = newLayer({ name, transform: fullTransform(image.width, image.height), image, wide })
@@ -123,7 +123,7 @@ export const importFolder = guard(async () => {
 })
 
 export const importImage = guard(async () => {
-  const input = Object.assign(document.createElement('input'), { type: 'file', accept: 'image/*,.hif,.heif,.heic,.exr,.hdr', multiple: true })
+  const input = Object.assign(document.createElement('input'), { type: 'file', accept: 'image/*,.hif,.heif,.heic,.tif,.tiff,.svg,.exr,.hdr', multiple: true })
   input.onchange = () => input.files?.length && placeImages([...input.files])
   input.click()
 })

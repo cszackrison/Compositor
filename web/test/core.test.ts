@@ -2,7 +2,7 @@ import { describe, expect, it, beforeAll } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { encode } from 'fast-png'
 import { loadKernels, withBuffers, call, floats } from '../src/kernels'
-import { Raster, decodeHDR, decodeLayerFile, decodePNG, encodePNG, pngDepth, readEXR, resizeLinear } from '../src/model/raster'
+import { Raster, decodeHDR, decodeLayerFile, decodePNG, encodePNG, pngDepth, readEXR, resizeLinear, decodeTIFF } from '../src/model/raster'
 import { encodeEXR, toHalf } from '../src/io/exr'
 import { readProject, writeProject } from '../src/io/project'
 import { channelTables, curveValue, hueSaturationCube, kernelCube } from '../src/model/adjustments'
@@ -144,6 +144,14 @@ describe('project format', () => {
     resizeLinear(image, 2, 1).data.forEach((v, i) => expect(v).toBeCloseTo(i % 4 === 3 ? 1 : 6.5 / 1.75, 5))
     const up = resizeLinear({ width: 2, height: 1, data: new Float32Array([0, 0, 0, 0, 4, 4, 4, 1]) }, 4, 1).data
     expect([up[0], up[4], up[8], up[12]]).toEqual([0, 1, 3, 4])
+  })
+
+  it('reads TIFF where the browser can\'t: LZW with transparency, 16 bits and CMYK', async () => {
+    const tiff = async (name: string) => [...(await decodeTIFF(new Uint8Array(readFileSync(new URL(`./fixtures/${name}`, import.meta.url))))).data]
+    expect((await tiff('quad-lzw.tif')).slice(0, 8)).toEqual([255, 0, 0, 255, 0, 128, 0, 128])
+    expect((await tiff('quad-lzw.tif')).slice(28)).toEqual([0, 0, 255, 255])
+    expect((await tiff('quad16.tif')).slice(0, 4)).toEqual([255, 128, 0, 255])
+    ;(await tiff('quad-cmyk.tif')).slice(0, 4).forEach((v, i) => expect(Math.abs(v - [255, 128, 0, 255][i])).toBeLessThanOrEqual(2))
   })
 
   it('keeps PNG pixels exact', () => {

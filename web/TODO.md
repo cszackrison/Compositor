@@ -17,7 +17,9 @@ existing features were.
 - [ ] **PSD/PSB import**, with the conversion report (about 1,500 lines of Swift in `Compositor/IO/PSD`). CMYK PSDs too, since 1.5
   (896d5c8).
 - [ ] **Camera RAW import** and its develop step. Needs a wasm decoder (LibRaw or similar).
-- [ ] **HEIC, TIFF and SVG import.** HEIC and TIFF only work where the browser decodes them; SVG is easy.
+- [x] **TIFF and SVG import.** TIFF is read here (UTIF, lazily loaded) where the browser can't, including 16-bit and CMYK; SVG is
+  drawn by the browser, fitted to the canvas as the Mac does.
+- [ ] **HEIC import** only works where the browser decodes it (Safari). A wasm decoder (libheif) would cover the rest.
 - [x] **Select Subject and Remove Background**, with the ormbg model (Apache-2.0) in the browser instead of Apple's Vision:
   downloaded from Hugging Face on first use (88 MB on WebGPU, 44 MB on the CPU) and cached. Results differ from the Mac's.
 - [ ] **Object selection (Magic tool)**: a click-to-select model (MobileSAM or SlimSAM) on the same runtime.
