@@ -204,3 +204,6 @@ Automation couldn't hold modifier keys during drags, so these were only exercise
 - [ ] ⌘-drag a handle to free distort
 - [ ] The Hue/Saturation targeted hand on a real image
 - [ ] Open Recent, which needs a browser with folder access (Chrome or Edge)
+- [ ] Ctrl+R toggling the rulers without reloading, on Windows and Linux (the automation's own Ctrl+R never reaches the page)
+- [ ] Ctrl-wheel or pinch zooming into a canvas over 36 MP until it sharpens: checked by setting the view in code, and the
+  automation's Ctrl-wheel panned instead
