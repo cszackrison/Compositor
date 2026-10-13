@@ -256,7 +256,8 @@ export class Store {
 
   // A Photoshop file's layers (EditorSession.insertPhotoshop): a new project when none is open; otherwise inside a folder named for the
   // file, above the active layer or on top of the active folder's contents, as one step.
-  addPhotoshop(imported: PSDImport, name: string) {
+  // Into an open document, the file's layers go in a folder of their own, centered on `at` when it's given (where they were dropped).
+  addPhotoshop(imported: PSDImport, name: string, at?: [number, number]) {
     const { width, height, resolution, layers } = imported
     if ((this.hasDocument ? this.doc.layers.length + 1 : 0) + layers.length > 10_000) throw new Error('This Photoshop file has too many layers to import.')
     if (!this.hasDocument) {
@@ -265,7 +266,11 @@ export class Store {
       return
     }
     const folder = newLayer({ name, isGroup: true, transform: fullTransform(this.doc.width, this.doc.height) })
-    const incoming = layers.map(l => l.parentId === null ? { ...l, parentId: folder.id } : l), active = this.active
+    const placed = layers.filter(l => !l.isGroup && !l.adjustment), x0 = Math.min(...placed.map(l => l.transform.origin[0])), y0 = Math.min(...placed.map(l => l.transform.origin[1]))
+    const x1 = Math.max(...placed.map(l => l.transform.origin[0] + l.transform.size[0])), y1 = Math.max(...placed.map(l => l.transform.origin[1] + l.transform.size[1]))
+    const [dx, dy] = at && placed.length && [x0, y0, x1, y1].every(Number.isFinite) ? [at[0] - (x0 + x1) / 2, at[1] - (y0 + y1) / 2] : [0, 0]
+    const moved = (t: Transform): Transform => ({ ...t, origin: [t.origin[0] + dx, t.origin[1] + dy] })
+    const incoming = layers.map(l => ({ ...l, parentId: l.parentId ?? folder.id, transform: moved(l.transform), ...(l.maskPlacement ? { maskPlacement: moved(l.maskPlacement) } : {}) })), active = this.active
     this.commit('Import Photoshop File', { doc: this.replaceLayers(this.insert([folder, ...incoming], active?.id, active?.isGroup ? active.id : undefined)), activeId: folder.id, selectedIds: [folder.id], editingMask: false })
   }
 
@@ -274,11 +279,12 @@ export class Store {
     this.addLayer(newLayer({ name: `Layer ${count + 1}`, transform: fullTransform(this.doc.width, this.doc.height), image: new Raster(this.doc.width, this.doc.height, 4) }), 'New Layer')
   }
 
-  addImageLayer(image: Raster, name: string, deep?: Layer['deep']) {
+  // Fitted within the canvas, centered on it or on `at`.
+  addImageLayer(image: Raster, name: string, deep?: Layer['deep'], at?: [number, number]) {
     const { width, height } = this.doc
     const fit = Math.min(1, width / image.width, height / image.height)
-    const w = image.width * fit, h = image.height * fit
-    this.addLayer(newLayer({ name, transform: fullTransform(w, h, Math.round((width - w) / 2), Math.round((height - h) / 2)), image, deep }), 'Place Image')
+    const w = image.width * fit, h = image.height * fit, [cx, cy] = at ?? [width / 2, height / 2]
+    this.addLayer(newLayer({ name, transform: fullTransform(w, h, Math.round(cx - w / 2), Math.round(cy - h / 2)), image, deep }), 'Place Image')
   }
 
   addAdjustment(kind: AdjustmentKind) {

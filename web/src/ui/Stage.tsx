@@ -86,6 +86,13 @@ function scheduleDetail(contentDirty: boolean) {
   }, 150)
 }
 
+// The document point under a place on the screen, or null off the canvas.
+export function documentAt(clientX: number, clientY: number): [number, number] | null {
+  const box = stageCanvas?.getBoundingClientRect()
+  if (!box || clientX < box.left || clientY < box.top || clientX >= box.right || clientY >= box.bottom) return null
+  return view.toDocument(clientX - box.left, clientY - box.top)
+}
+
 export function drawOverlay() {
   const canvas = overlayCanvas
   if (!canvas) return

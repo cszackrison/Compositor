@@ -98,27 +98,28 @@ export const openZip = guard(async () => {
   input.click()
 })
 
-// Opens an image as a new document when nothing is open, or places it as a layer. A Photoshop file brings its layers.
-export const placeImages = guard(async (files: File[]) => {
+// Opens an image as a new document when nothing is open, or places it as a layer. A Photoshop file brings its layers. Dropped on the
+// canvas, each is centered where it was dropped (`at`, in document pixels).
+export const placeImages = guard(async (files: File[], at?: [number, number]) => {
   for (const file of files) {
     const name = file.name.replace(/\.[^.]+$/, '')
-    if (isPSD(new Uint8Array(await file.slice(0, 4).arrayBuffer()))) { await placePhotoshop(file, name); continue }
+    if (isPSD(new Uint8Array(await file.slice(0, 4).arrayBuffer()))) { await placePhotoshop(file, name, at); continue }
     // A camera RAW is developed first, in its sheet; cancelled, it's skipped.
     const developed = isRAW(file.name) ? await (await import('../ui/RawDevelop')).developRaw(file) : null
     if (isRAW(file.name) && !developed) continue
     const { image, deep, profile }: Awaited<ReturnType<typeof decodeLayerFile>> = developed ?? await decodeLayerFile(file, store.hasDocument ? store.state.doc : undefined)
-    await placeImage(image, name, deep, profile)
+    await placeImage(image, name, deep, profile, at)
   }
 })
 
-async function placeImage(image: Raster, name: string, deep?: Layer['deep'], profile?: CMYKProfile | null) {
+async function placeImage(image: Raster, name: string, deep?: Layer['deep'], profile?: CMYKProfile | null, at?: [number, number]) {
   if (!store.hasDocument) {
     // A CMYK file starting a project: its profile is kept and chosen, so proofing and CMYK export go back to the inks it was made for.
     if (profile) await (await import('../io/cmyk')).adoptProfile(profile)
     const layer = newLayer({ name, transform: fullTransform(image.width, image.height), image, deep })
     store.open({ id: uuid(), width: image.width, height: image.height, resolution: 72, layers: [layer], guides: [], extra: {} }, layer.id, null)
     store.set({ target: { kind: 'download', name } })
-  } else store.addImageLayer(image, name, deep)
+  } else store.addImageLayer(image, name, deep, at)
 }
 
 // The Photoshop conversion report (PSDConversionSheet.swift): up while the file is read, so a big one doesn't leave the click unanswered,
@@ -163,20 +164,20 @@ export function answerConversion(confirmed: boolean) {
 
 // A Photoshop file's layers (EditorSession.drainImports), after the conversion report; one with no layer records comes in as its
 // merged image, like any other picture.
-async function placePhotoshop(file: File, name: string) {
+async function placePhotoshop(file: File, name: string, at?: [number, number]) {
   const { readPSD, makeImport } = await import('../io/psd'), { canvasDrawing } = await import('../io/psdDrawing')
   const used = store.hasDocument ? store.doc.layers.reduce((total, layer) => total + (layer.image ? layer.image.width * layer.image.height : 0), 0) : 0
   beginPSDReading(`Open “${file.name}”?`)
   let parsed: Awaited<ReturnType<typeof readPSD>>, imported: PSDImport
   try {
     parsed = await readPSD(new Uint8Array(await file.arrayBuffer()), canvasDrawing, documentPixelBudget - used)
-    if (parsed.merged) { endPSDReading(); await placeImage(parsed.merged, name, undefined, parsed.cmykProfile); return }
+    if (parsed.merged) { endPSDReading(); await placeImage(parsed.merged, name, parsed.mergedDeep, parsed.cmykProfile, at); return }
     imported = await makeImport(parsed, canvasDrawing)
   } catch (error) { endPSDReading(); throw error }
   if (!(await finishPSDReading(imported.conversions))) return
   // A CMYK file making a new document: its profile is kept and chosen, for proofing and for CMYK export when it's asked for.
   if (!store.hasDocument && parsed.cmykProfile) await (await import('../io/cmyk')).adoptProfile(parsed.cmykProfile)
-  store.addPhotoshop(imported, name)
+  store.addPhotoshop(imported, name, at)
 }
 
 // File › Import Folder…: the images directly inside a folder, as layers, in name order.

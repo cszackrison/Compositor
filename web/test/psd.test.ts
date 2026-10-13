@@ -151,7 +151,7 @@ describe('Photoshop files', () => {
     await expect(read(header({ version: 3 }).build())).rejects.toMatchObject({ code: 'unsupportedVersion' })
     // Lab (9): RGB and CMYK come in, other color modes don't.
     await expect(read(header({ mode: 9 }).build())).rejects.toMatchObject({ code: 'unsupportedColorMode' })
-    await expect(read(header({ depth: 16 }).build())).rejects.toMatchObject({ code: 'unsupportedDepth' })
+    await expect(read(header({ depth: 1 }).build())).rejects.toMatchObject({ code: 'unsupportedDepth' })
     await expect(read(header({ width: 30_001, height: 10 }).build())).rejects.toMatchObject({ code: 'tooLarge' })
     await expect(read(new Uint8Array([0xff, 0xd8, 0xff, 0xe0]))).rejects.toMatchObject({ code: 'unreadable' })
   })
@@ -171,6 +171,15 @@ describe('Photoshop files', () => {
     expect(store.state.activeId).toBe(folder.id)
     store.undo()
     expect(store.doc.layers.map(l => l.name)).toEqual(['Sky'])
+  })
+
+  it('centers a dropped file’s layers on the drop', async () => {
+    const fill = colorImage(4, 2, 0, 0, 1), store = new Store()
+    store.open({ id: 'd', width: 40, height: 20, resolution: 72, layers: [], guides: [], extra: {} }, null, null)
+    store.addPhotoshop(await importOf(await psdFixture(doc(40, 20, [{ name: 'Sky', bounds: { x: 2, y: 4, width: 4, height: 2 }, image: fill }]), { composite: Raster.filled(40, 20, 4, [0, 0, 0, 0]) })), 'Clouds', [30, 10])
+    expect(store.doc.layers.find(l => l.name === 'Sky')!.transform.origin).toEqual([28, 9])
+    store.addImageLayer(fill, 'Placed', undefined, [10, 5])
+    expect(store.doc.layers.find(l => l.name === 'Placed')!.transform.origin).toEqual([8, 4])
   })
 
   it('reads a file without layer records as its merged image', async () => {

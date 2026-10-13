@@ -32,10 +32,14 @@ existing features were.
   ellipses live shape layers, other vector masks pixels, and Levels, Curves and Hue/Saturation adjustment layers. The report lists
   what changes before anything is applied, worded as the Mac's; an open project takes the file as a folder. A file with no layer
   records comes in as its merged image, read here rather than by ImageIO. ZIP channels are read too, which the Mac turns down.
-  - [ ] 16- and 32-bit files are turned down, as on the Mac, though the web could keep them as deep layers now.
+  - [x] 16- and 32-bit files, which the Mac turns down: RGB layers come in as 16-bit layers, or HDR ones where a 32-bit file (linear
+    light, as Photoshop keeps it) goes brighter than white; 16-bit CMYK is converted at 8 bits. Their layers are read from Photoshop's
+    `Lr16`/`Lr32` block or the usual layer info, and ZIP prediction of 16- and 32-bit samples is undone. Checked against ImageMagick's
+    16-bit files; Photoshop's own 16- and 32-bit files follow the specification but haven't been tried.
   - [ ] Whether a font is installed is asked of the browser by PostScript name (`local()`), which Safari and Firefox answer only
     for system faces, so the report can say a font is missing that the Mac would find.
-  - [ ] Layers can't be dropped at a point (the Mac centers a dropped file's layers on the drop).
+  - [x] Files dropped on the canvas are centered where they're dropped, a Photoshop file's layers by their bounds together, as on
+    the Mac (an image is still fitted within the canvas, as when placed).
 - [x] **Camera RAW import** and its develop sheet: LibRaw in WebAssembly (`io/raw.ts`, libraw-wasm, loaded on first use) decodes to
   linear light at 16 bits; the sheet's Exposure, Temperature and Tint (from the camera's own reading), Boost, Noise Reduction and
   Highlight Recovery develop it (`model/rawDevelop.ts`), previewed small, and Import brings the full frame in as a 16-bit layer.
@@ -81,7 +85,8 @@ existing features were.
 - [ ] Shortcuts that browsers reserve moved to ⌥ variants: New Canvas ⌥⌘N, Close Project ⌥⌘W, Transform ⌥⌘T, New Blank Layer ⌥⇧⌘N.
 - [ ] Tabs have a right-click menu the Mac doesn't.
 - [x] Each change in the effect editor is its own undo step, as on the Mac; a drag of one setting stays one step.
-- [ ] Ctrl+R (Show Rulers) on Windows and Linux couldn't be confirmed; browsers may keep it for reload.
+- [ ] Ctrl+R (Show Rulers) on Windows and Linux: the page takes the key and stops the reload (checked with a synthetic key event);
+  a real key press in each browser is still to be confirmed.
 
 ## Touch and phones
 

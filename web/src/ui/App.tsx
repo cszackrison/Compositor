@@ -9,7 +9,7 @@ import { copy, cut, layerViaCopy, paste } from '../editor/clipboard'
 import { carriesFiles, readDrop, canWriteDirectories } from '../io/files'
 import { adjustmentKinds, blendModes } from '../model/types'
 import { MenuBar, type MenuItem } from './Menu'
-import { Stage, actualSize, fit, zoomBy, activeHandler } from './Stage'
+import { Stage, actualSize, documentAt, fit, zoomBy, activeHandler } from './Stage'
 import { LayersPanel } from './LayersPanel'
 import { Inspector } from './Inspector'
 import { ToolRail, ToolHeader } from './Tools'
@@ -347,9 +347,10 @@ export function App() {
     if (event.dataTransfer.types.includes('application/x-compositor-layers') || event.dataTransfer.types.includes('application/x-compositor-tab')) return
     event.preventDefault()
     setDragging(false)
+    const at = store.hasDocument ? documentAt(event.clientX, event.clientY) ?? undefined : undefined
     const { project, images } = await readDrop(event.dataTransfer).catch(error => { store.notify(error.message); return { project: undefined, images: [] } })
     if (project) await openFiles(project.files, project.target)
-    if (images.length) await placeImages(images)
+    if (images.length) await placeImages(images, at)
   }
 
   const dropProps = { onDragOver: (e: React.DragEvent) => { if (carriesFiles(e.dataTransfer.types)) { e.preventDefault(); setDragging(true) } }, onDragLeave: (e: React.DragEvent) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragging(false) }, onDrop }

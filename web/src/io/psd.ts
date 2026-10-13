@@ -1,5 +1,6 @@
 import { unzlibSync } from 'fflate'
 import { Raster } from '../model/raster'
+import { type Deep, linearToHDR, makeDeep } from '../model/deep'
 import { type Adjustment, type BlendMode, type ColorRange, type Layer, colorRanges, documentPixelBudget, fullTransform, maxSide, maxSurfacePixels, newAdjustment, newLayer, uuid } from '../model/types'
 import { type TextStyle, writeTextStyle } from '../model/text'
 import type { ShapeStyle } from '../tools/shape'
@@ -17,8 +18,8 @@ export type Rect = { x: number; y: number; width: number; height: number }
 const messages = {
   truncated: 'The Photoshop file could not be read. It may be damaged or incomplete.',
   unsupportedVersion: 'This Photoshop file uses a format version Compositor can’t read.',
-  unsupportedColorMode: 'Only 8-bit RGB and CMYK Photoshop files can be imported.',
-  unsupportedDepth: 'Only 8-bit RGB and CMYK Photoshop files can be imported.',
+  unsupportedColorMode: 'Only RGB and CMYK Photoshop files can be imported.',
+  unsupportedDepth: 'Only 8-, 16- and 32-bit Photoshop files can be imported.',
   unsupportedCompression: 'This Photoshop file uses a layer compression method that isn’t supported.',
   unreadable: 'The image could not be read. It may be damaged or unavailable.',
   tooLarge: `This import exceeds the current ${Math.floor(documentPixelBudget / 1_000_000)}-megapixel document budget or ${maxSide.toLocaleString('en-US')}-pixel side limit.`,
@@ -35,16 +36,16 @@ export type PSDLayerKind = 'raster' | 'group' | 'adjustment' | 'text' | 'smartOb
 // everywhere outside it: Photoshop stores only the part of a mask that isn't that default.
 export type PSDRecord = {
   id: string; parentId: string | null; name: string; isGroup: boolean; visible: boolean; opacity: number; blendKey: string; clipping: boolean
-  croppedToCanvas: boolean; bounds: Rect; image: Raster | null; mask: Raster | null; maskBounds: Rect; maskDefault: number; maskEnabled: boolean; maskLinked: boolean
+  croppedToCanvas: boolean; bounds: Rect; image: Raster | null; deep: Deep | null; mask: Raster | null; maskBounds: Rect; maskDefault: number; maskEnabled: boolean; maskLinked: boolean
   adjustment: Adjustment | null; kind: PSDLayerKind; shape: ShapeStyle | null; shapeNotes: string[]
   // Parsed Photoshop type, when the TySh block maps onto an editable text layer.
   text: PSDTextSource | null
 }
-export const psdRecord = (fields: Partial<PSDRecord> & { name: string }): PSDRecord => ({ id: uuid(), parentId: null, isGroup: false, visible: true, opacity: 1, blendKey: 'norm', clipping: false, croppedToCanvas: false, bounds: { x: 0, y: 0, width: 0, height: 0 }, image: null, mask: null, maskBounds: { x: 0, y: 0, width: 0, height: 0 }, maskDefault: 255, maskEnabled: true, maskLinked: true, adjustment: null, kind: 'raster', shape: null, shapeNotes: [], text: null, ...fields })
+export const psdRecord = (fields: Partial<PSDRecord> & { name: string }): PSDRecord => ({ id: uuid(), parentId: null, isGroup: false, visible: true, opacity: 1, blendKey: 'norm', clipping: false, croppedToCanvas: false, bounds: { x: 0, y: 0, width: 0, height: 0 }, image: null, deep: null, mask: null, maskBounds: { x: 0, y: 0, width: 0, height: 0 }, maskDefault: 255, maskEnabled: true, maskLinked: true, adjustment: null, kind: 'raster', shape: null, shapeNotes: [], text: null, ...fields })
 
 // `cmykProfile`: a CMYK file's, which its layers were converted to RGB through. `merged`: a file with no layer records (only a
-// background) as its merged image, which the Mac reads through ImageIO.
-export type PSDDocument = { width: number; height: number; resolution: number; cmykProfile: CMYKProfile | null; layers: PSDRecord[]; merged?: Raster | null }
+// background) as its merged image, which the Mac reads through ImageIO, with its deep pixels at 16 and 32 bits.
+export type PSDDocument = { width: number; height: number; resolution: number; cmykProfile: CMYKProfile | null; layers: PSDRecord[]; merged?: Raster | null; mergedDeep?: Deep }
 
 // What the browser draws for the reader and the builder: text and shapes as the Type and Shape tools draw them, Photoshop paths, and
 // whether a font is installed. Tests stand in for the canvas here.
@@ -92,7 +93,7 @@ type RawLayer = {
   opacity: number; fill: number; clipping: boolean; hidden: boolean; blendKey: string; channels: { id: number; length: number }[]; extra: Map<string, Uint8Array>
   maskTop: number; maskLeft: number; maskBottom: number; maskRight: number; sourceMaskTop: number; sourceMaskLeft: number; sourceMaskBottom: number; sourceMaskRight: number
   maskDefault: number; maskDisabled: boolean; maskLinked: boolean; maskFromRender: boolean; hasMask: boolean; section: number | null
-  image: Raster | null; maskImage: Raster | null; imageCrop: Crop | null; maskCrop: Crop | null; cropped: boolean
+  image: Raster | null; deep: Deep | null; maskImage: Raster | null; imageCrop: Crop | null; maskCrop: Crop | null; cropped: boolean
 }
 
 const psbLargeAdditionalInfoKeys = new Set(['LMsk', 'Lr16', 'Lr32', 'Layr', 'Mt16', 'Mt32', 'Mtrn', 'Alph', 'FMsk', 'lnk2', 'FEid', 'FXid', 'PxSD'])
@@ -109,9 +110,13 @@ export async function readPSD(bytes: Uint8Array, draw: PSDDrawing, remainingPixe
   cursor.skip(6)
   const channelCount = cursor.u16(), canvasHeight = cursor.u32(), canvasWidth = cursor.u32(), depth = cursor.u16(), mode = cursor.u16()
   if (!(canvasWidth >= 1 && canvasWidth <= maxSide && canvasHeight >= 1 && canvasHeight <= maxSide && canvasWidth * canvasHeight <= maxSurfacePixels)) throw new PSDError('tooLarge')
-  if (depth !== 8) throw new PSDError('unsupportedDepth')
+  // 16- and 32-bit RGB layers come in as deep layers (32 bits are linear light, as Photoshop keeps them); 16-bit CMYK is converted at
+  // 8 bits, as the profile works.
+  if (depth !== 8 && depth !== 16 && depth !== 32) throw new PSDError('unsupportedDepth')
   // RGB, or CMYK, whose layers come in as RGB through the file's own profile (Photoshop's color mode 4).
   if (mode !== 3 && mode !== 4) throw new PSDError('unsupportedColorMode')
+  if (mode === 4 && depth === 32) throw new PSDError('unsupportedDepth')
+  const sample = depth / 8
   cursor.skip(cursor.u32())
   const resourcesLength = cursor.u32(), resourcesEnd = cursor.offset + resourcesLength
   let resolution = 72, icc: Uint8Array | null = null
@@ -139,8 +144,10 @@ export async function readPSD(bytes: Uint8Array, draw: PSDDrawing, remainingPixe
   const layerSection = checkedLength(isPSB ? cursor.u64() : cursor.u32()), layerSectionEnd = cursor.offset + layerSection
   const document: PSDDocument = { width: canvasWidth, height: canvasHeight, resolution, cmykProfile, layers: [] }
   if (layerSection >= 4) {
-    const layerInfoLength = checkedLength(isPSB ? cursor.u64() : cursor.u32())
-    const count = layerInfoLength >= 2 ? Math.abs(cursor.i16()) : 0
+    const layerInfoLength = checkedLength(isPSB ? cursor.u64() : cursor.u32()), layerInfoEnd = cursor.offset + layerInfoLength
+    let count = layerInfoLength >= 2 ? Math.abs(cursor.i16()) : 0
+    // At 16 and 32 bits Photoshop leaves this empty and keeps the layers in an 'Lr16' or 'Lr32' block after the global mask.
+    if (!count && sample > 1) { cursor.offset = layerInfoEnd; count = deepLayerCount(cursor, layerSectionEnd, isPSB) }
     if (count > 10_000) throw new PSDError('tooLarge')
     const raw: RawLayer[] = []
     for (let i = 0; i < count; i++) raw.push(readRecord(cursor, isPSB))
@@ -150,7 +157,7 @@ export async function readPSD(bytes: Uint8Array, draw: PSDDrawing, remainingPixe
     }
     let usedPixels = 0
     for (const layer of raw) {
-      await decodeChannels(cursor, layer, remainingPixels - usedPixels, isPSB, cmykProfile)
+      await decodeChannels(cursor, layer, remainingPixels - usedPixels, isPSB, cmykProfile, sample)
       if (layer.image) usedPixels += layer.image.width * layer.image.height
     }
     document.layers = assemble(raw, { width: canvasWidth, height: canvasHeight }, remainingPixels - usedPixels, draw)
@@ -159,9 +166,28 @@ export async function readPSD(bytes: Uint8Array, draw: PSDDrawing, remainingPixe
   if (!document.layers.length) {
     cursor.offset = layerSectionEnd
     if (canvasWidth * canvasHeight > remainingPixels) throw new PSDError('tooLarge')
-    document.merged = await readMerged(cursor, canvasWidth, canvasHeight, channelCount, isPSB, cmykProfile)
+    const merged = await readMerged(cursor, canvasWidth, canvasHeight, channelCount, isPSB, cmykProfile, sample)
+    document.merged = merged.image
+    if (merged.deep) document.mergedDeep = merged.deep
   }
   return document
+}
+
+// Finds a 16- or 32-bit file's layers among the tagged blocks after the global layer mask, leaving the cursor at the first record;
+// the count of layers, or 0 where there are none.
+function deepLayerCount(cursor: Cursor, end: number, isPSB: boolean) {
+  if (cursor.offset + 4 > end) return 0
+  cursor.skip(cursor.u32())
+  while (cursor.offset + 12 <= end) {
+    const signature = cursor.string(4)
+    if (signature !== '8BIM' && signature !== '8B64') return 0
+    const key = cursor.string(4), length = checkedLength(signature === '8B64' || (isPSB && psbLargeAdditionalInfoKeys.has(key)) ? cursor.u64() : cursor.u32()), start = cursor.offset
+    if ((key === 'Lr16' || key === 'Lr32') && length >= 2) return Math.abs(cursor.i16())
+    cursor.offset = start + length
+    // Blocks here are padded, to two bytes or to four.
+    for (let pad = 0; pad < 3 && cursor.offset < end && cursor.data[cursor.offset] === 0; pad++) cursor.offset++
+  }
+  return 0
 }
 
 function readRecord(cursor: Cursor, isPSB: boolean): RawLayer {
@@ -169,7 +195,7 @@ function readRecord(cursor: Cursor, isPSB: boolean): RawLayer {
   const layer: RawLayer = {
     name: '', top, left, bottom, right, sourceTop: top, sourceLeft: left, sourceBottom: bottom, sourceRight: right, opacity: 255, fill: 255, clipping: false, hidden: false, blendKey: 'norm', channels: [], extra: new Map(),
     maskTop: 0, maskLeft: 0, maskBottom: 0, maskRight: 0, sourceMaskTop: 0, sourceMaskLeft: 0, sourceMaskBottom: 0, sourceMaskRight: 0, maskDefault: 255, maskDisabled: false, maskLinked: true, maskFromRender: false, hasMask: false, section: null,
-    image: null, maskImage: null, imageCrop: null, maskCrop: null, cropped: false,
+    image: null, deep: null, maskImage: null, imageCrop: null, maskCrop: null, cropped: false,
   }
   const channelCount = cursor.u16()
   if (channelCount > 56) throw new PSDError('tooLarge')
@@ -263,7 +289,7 @@ function crop(left: number, top: number, right: number, bottom: number, canvasWi
   return { x: l - left, y: t - top, width: r - l, height: b - t }
 }
 
-async function decodeChannels(cursor: Cursor, layer: RawLayer, remainingPixels: number, isPSB: boolean, cmyk: CMYKProfile | null) {
+async function decodeChannels(cursor: Cursor, layer: RawLayer, remainingPixels: number, isPSB: boolean, cmyk: CMYKProfile | null, sample = 1) {
   const planes = new Map<number, Uint8Array>()
   const width = Math.max(0, layer.right - layer.left), height = Math.max(0, layer.bottom - layer.top)
   const maskWidth = Math.max(0, layer.maskRight - layer.maskLeft), maskHeight = Math.max(0, layer.maskBottom - layer.maskTop)
@@ -275,13 +301,20 @@ async function decodeChannels(cursor: Cursor, layer: RawLayer, remainingPixels: 
     if ((cmyk ? unpackedCMYKChannelIDs : unpackedChannelIDs).has(channel.id) && channel.length >= 2) {
       const compression = cursor.u16(), payload = cursor.bytes(channel.length - 2), isMask = channel.id === -2
       if ((isMask ? maskWidth : width) > 0 && (isMask ? maskHeight : height) > 0)
-        planes.set(channel.id, decodeChannel(compression, isMask ? sourceMaskWidth : sourceWidth, isMask ? sourceMaskHeight : sourceHeight, payload, isPSB, isMask ? layer.maskCrop : layer.imageCrop))
+        planes.set(channel.id, decodeChannel(compression, isMask ? sourceMaskWidth : sourceWidth, isMask ? sourceMaskHeight : sourceHeight, payload, isPSB, isMask ? layer.maskCrop : layer.imageCrop, sample))
     }
     cursor.offset = start + Math.max(0, channel.length)
   }
+  // Deeper channels: the mask at 8 bits, as masks are kept; RGB as a deep layer; CMYK's inks at 8 bits for the profile.
+  if (sample > 1) for (const [id, plane] of planes) if (id === -2 || cmyk) planes.set(id, toBytes(plane, sample))
   const gray = planes.get(-2)
   if (layer.hasMask && maskWidth > 0 && maskHeight > 0 && gray && gray.length >= maskWidth * maskHeight) layer.maskImage = new Raster(maskWidth, maskHeight, 1, gray.slice(0, maskWidth * maskHeight))
   if (width <= 0 || height <= 0) return
+  if (sample > 1 && !cmyk) {
+    const deep = deepImage(width, height, [0, 1, 2, -1].map(id => planes.get(id) ?? null), sample)
+    layer.image = deep.image; layer.deep = deep.deep
+    return
+  }
   const count = width * height, opaque = new Uint8Array(count).fill(255), black = new Uint8Array(count)
   let red = planes.get(0) ?? black, green = planes.get(1) ?? black, blue = planes.get(2) ?? black
   const alpha = planes.get(-1) ?? opaque
@@ -293,6 +326,30 @@ async function decodeChannels(cursor: Cursor, layer: RawLayer, remainingPixels: 
   }
   if (![red, green, blue, alpha].every(plane => plane.length >= count)) throw new PSDError('truncated')
   layer.image = rgbaImage(width, height, red, green, blue, alpha)
+}
+
+// A 16- or 32-bit channel's samples as numbers, white at 1: 32-bit ones are floats, in linear light.
+function samples(plane: Uint8Array, sample: number) {
+  const count = Math.floor(plane.length / sample), out = new Float32Array(count), view = new DataView(plane.buffer, plane.byteOffset, plane.byteLength)
+  for (let i = 0; i < count; i++) out[i] = sample === 2 ? view.getUint16(i * 2) / 65535 : view.getFloat32(i * 4)
+  return out
+}
+const toBytes = (plane: Uint8Array, sample: number) => Uint8Array.from(samples(plane, sample), v => Math.round(Math.min(1, Math.max(0, v)) * 255))
+
+// RGB and transparency channels at 16 or 32 bits as a deep layer: 16-bit, or HDR while a 32-bit one is brighter than white anywhere.
+// A missing color is black, a missing transparency opaque.
+function deepImage(width: number, height: number, channels: (Uint8Array | null)[], sample: number) {
+  const count = width * height, [red, green, blue, alpha] = channels.map(plane => plane && samples(plane, sample))
+  if ([red, green, blue, alpha].some(plane => plane && plane.length < count)) throw new PSDError('truncated')
+  const floats = new Float32Array(count * 4)
+  for (let i = 0; i < count; i++) {
+    const a = alpha ? Math.min(1, Math.max(0, alpha[i])) : 1
+    floats[i * 4] = (red?.[i] ?? 0) * a; floats[i * 4 + 1] = (green?.[i] ?? 0) * a; floats[i * 4 + 2] = (blue?.[i] ?? 0) * a; floats[i * 4 + 3] = a
+  }
+  if (sample === 4) return makeDeep(linearToHDR(floats), width, height, true)
+  const pixels = new Uint16Array(count * 4)
+  for (let i = 0; i < pixels.length; i++) pixels[i] = Math.round(Math.min(1, Math.max(0, floats[i])) * 65535)
+  return makeDeep(pixels, width, height, false)
 }
 
 // A CMYK layer's ink channels as RGB ones, through the document's profile. Photoshop stores CMYK channels inverted (255 is no ink), and
@@ -315,49 +372,68 @@ function rgbaImage(width: number, height: number, red: Uint8Array, green: Uint8A
 }
 
 // The merged image of a file without layers: its color channels (extra ones are saved selections, not transparency), raw or PackBits.
-async function readMerged(cursor: Cursor, width: number, height: number, channels: number, isPSB: boolean, cmyk: CMYKProfile | null) {
-  const compression = cursor.u16(), needed = cmyk ? 4 : 3, count = width * height
+async function readMerged(cursor: Cursor, width: number, height: number, channels: number, isPSB: boolean, cmyk: CMYKProfile | null, sample = 1): Promise<{ image: Raster; deep?: Deep }> {
+  const compression = cursor.u16(), needed = cmyk ? 4 : 3, count = width * height, row = width * sample
   if (channels < needed) throw new PSDError('truncated')
-  const planes: Uint8Array[] = []
-  if (compression === 0) for (let c = 0; c < needed; c++) planes.push(cursor.bytes(count).slice())
+  let planes: Uint8Array[] = []
+  if (compression === 0) for (let c = 0; c < needed; c++) planes.push(cursor.bytes(count * sample).slice())
   else if (compression === 1) {
     const counts: number[] = []
     for (let i = 0; i < channels * height; i++) counts.push(isPSB ? cursor.u32() : cursor.u16())
     for (let c = 0; c < needed; c++) {
-      const plane = new Uint8Array(count)
-      for (let y = 0; y < height; y++) unpackRow(cursor.bytes(counts[c * height + y]), plane, y * width, width)
+      const plane = new Uint8Array(count * sample)
+      for (let y = 0; y < height; y++) unpackRow(cursor.bytes(counts[c * height + y]), plane, y * row, row)
       planes.push(plane)
     }
   } else throw new PSDError('unsupportedCompression')
+  if (sample > 1 && !cmyk) return deepImage(width, height, [...planes, null], sample)
+  if (sample > 1) planes = planes.map(plane => toBytes(plane, sample))
   const color = cmyk ? await rgbPlanes(count, planes, cmyk) : planes
-  return rgbaImage(width, height, color[0], color[1], color[2], new Uint8Array(count).fill(255))
+  return { image: rgbaImage(width, height, color[0], color[1], color[2], new Uint8Array(count).fill(255)) }
 }
 
 // MARK: Channels (PSDChannelCoder.swift): raw, PackBits, and ZIP with or without prediction
 
-export function decodeChannel(compression: number, width: number, height: number, data: Uint8Array, largeDocument = false, crop: Crop | null = null): Uint8Array {
+// `sample` is the bytes a pixel takes (2 at 16 bits, 4 at 32): the channel comes back as those bytes, big-endian, as stored.
+export function decodeChannel(compression: number, width: number, height: number, data: Uint8Array, largeDocument = false, crop: Crop | null = null, sample = 1): Uint8Array {
   if (width <= 0 || height <= 0) return new Uint8Array(0)
   if (crop) {
     if (crop.x < 0 || crop.y < 0 || crop.width < 0 || crop.height < 0 || crop.x + crop.width > width || crop.y + crop.height > height) throw new PSDError('truncated')
     if (!crop.width || !crop.height) return new Uint8Array(0)
   }
-  const expected = width * height
+  // Rows of bytes from here on.
+  const row = width * sample, area = crop && { x: crop.x * sample, y: crop.y, width: crop.width * sample, height: crop.height }, expected = row * height
   let full: Uint8Array
   if (compression === 0) { if (data.length < expected) throw new PSDError('truncated'); full = data }
-  else if (compression === 1) return unpackRLE(width, height, data, largeDocument, crop)
-  else if (compression === 2 || compression === 3) full = inflate(data, width, height, compression === 3)
+  else if (compression === 1) return unpackRLE(row, height, data, largeDocument, area)
+  else if (compression === 2 || compression === 3) full = inflate(data, width, height, compression === 3, sample)
   else throw new PSDError('unsupportedCompression')
-  if (!crop) return full.slice(0, expected)
-  const plane = new Uint8Array(crop.width * crop.height)
-  for (let row = 0; row < crop.height; row++) plane.set(full.subarray((crop.y + row) * width + crop.x, (crop.y + row) * width + crop.x + crop.width), row * crop.width)
+  if (!area) return full.slice(0, expected)
+  const plane = new Uint8Array(area.width * area.height)
+  for (let y = 0; y < area.height; y++) plane.set(full.subarray((area.y + y) * row + area.x, (area.y + y) * row + area.x + area.width), y * area.width)
   return plane
 }
 
-function inflate(data: Uint8Array, width: number, height: number, predicted: boolean) {
+// ZIP, with prediction: each row stores differences from the sample before, of whole 16-bit samples at 16 bits; at 32 bits a row's
+// bytes are differenced in turn after being laid out most significant first (every sample's first byte, then every second...).
+function inflate(data: Uint8Array, width: number, height: number, predicted: boolean, sample = 1) {
   let plane: Uint8Array
   try { plane = unzlibSync(data) } catch { throw new PSDError('truncated') }
-  if (plane.length < width * height) throw new PSDError('truncated')
-  if (predicted) for (let y = 0; y < height; y++) for (let x = 1, at = y * width + 1; x < width; x++, at++) plane[at] = (plane[at] + plane[at - 1]) & 255
+  const row = width * sample
+  if (plane.length < row * height) throw new PSDError('truncated')
+  if (!predicted) return plane
+  if (sample === 2) for (let y = 0; y < height; y++) for (let x = 1, at = y * row + 2; x < width; x++, at += 2) {
+    const v = ((plane[at] << 8) | plane[at + 1]) + ((plane[at - 2] << 8) | plane[at - 1])
+    plane[at] = (v >> 8) & 255; plane[at + 1] = v & 255
+  } else for (let y = 0; y < height; y++) for (let x = 1, at = y * row + 1; x < row; x++, at++) plane[at] = (plane[at] + plane[at - 1]) & 255
+  if (sample === 4) {
+    const bytes = new Uint8Array(row)
+    for (let y = 0; y < height; y++) {
+      const start = y * row
+      for (let x = 0; x < width; x++) for (let k = 0; k < 4; k++) bytes[x * 4 + k] = plane[start + k * width + x]
+      plane.set(bytes, start)
+    }
+  }
   return plane
 }
 
@@ -420,6 +496,7 @@ function assemble(raw: RawLayer[], canvas: { width: number; height: number }, re
     record.opacity = hasEffects && layer.fill !== 255 ? layer.opacity / 255 : (layer.opacity / 255) * (layer.fill / 255)
     record.bounds = isGroup ? { x: 0, y: 0, ...canvas } : { x: layer.left, y: layer.top, width: Math.max(0, layer.right - layer.left), height: Math.max(0, layer.bottom - layer.top) }
     record.image = isGroup ? null : layer.image
+    record.deep = isGroup ? null : layer.deep
     const text = record.kind === 'text' ? parseText(layer.extra) : null
     if (text) record.text = text
     else if (!isGroup) {
@@ -575,7 +652,7 @@ export async function makeImport(document: PSDDocument, draw: PSDDrawing): Promi
     else if (rendered && record.text) layer = newLayer({ ...common, transform: rendered.transform, blendMode: blend, image: rendered.raster, text: writeTextStyle(record.text.style) })
     else if (record.image) {
       const size: [number, number] = record.bounds.width > 0 && record.bounds.height > 0 ? [record.bounds.width, record.bounds.height] : [record.image.width, record.image.height]
-      layer = newLayer({ ...common, transform: { ...fullTransform(size[0], size[1], record.bounds.x, record.bounds.y), size }, blendMode: blend, image: record.image, ...(record.shape ? { shape: record.shape } : {}) })
+      layer = newLayer({ ...common, transform: { ...fullTransform(size[0], size[1], record.bounds.x, record.bounds.y), size }, blendMode: blend, image: record.image, ...(record.deep?.raster === record.image ? { deep: record.deep } : {}), ...(record.shape ? { shape: record.shape } : {}) })
     } else layer = newLayer({ ...common, transform: fullTransform(width, height), blendMode: blend })
     const mask = record.mask && maskOnLayerGrid(record.mask, record, layer, { width, height })
     if (mask) Object.assign(layer, { mask, maskEnabled: record.maskEnabled, maskLinked: record.maskLinked })
