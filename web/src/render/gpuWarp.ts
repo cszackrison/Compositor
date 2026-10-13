@@ -20,6 +20,8 @@ uniform float inverseRadius;
 uniform float hardness;
 uniform float keep;
 uniform vec2 move;
+// 1 for a layer's 8-bit texture, whose results are rounded to its levels; 0 for a 16-bit or HDR layer's half floats, kept as they come.
+uniform int quantize;
 // How much a dab moves pixels at a distance u (0 center, 1 rim) from its center.
 float weight(float u, float h) {
   if (u >= 1.0) return 0.0;
@@ -53,7 +55,7 @@ void main() {
   float w = inside ? weight(sqrt(float(offset.x * offset.x + offset.y * offset.y)) * inverseRadius, hardness) : 0.0;
   if (w <= 0.0) { canvasOut = under / 255.0; carriedOut = held; return; }
   vec4 painted = under + (held - under) * w * keep;
-  canvasOut = clamp(floor(painted + 0.5), 0.0, 255.0) / 255.0;
+  canvasOut = quantize == 1 ? clamp(floor(painted + 0.5), 0.0, 255.0) / 255.0 : painted / 255.0;
   carriedOut = painted;
 }`
 
@@ -82,7 +84,7 @@ void main() {
   vec4 c00 = texelFetch(original, i, 0), c10 = texelFetch(original, i + ivec2(1, 0), 0);
   vec4 c01 = texelFetch(original, i + ivec2(0, 1), 0), c11 = texelFetch(original, i + ivec2(1, 1), 0);
   vec4 color = mix(mix(c00, c10, f.x), mix(c01, c11, f.x), f.y);
-  canvasOut = clamp(floor(color * 255.0 + 0.5), 0.0, 255.0) / 255.0;
+  canvasOut = quantize == 1 ? clamp(floor(color * 255.0 + 0.5), 0.0, 255.0) / 255.0 : color;
 }`
 
 type Programs = { pickUp: Program; smudge: Program; push: Program }
@@ -100,27 +102,41 @@ function programsFor(gl: WebGL2RenderingContext): Programs | null {
 
 type Rect = { x0: number; y0: number; x1: number; y1: number }
 
+// What a stroke works on: the layer's 8-bit texture, and for a 16-bit or HDR layer its pixels as half floats too, each dab run on both.
+type Surface = {
+  texture: WebGLTexture; framebuffer: WebGLFramebuffer; format: number; quantize: number
+  // Smudge: the canvas square in and out, and what the brush carries (two, swapped each dab).
+  square: { side: number; canvasIn: WebGLTexture; canvasOut: WebGLTexture; carried: WebGLTexture[]; framebuffers: WebGLFramebuffer[] } | null
+  // Liquify: the layer as the stroke found it, and where each dab draws (with the offsets).
+  original: WebGLTexture | null; push: WebGLFramebuffer | null
+}
+
 export class GPUWarp {
   private gl: WebGL2RenderingContext
   private programs: Programs
-  private layerFramebuffer: WebGLFramebuffer
   private owned: { textures: WebGLTexture[]; framebuffers: WebGLFramebuffer[] } = { textures: [], framebuffers: [] }
-  // Smudge: the canvas square in and out, and what the brush carries (two, swapped each dab).
-  private square: { side: number; canvasIn: WebGLTexture; canvasOut: WebGLTexture; carried: WebGLTexture[]; framebuffers: WebGLFramebuffer[] } | null = null
-  // Liquify: the layer as the stroke found it, each pixel's offset into it, and the offsets a dab reads.
-  private liquify: { original: WebGLTexture; offsets: WebGLTexture; push: WebGLFramebuffer; offsetsFramebuffer: WebGLFramebuffer; scratch: WebGLTexture | null; scratchSide: number } | null = null
+  private surfaces: Surface[]
+  // Liquify: each pixel's offset into the stroke's starting pixels, shared by the surfaces, and the offsets a dab reads.
+  private liquify: { offsets: WebGLTexture; offsetsFramebuffer: WebGLFramebuffer; scratch: WebGLTexture | null; scratchSide: number } | null = null
 
-  static create(compositor: Compositor | null, raster: Raster): GPUWarp | null {
+  // `deep`: a 16-bit or HDR layer's pixels as half floats, warped alongside its 8-bit ones (`readDeep` brings them back).
+  static create(compositor: Compositor | null, raster: Raster, deep?: Uint16Array): GPUWarp | null {
     if (!compositor || raster.channels !== 4) return null
     const found = programsFor(compositor.gl)
-    return found ? new GPUWarp(compositor, raster, found) : null
+    return found ? new GPUWarp(compositor, raster, found, deep) : null
   }
 
-  private constructor(private compositor: Compositor, readonly raster: Raster, programs: Programs) {
-    this.gl = compositor.gl
+  private constructor(private compositor: Compositor, readonly raster: Raster, programs: Programs, deep?: Uint16Array) {
+    const gl = this.gl = compositor.gl
     this.programs = programs
     const texture = compositor.texture(raster)
-    this.layerFramebuffer = this.framebuffer([texture])
+    this.surfaces = [{ texture, framebuffer: this.framebuffer([texture], false), format: gl.RGBA8, quantize: 1, square: null, original: null, push: null }]
+    if (deep) {
+      const half = this.texture(raster.width, raster.height, gl.RGBA16F)
+      gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1)
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, raster.width, raster.height, gl.RGBA, gl.HALF_FLOAT, deep)
+      this.surfaces.push({ texture: half, framebuffer: this.framebuffer([half]), format: gl.RGBA16F, quantize: 0, square: null, original: null, push: null })
+    }
   }
 
   private texture(width: number, height: number, format: number): WebGLTexture {
@@ -133,14 +149,16 @@ export class GPUWarp {
     return texture
   }
 
-  private framebuffer(textures: WebGLTexture[]): WebGLFramebuffer {
+  private framebuffer(textures: WebGLTexture[], owned = true): WebGLFramebuffer {
     const gl = this.gl, framebuffer = gl.createFramebuffer()!
     gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer)
     textures.forEach((texture, i) => gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0 + i, gl.TEXTURE_2D, texture, 0))
     gl.drawBuffers(textures.map((_, i) => gl.COLOR_ATTACHMENT0 + i))
-    this.owned.framebuffers.push(framebuffer)
+    if (owned) this.owned.framebuffers.push(framebuffer)
+    else this.layerFramebuffer = framebuffer
     return framebuffer
   }
+  private layerFramebuffer: WebGLFramebuffer | null = null
 
   private run(program: Program, uniforms: Record<string, number | number[]>, samplers: WebGLTexture[], names: string[]) {
     const gl = this.gl
@@ -170,40 +188,45 @@ export class GPUWarp {
 
   pickUp(cx: number, cy: number, radius: number) {
     const gl = this.gl, side = 2 * radius + 1
-    if (!this.square || this.square.side !== side) {
-      const canvasIn = this.texture(side, side, gl.RGBA8), canvasOut = this.texture(side, side, gl.RGBA8)
-      const carried = [this.texture(side, side, gl.RGBA32F), this.texture(side, side, gl.RGBA32F)]
-      this.square = { side, canvasIn, canvasOut, carried, framebuffers: [this.framebuffer([canvasOut, carried[0]]), this.framebuffer([canvasOut, carried[1]]), this.framebuffer([carried[0]])] }
+    for (const surface of this.surfaces) {
+      if (!surface.square || surface.square.side !== side) {
+        const canvasIn = this.texture(side, side, surface.format), canvasOut = this.texture(side, side, surface.format)
+        const carried = [this.texture(side, side, gl.RGBA32F), this.texture(side, side, gl.RGBA32F)]
+        surface.square = { side, canvasIn, canvasOut, carried, framebuffers: [this.framebuffer([canvasOut, carried[0]]), this.framebuffer([canvasOut, carried[1]]), this.framebuffer([carried[0]])] }
+      }
+      const s = surface.square
+      gl.bindFramebuffer(gl.FRAMEBUFFER, s.framebuffers[2])
+      gl.viewport(0, 0, side, side)
+      this.run(this.programs.pickUp, { center: [cx, cy], radius, size: this.size }, [surface.texture], ['canvas'])
     }
-    const s = this.square
-    gl.bindFramebuffer(gl.FRAMEBUFFER, s.framebuffers[2])
-    gl.viewport(0, 0, side, side)
-    this.run(this.programs.pickUp, { center: [cx, cy], radius, size: this.size }, [this.compositor.texture(this.raster)], ['canvas'])
     this.done()
   }
 
   // One Smudge dab; returns the pixels it may have changed.
   smudge(cx: number, cy: number, radius: number, inverseRadius: number, hardness: number, keep: number): Rect | null {
-    const s = this.square
-    if (!s) return null
-    const gl = this.gl, side = s.side, [width, height] = this.size
+    const gl = this.gl, [width, height] = this.size
     const x0 = Math.max(0, cx - radius), y0 = Math.max(0, cy - radius), x1 = Math.min(width, cx + radius + 1), y1 = Math.min(height, cy + radius + 1)
     if (x0 >= x1 || y0 >= y1) return null
-    // The canvas square, copied out so the dab can read it while it writes.
-    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, this.layerFramebuffer)
-    gl.bindTexture(gl.TEXTURE_2D, s.canvasIn)
-    gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, x0 - (cx - radius), y0 - (cy - radius), x0, y0, x1 - x0, y1 - y0)
-    // Reads carried[0], writes carried[1] (framebuffer 1 holds canvasOut and carried[1]), then they swap.
-    gl.bindFramebuffer(gl.FRAMEBUFFER, s.framebuffers[1])
-    gl.viewport(0, 0, side, side)
-    this.run(this.programs.smudge, { center: [cx, cy], radius, size: this.size, inverseRadius, hardness, keep }, [s.canvasIn, s.carried[0]], ['canvasIn', 'carriedIn'])
-    // And the square back into the layer.
-    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, s.framebuffers[1])
-    gl.readBuffer(gl.COLOR_ATTACHMENT0)
-    gl.bindTexture(gl.TEXTURE_2D, this.compositor.texture(this.raster))
-    gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, x0, y0, x0 - (cx - radius), y0 - (cy - radius), x1 - x0, y1 - y0)
-    s.carried.reverse()
-    s.framebuffers = [s.framebuffers[1], s.framebuffers[0], s.framebuffers[2]]
+    for (const surface of this.surfaces) {
+      const s = surface.square
+      if (!s) return null
+      const side = s.side
+      // The canvas square, copied out so the dab can read it while it writes.
+      gl.bindFramebuffer(gl.READ_FRAMEBUFFER, surface.framebuffer)
+      gl.bindTexture(gl.TEXTURE_2D, s.canvasIn)
+      gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, x0 - (cx - radius), y0 - (cy - radius), x0, y0, x1 - x0, y1 - y0)
+      // Reads carried[0], writes carried[1] (framebuffer 1 holds canvasOut and carried[1]), then they swap.
+      gl.bindFramebuffer(gl.FRAMEBUFFER, s.framebuffers[1])
+      gl.viewport(0, 0, side, side)
+      this.run(this.programs.smudge, { center: [cx, cy], radius, size: this.size, inverseRadius, hardness, keep, quantize: surface.quantize }, [s.canvasIn, s.carried[0]], ['canvasIn', 'carriedIn'])
+      // And the square back into the layer.
+      gl.bindFramebuffer(gl.READ_FRAMEBUFFER, s.framebuffers[1])
+      gl.readBuffer(gl.COLOR_ATTACHMENT0)
+      gl.bindTexture(gl.TEXTURE_2D, surface.texture)
+      gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, x0, y0, x0 - (cx - radius), y0 - (cy - radius), x1 - x0, y1 - y0)
+      s.carried.reverse()
+      s.framebuffers = [s.framebuffers[1], s.framebuffers[0], s.framebuffers[2]]
+    }
     this.done()
     return { x0, y0, x1, y1 }
   }
@@ -220,28 +243,33 @@ export class GPUWarp {
     if (cw < 2 || ch < 2) return null
     // The first push keeps the layer as it is, and starts every offset at nothing.
     if (!this.liquify) {
-      const original = this.texture(width, height, gl.RGBA8), offsets = this.texture(width, height, gl.RG32F)
-      gl.bindFramebuffer(gl.READ_FRAMEBUFFER, this.layerFramebuffer)
-      gl.bindTexture(gl.TEXTURE_2D, original)
-      gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, width, height)
-      const offsetsFramebuffer = this.framebuffer([offsets])
+      const offsets = this.texture(width, height, gl.RG32F), offsetsFramebuffer = this.framebuffer([offsets])
       gl.clearBufferfv(gl.COLOR, 0, [0, 0, 0, 0])
-      this.liquify = { original, offsets, push: this.framebuffer([this.compositor.texture(this.raster), offsets]), offsetsFramebuffer, scratch: null, scratchSide: 0 }
+      this.liquify = { offsets, offsetsFramebuffer, scratch: null, scratchSide: 0 }
+      for (const surface of this.surfaces) {
+        surface.original = this.texture(width, height, surface.format)
+        gl.bindFramebuffer(gl.READ_FRAMEBUFFER, surface.framebuffer)
+        gl.bindTexture(gl.TEXTURE_2D, surface.original)
+        gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, width, height)
+        surface.push = this.framebuffer([surface.texture, offsets])
+      }
     }
     const l = this.liquify
     const side = Math.max(cw, ch)
     if (side > l.scratchSide) { l.scratchSide = Math.max(side, Math.ceil(l.scratchSide * 1.5)); l.scratch = this.texture(l.scratchSide, l.scratchSide, gl.RG32F) }
-    // The offsets in the dab's area as they were, which the dab reads.
+    // The offsets in the dab's area as they were, which the dab reads; each surface's pass writes the same new ones.
     gl.bindFramebuffer(gl.READ_FRAMEBUFFER, l.offsetsFramebuffer)
     gl.readBuffer(gl.COLOR_ATTACHMENT0)
     gl.bindTexture(gl.TEXTURE_2D, l.scratch)
     gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, x0, y0, cw, ch)
-    gl.bindFramebuffer(gl.FRAMEBUFFER, l.push)
-    gl.viewport(cx - radius, cy - radius, 2 * radius + 1, 2 * radius + 1)
-    gl.enable(gl.SCISSOR_TEST)
-    gl.scissor(x0, y0, cw, ch)
-    this.run(this.programs.push, { center: [cx, cy], size: this.size, origin: [x0, y0], area: [cw, ch], inverseRadius, hardness, move: [mx, my] }, [l.scratch!, l.original], ['before', 'original'])
-    gl.disable(gl.SCISSOR_TEST)
+    for (const surface of this.surfaces) {
+      gl.bindFramebuffer(gl.FRAMEBUFFER, surface.push)
+      gl.viewport(cx - radius, cy - radius, 2 * radius + 1, 2 * radius + 1)
+      gl.enable(gl.SCISSOR_TEST)
+      gl.scissor(x0, y0, cw, ch)
+      this.run(this.programs.push, { center: [cx, cy], size: this.size, origin: [x0, y0], area: [cw, ch], inverseRadius, hardness, move: [mx, my], quantize: surface.quantize }, [l.scratch!, surface.original!], ['before', 'original'])
+      gl.disable(gl.SCISSOR_TEST)
+    }
     this.done()
     return { x0, y0, x1: x1 + 1, y1: y1 + 1 }
   }
@@ -256,7 +284,7 @@ export class GPUWarp {
   sync(rect: Rect) {
     const gl = this.gl, { raster } = this, x0 = Math.max(0, rect.x0), y0 = Math.max(0, rect.y0), x1 = Math.min(raster.width, rect.x1), y1 = Math.min(raster.height, rect.y1)
     if (x0 < x1 && y0 < y1) {
-      gl.bindFramebuffer(gl.READ_FRAMEBUFFER, this.layerFramebuffer)
+      gl.bindFramebuffer(gl.READ_FRAMEBUFFER, this.surfaces[0].framebuffer)
       gl.readBuffer(gl.COLOR_ATTACHMENT0)
       gl.pixelStorei(gl.PACK_ALIGNMENT, 1)
       gl.pixelStorei(gl.PACK_ROW_LENGTH, raster.width)
@@ -267,11 +295,23 @@ export class GPUWarp {
     this.compositor.markCurrent(raster, { x0, y0, x1, y1 })
   }
 
+  // A 16-bit or HDR layer's pixels as the stroke left them, as floats (white at 1); null for an 8-bit layer.
+  readDeep(): Float32Array | null {
+    const surface = this.surfaces[1]
+    if (!surface) return null
+    const gl = this.gl, out = new Float32Array(this.raster.width * this.raster.height * 4)
+    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, surface.framebuffer)
+    gl.readBuffer(gl.COLOR_ATTACHMENT0)
+    gl.readPixels(0, 0, this.raster.width, this.raster.height, gl.RGBA, gl.FLOAT, out)
+    this.done()
+    return out
+  }
+
   dispose() {
     const gl = this.gl
     this.owned.framebuffers.forEach(f => gl.deleteFramebuffer(f))
     this.owned.textures.forEach(t => gl.deleteTexture(t))
-    gl.deleteFramebuffer(this.layerFramebuffer)
+    if (this.layerFramebuffer) gl.deleteFramebuffer(this.layerFramebuffer)
     this.owned = { textures: [], framebuffers: [] }
   }
 }

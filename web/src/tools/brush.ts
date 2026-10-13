@@ -269,6 +269,16 @@ export class BrushStroke {
     for (let i = 0; i < out.length; i++) out[i] = Math.round(Math.min(1, this.coverage[i]) * 255)
     return out
   }
+  // How much of the stroke's source a pixel took: its coverage times the stroke's opacity, within the selection.
+  weight(x: number, y: number) {
+    let a = Math.min(1, this.coverage[y * this.raster.width + x]) * (this.mode.kind === 'wash' ? 0.45 : this.settings.opacity)
+    const selection = this.selection, m = this.pixelToDocument
+    if (a > 0 && selection) {
+      const sx = Math.floor(m[0] * (x + 0.5) + m[3] * (y + 0.5) + m[6]), sy = Math.floor(m[1] * (x + 0.5) + m[4] * (y + 0.5) + m[7])
+      a *= sx >= 0 && sy >= 0 && sx < selection.width && sy < selection.height ? selection.data[sy * selection.width + sx] / 255 : 0
+    }
+    return a
+  }
   get touchedRect() { const t = this.touched; return t ? { x: t.x0, y: t.y0, w: t.x1 - t.x0, h: t.y1 - t.y0 } : null }
 
   // Replaces what the stroke drew in `rect` (raster pixels) with `pixels`, clipped by the selection, before `finish`.

@@ -5,6 +5,7 @@ import { compositor, requestRender, view } from '../ui/canvasState'
 import { GPUWarp } from '../render/gpuWarp'
 import { paint } from './paint'
 import type { Raster } from '../model/raster'
+import { bound, deepOf, deepToFloats, flattened, floatsToDeep, sixteenToHalf } from '../model/deep'
 import type { ToolHandler } from './tool'
 
 // Smudge and Liquify (SmudgeLiquify.swift), worked in the layer's own pixels. Liquify keeps a field of offsets into the stroke's
@@ -15,6 +16,8 @@ type Warp = {
   tip?: { diameter: number; hardness: number; strength: number; radius: number }; scratch?: Float32Array
   // The dabs run on the GPU when it can (see gpuWarp.ts); `moved` is what this pointer move touched, to read back.
   gpu: GPUWarp | null; moved: { x0: number; y0: number; x1: number; y1: number } | null
+  // A 16-bit or HDR layer's pixels as the stroke found them (floats, white at 1), warped at full depth on the GPU alongside.
+  deep: { hdr: boolean; original: Float32Array } | null
 }
 let warp: Warp | null = null
 let pointer: [number, number] | null = null
@@ -146,7 +149,9 @@ export const smear: ToolHandler = {
     const raster = target.raster
     const toDoc = pixelToDocument(target.layer.transform, raster.width, raster.height)
     const scale = 1 / Math.sqrt(Math.abs(toDoc[0] * toDoc[4] - toDoc[1] * toDoc[3]))
-    warp = { kind: mode, layerId: target.layer.id, raster, original: raster.data.slice(), toPixel: invert(toDoc), scale, offsets: null, carried: null, last: null, dirty: null, gpu: GPUWarp.create(compositor, raster), moved: null }
+    const deep = deepOf(target.layer), pixels = deep ? flattened(deep) : null
+    const halves = deep && pixels ? deep.hdr ? pixels : pixels.map(v => sixteenToHalf[v]) : undefined
+    warp = { kind: mode, layerId: target.layer.id, raster, original: raster.data.slice(), toPixel: invert(toDoc), scale, offsets: null, carried: null, last: null, dirty: null, gpu: GPUWarp.create(compositor, raster, halves), moved: null, deep: deep && pixels ? { hdr: deep.hdr, original: deepToFloats(pixels, deep.hdr) } : null }
     if (!warp.gpu && mode === 'Liquify') warp.offsets = new Float32Array(raster.width * raster.height * 2)
     moveTo(warp, p.point)
   },
@@ -160,6 +165,7 @@ export const smear: ToolHandler = {
     if (!warp) { paint.up!(p); return }
     const w = warp
     warp = null
+    const deepResult = w.deep && w.gpu ? w.gpu.readDeep() : null
     w.gpu?.dispose()
     const d = w.dirty
     if (!d) { store.cancelGesture(); return }
@@ -172,10 +178,12 @@ export const smear: ToolHandler = {
         const sx = Math.floor(m0 * (x + 0.5) + m3 * (y + 0.5) + m6), sy = Math.floor(m1 * (x + 0.5) + m4 * (y + 0.5) + m7)
         const k = sx >= 0 && sy >= 0 && sx < selection.width && sy < selection.height ? selection.data[sy * selection.width + sx] / 255 : 0
         if (k >= 1) continue
-        for (let c = i; c < i + 4; c++) data[c] = Math.round(original[c] + (data[c] - original[c]) * k)
+        for (let c = i; c < i + 4; c++) { data[c] = Math.round(original[c] + (data[c] - original[c]) * k); if (deepResult) deepResult[c] = w.deep!.original[c] + (deepResult[c] - w.deep!.original[c]) * k }
       }
     }
     w.raster.touch()
+    // A 16-bit or HDR layer keeps the stroke at its full depth.
+    if (w.deep && deepResult) store.updateLayerLive(w.layerId, { deep: bound(w.raster, floatsToDeep(deepResult, w.deep.hdr), w.deep.hdr) })
     const width = x1 - x0, height = y1 - y0, before = new Uint8Array(width * height * 4)
     for (let y = 0; y < height; y++) before.set(w.original.subarray(((y + y0) * w.raster.width + x0) * 4, ((y + y0) * w.raster.width + x1) * 4), y * width * 4)
     store.updateLayerLive(w.layerId, { text: undefined, shape: undefined })

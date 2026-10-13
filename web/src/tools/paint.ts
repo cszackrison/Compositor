@@ -2,7 +2,8 @@ import { store, tipFamily } from '../editor/store'
 import { prefs } from '../editor/prefs'
 import { BrushStroke, type StrokeMode } from './brush'
 import { Raster } from '../model/raster'
-import { lazyBlur } from '../model/pixels'
+import { blurFloats, lazyBlur } from '../model/pixels'
+import { bound, deepOf, deepToFloats, flattened, floatsToDeep } from '../model/deep'
 import { call, withBuffers } from '../kernels'
 import { apply, invert, type Mat3 } from '../render/gl'
 import { pixelToDocument } from '../render/compositor'
@@ -12,7 +13,8 @@ import { padMask } from '../editor/floating'
 import { compositor, requestOverlay, requestRender, samplePixels, view } from '../ui/canvasState'
 import type { ToolHandler } from './tool'
 
-type Stroke = { stroke: BrushStroke; layerId: string; isMask: boolean; heal: boolean; kept: { x: number; y: number; w: number; h: number } | null; maskKept: { x: number; y: number; w: number; h: number } | null; axis: 'x' | 'y' | null; anchor: [number, number] }
+// `blur`: a Blur stroke on a 16-bit or HDR layer, made again at full depth when it ends from the layer as it found it and its blur.
+type Stroke = { stroke: BrushStroke; layerId: string; isMask: boolean; heal: boolean; kept: { x: number; y: number; w: number; h: number } | null; maskKept: { x: number; y: number; w: number; h: number } | null; axis: 'x' | 'y' | null; anchor: [number, number]; blur?: { hdr: boolean; before: Float32Array; sigma: number } }
 let current: Stroke | null = null
 let lastEnd: { point: [number, number]; layerId: string; isMask: boolean } | null = null
 let tipDrag: { start: number; diameter: number; hardness: number; hardnessMode: boolean } | null = null
@@ -33,7 +35,10 @@ function growToCanvas(layerId: string): { x: number; y: number; w: number; h: nu
   const transform = grownTransform(layer.transform, pixelToDocument(layer.transform, image.width, image.height), image.width, image.height, [x0, y0], grown.width, grown.height)
   // A mask on the layer's own grid is padded with white (reveal) to the grown grid, so its coverage stays where it was.
   const mask = layer.mask && !layer.maskPlacement && !layer.mask.isUniform() ? padMask(layer.mask, image, [x0, y0], grown.width, grown.height, 255) : layer.mask
-  store.updateLayerLive(layerId, { image: grown, transform, mask })
+  // A 16-bit or HDR layer's pixels grow with it, so the paint is still taken over them.
+  const deep = deepOf(layer), placed = deep ? new Uint16Array(grown.width * grown.height * 4) : null
+  if (deep && placed) { const pixels = flattened(deep), row = image.width * 4; for (let y = 0; y < image.height; y++) placed.set(pixels.subarray(y * row, (y + 1) * row), ((y - y0) * grown.width - x0) * 4) }
+  store.updateLayerLive(layerId, { image: grown, transform, mask, deep: deep && placed ? bound(grown, placed, deep.hdr) : undefined })
   return { x: -x0, y: -y0, w: image.width, h: image.height }
 }
 
@@ -109,13 +114,17 @@ function cloneOffset(point: [number, number]): [number, number] | null {
   return (clone.aligned ? clone.offset : null) ?? [Math.round(clone.source[0] - point[0]), Math.round(clone.source[1] - point[1])]
 }
 
+// The Blur tool's radius in the layer's own pixels.
+function blurSigma(raster: Raster, toDoc: Mat3) {
+  const perPixel = Math.sqrt(Math.abs(toDoc[0] * toDoc[4] - toDoc[1] * toDoc[3]))
+  return Math.min(Math.min(50, Math.max(0.5, store.state.blurRadius)) / perPixel, Math.max(raster.width, raster.height) / 2)
+}
+
 function strokeMode(tool: string, raster: Raster, toDoc: Mat3, isMask: boolean, original: Uint8Array, point: [number, number]): StrokeMode | null {
   if (tool === 'heal') return { kind: 'wash' }
   if (tool === 'smear') {
     // The Smear tool's Blur: a Gaussian of the layer as the stroke found it, painted back through the tip.
-    const perPixel = Math.sqrt(Math.abs(toDoc[0] * toDoc[4] - toDoc[1] * toDoc[3]))
-    const sigma = Math.min(Math.min(50, Math.max(0.5, store.state.blurRadius)) / perPixel, Math.max(raster.width, raster.height) / 2)
-    const blurred = lazyBlur(new Raster(raster.width, raster.height, raster.channels, original), sigma, isMask)
+    const blurred = lazyBlur(new Raster(raster.width, raster.height, raster.channels, original), blurSigma(raster, toDoc), isMask)
     return { kind: 'source', sample: raster.channels === 1 ? (x, y, out) => { blurred(x, y, out); out[3] = 255 } : blurred }
   }
   if (tool === 'clone') {
@@ -172,6 +181,7 @@ export const paint: ToolHandler = {
     const raster = target.isMask ? layer.mask! : layer.image!
     const toDoc = target.isMask ? (maskGrowth ? pixelToDocument(maskGrowth.base, raster.width, raster.height) : target.toDocument) : pixelToDocument(layer.transform, raster.width, raster.height)
     const original = raster.data.slice()
+    const deep = target.isMask || tool !== 'smear' ? null : deepOf(layer), blur = deep ? { hdr: deep.hdr, before: deepToFloats(flattened(deep), deep.hdr), sigma: blurSigma(raster, toDoc) } : undefined
     const mode = strokeMode(tool, raster, toDoc, target.isMask, original, p.point)!
     const settings = { ...store.state.brush, erasing: tool === 'eraser', smoothing: tool === 'brush' || tool === 'eraser' ? store.state.brush.smoothing : 0 }
     const color = store.paletteColor('foreground')
@@ -185,7 +195,7 @@ export const paint: ToolHandler = {
     if (prefs.penPressure && p.pressure !== undefined) stroke.pressure = p.pressure
     if (p.shift && same) { stroke.lineTo(...lastEnd!.point); stroke.lineTo(...p.point) } else stroke.moveTo(...p.point)
     stroke.render()
-    current = { stroke, layerId: layer.id, isMask: target.isMask, heal: tool === 'heal', kept, maskKept: maskGrowth?.kept ?? null, axis: null, anchor: p.point }
+    current = { stroke, layerId: layer.id, isMask: target.isMask, heal: tool === 'heal', kept, maskKept: maskGrowth?.kept ?? null, axis: null, anchor: p.point, blur }
     requestRender()
   },
   move(p) {
@@ -218,6 +228,11 @@ export const paint: ToolHandler = {
     s.stroke.settle(s.stroke.stringLength > 0 && !s.axis ? p.point : undefined)
     if (s.heal) finishHeal(s)
     const patch = s.stroke.finish()
+    if (s.blur) {
+      const { width, height } = s.stroke.raster, { before, sigma, hdr } = s.blur, blurred = blurFloats(before, width, height, 4, sigma), out = before.slice(), t = s.stroke.touchedRect
+      if (t) for (let y = t.y; y < t.y + t.h; y++) for (let x = t.x; x < t.x + t.w; x++) { const k = s.stroke.weight(x, y), i = (y * width + x) * 4; if (k > 0) for (let c = 0; c < 4; c++) out[i + c] += (blurred[i + c] - before[i + c]) * k }
+      store.updateLayerLive(s.layerId, { deep: bound(s.stroke.raster, floatsToDeep(out, hdr), hdr) })
+    }
     lastEnd = s.stroke.lastPoint ? { point: s.stroke.lastPoint, layerId: s.layerId, isMask: s.isMask } : null
     if (!s.isMask) { store.updateLayerLive(s.layerId, { text: undefined, shape: undefined }); if (s.kept) trimToPainted(s.layerId, s.kept) }
     if (s.maskKept) trimGrownMask(s.layerId, s.maskKept, s.stroke.touchedRect)
