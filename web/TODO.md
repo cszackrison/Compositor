@@ -14,8 +14,10 @@ existing features were.
   Color Grading, Effects, Curve, Color Mixer, Detail, Optics, Geometry and Calibration, each with an eye and a reset. The measured
   tables (`Compositor/Resources/CameraRawTables.bin`) are copied beside the page at build time and unpacked on first use; the
   results match the Mac's tests of Photoshop's numbers.
-  - [ ] Still missing: the targeted adjustment drag, Point Color, Upright › Guided with guide lines, the Option-key clipping and
-    sharpening-mask views, the clipping triangles, the vectorscope and the RGB readout.
+  - [x] The targeted adjustment drag (Curve and Color Mixer), Point Color, Upright › Guided with guides drawn on the layer, Option on
+    a Light slider for the clipping view and on Masking for the sharpening mask, the clipping triangles, the vectorscope (right-click
+    the histogram) and the RGB readout. Guides are measured in pixels here, so a line comes out level on any layer (the Mac takes
+    their angle in fractions of the width and height).
 - [ ] **PSD/PSB import**, with the conversion report (about 1,500 lines of Swift in `Compositor/IO/PSD`). CMYK PSDs too, since 1.5
   (896d5c8).
 - [ ] **Camera RAW import** and its develop step. Needs a wasm decoder (LibRaw or similar).

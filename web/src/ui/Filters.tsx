@@ -13,7 +13,7 @@ import type { Raster } from '../model/raster'
 import { canvasGesture, canvasPicker, requestRender, view } from './canvasState'
 import { ColorSwatch } from './ColorPicker'
 import { apply, invert } from '../render/gl'
-import { CameraRawPanel, type CameraRawParams } from './CameraRaw'
+import { CameraRawPanel, hasView, type CameraRawParams } from './CameraRaw'
 import { defaultCameraRaw, hiding } from '../model/cameraRaw'
 import { pixelToDocument } from '../render/compositor'
 
@@ -39,7 +39,7 @@ const repeatable: Record<string, { job: (p: any, context: FilterContext) => Filt
   Scanlines: { job: p => job('scanlines', p) },
   'Tonal Contrast': { job: p => job('tonalContrast', p.amount, p.shadows, p.midtones, p.highlights, p.radius) },
   'Lens Correction': { job: p => job('lensCorrection', p.distortion) },
-  'Camera Raw Filter': { job: (p, c) => job('cameraRaw', hiding(p.settings, p.hidden), c.seed, 1) },
+  'Camera Raw Filter': { job: (p, c) => job('cameraRaw', hiding(p.settings, p.hidden), c.seed, 1, p.view ?? {}) },
 }
 
 // Filter › Last Filter (⌃⌘F): the last of those applied, again with the same settings and no dialog, as in Photoshop.
@@ -55,9 +55,10 @@ export async function repeatLastFilter() {
 }
 
 // `fresh` settings start anew at each opening, over the remembered ones.
-function Simple<P extends object>({ name, initial, fresh, docked, children }: { name: string; initial: P; fresh?: Partial<P>; docked?: boolean; children: (p: P, set: (c: Partial<P>) => void) => React.ReactNode }) {
-  const context = useMemo(filterContext, []), spec = repeatable[name]
-  return <FilterDialog title={name} initial={{ ...recall(name, initial), ...fresh }} run={p => spec.job(p, context)} trim={spec.trim} growEmpty={spec.growEmpty} docked={docked} onClose={close} onCommit={p => { remembered.set(name, p); lastFilter = { name, params: p } }}>{children}</FilterDialog>
+// `clean` takes out what only the preview shows, before OK runs the filter and before its settings are remembered.
+function Simple<P extends object>({ name, initial, fresh, docked, clean, children }: { name: string; initial: P; fresh?: Partial<P>; docked?: boolean; clean?: (p: P) => P; children: (p: P, set: (c: Partial<P>) => void) => React.ReactNode }) {
+  const context = useMemo(filterContext, []), spec = repeatable[name], tidy = clean ?? ((p: P) => p)
+  return <FilterDialog title={name} initial={{ ...recall(name, initial), ...fresh }} run={p => spec.job(p, context)} trim={spec.trim} growEmpty={spec.growEmpty} docked={docked} final={clean ? p => { const c = clean(p); return c === p ? undefined : spec.job(c, context) } : undefined} onClose={close} onCommit={p => { const c = tidy(p); remembered.set(name, c); lastFilter = { name, params: c } }}>{children}</FilterDialog>
 }
 
 function GaussianBlurDialog() {
@@ -168,7 +169,7 @@ function BloomDialog() {
 // show again at each opening.
 function CameraRawDialog() {
   const layerId = useMemo(() => store.active?.id ?? '', [])
-  return <Simple name="Camera Raw Filter" docked initial={{ settings: defaultCameraRaw(), hidden: [] } as CameraRawParams} fresh={{ hidden: [] }}>{(p, set) => <CameraRawPanel params={p} set={set} layerId={layerId} />}</Simple>
+  return <Simple name="Camera Raw Filter" docked initial={{ settings: defaultCameraRaw(), hidden: [], view: {} } as CameraRawParams} fresh={{ hidden: [], view: {} }} clean={p => hasView(p.view) ? { ...p, view: {} } : p}>{(p, set) => <CameraRawPanel params={p} set={set} layerId={layerId} />}</Simple>
 }
 
 function TonalContrastDialog() {

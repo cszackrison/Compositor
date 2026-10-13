@@ -1,17 +1,29 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { store } from '../editor/store'
 import { useEditor } from './hooks'
 import { Scrub, CurvesEditor } from './Inspector'
-import { canvasPicker, requestRender } from './canvasState'
+import { canvasGesture, canvasPicker, requestRender, view as stage } from './canvasState'
 import { pixelToDocument } from '../render/compositor'
 import { apply, invert } from '../render/gl'
 import { newAdjustment, type CurvePoint } from '../model/types'
 import { curveValue } from '../model/adjustments'
 import type { Raster } from '../model/raster'
-import { type CameraRawGroup, type CameraRawSettings, type CurveSettings, type Wheel, adjusts, autoBalance, cameraRawGroups, loadCameraRawTables, mixerCenters, mixerNames, neutralize, processVersions, resetGroup } from '../model/cameraRaw'
+import { type CameraRawGroup, type CameraRawSettings, type CameraRawView, type CurveSettings, type Guide, type Wheel, adjusts, newPointColor, autoBalance, cameraRawGroups, loadCameraRawTables, mixerCenters, mixerNames, neutralize, processVersions, resetGroup } from '../model/cameraRaw'
 
-export type CameraRawParams = { settings: CameraRawSettings; hidden: CameraRawGroup[] }
+export type CameraRawParams = { settings: CameraRawSettings; hidden: CameraRawGroup[]; view: CameraRawView }
 type Set = (change: (s: CameraRawSettings) => CameraRawSettings) => void
+// Whether the preview shows something OK won't keep: then OK runs the grade alone.
+export const hasView = (v?: CameraRawView) => !!v && (!!v.clipping || !!v.sharpenMask || !!v.shadows || !!v.highlights || (v.visualize ?? -1) >= 0)
+
+// The canvas tool the panel has on: an eyedropper (white balance, defringe, point color), a targeted drag (Curve, Color Mixer), or
+// drawing Upright guides. One at a time.
+type Tool = 'white' | 'defringe' | 'point' | 'curve' | 'mixer' | 'guides' | null
+type Ui = { curvePage: 'Parametric' | 'Point'; channel: number; mixerPage: 'HSL' | 'Color' | 'Point Color'; mixerTab: 'hue' | 'saturation' | 'luminance'; mixerColor: number; point: number; tool: Tool }
+type UiProps = { ui: Ui; setUi: (u: Partial<Ui>) => void }
+
+// Option held while a Light slider moves shows what clips (1 highlights, 2 shadows); on Detail's Masking, the sharpening mask.
+let optionHeld = false
+const ShowView = createContext<(kind: 1 | 2 | 'mask' | null) => void>(() => {})
 
 // Track colors, left to right, as CameraRawSlider draws Camera Raw's color sliders.
 const hsb = (degrees: number, s: number, b: number) => { const l = b * (1 - s / 2), sl = l <= 0 || l >= 1 ? 0 : (b - l) / Math.min(l, 1 - l); return `hsl(${((degrees % 360) + 360) % 360} ${Math.round(sl * 100)}% ${Math.round(l * 100)}%)` }
@@ -22,8 +34,9 @@ const tracks = {
 }
 
 // One Camera Raw slider: a label to scrub, the slider (double-click puts it back), and the number.
-function RawSlider({ label, value, min, max, reset = 0, digits = 0, track, title, disabled, onChange }: { label: string; value: number; min: number; max: number; reset?: number; digits?: number; track?: string[]; title?: string; disabled?: boolean; onChange: (v: number) => void }) {
-  const step = Math.pow(10, -digits), round = (v: number) => +Math.min(max, Math.max(min, v)).toFixed(digits)
+function RawSlider({ label, value, min, max, reset = 0, digits = 0, track, title, disabled, shows, onChange: set }: { label: string; value: number; min: number; max: number; reset?: number; digits?: number; track?: string[]; title?: string; disabled?: boolean; shows?: 1 | 2 | 'mask'; onChange: (v: number) => void }) {
+  const step = Math.pow(10, -digits), round = (v: number) => +Math.min(max, Math.max(min, v)).toFixed(digits), show = useContext(ShowView)
+  const onChange = (v: number) => { show(shows && optionHeld ? shows : null); set(v) }
   return (
     <div className="row" title={title} style={disabled ? { opacity: 0.45, pointerEvents: 'none' } : undefined}>
       <span onDoubleClick={() => onChange(reset)}><Scrub label={label} value={value} min={min} max={max} step={step} sensitivity={(max - min) / 300} onChange={v => onChange(round(v))} /></span>
@@ -38,33 +51,59 @@ function Choice<T extends string>({ label, value, options, title, onChange }: { 
   return <div className="row" title={title}><span className="muted">{label}</span><select value={value} onChange={e => onChange(e.target.value as T)}>{options.map(o => <option key={o}>{o}</option>)}</select><span /></div>
 }
 
-// The histogram of what the layer shows now, the grade included: every other pixel each way, as the Mac counts it.
-function Histogram({ layerId }: { layerId: string }) {
-  const state = useEditor(), ref = useRef<HTMLCanvasElement>(null)
-  const image = store.layer(layerId)?.image
+// The histogram (or the vectorscope, from its menu) of what the layer shows now, the grade included: every other pixel each way, as
+// the Mac counts them. The triangles paint clipped shadows blue and clipped highlights red on the preview.
+function Histogram({ layerId, view, setView }: { layerId: string; view: CameraRawView; setView: (v: CameraRawView) => void }) {
+  const state = useEditor(), ref = useRef<HTMLCanvasElement>(null), [scope, setScope] = useState<'Histogram' | 'Vectorscope'>('Histogram')
+  // The Option views and Visualize Range replace the picture, so the scope holds still under them; the triangles only mark clipped pixels.
+  const image = store.layer(layerId)?.image, frozen = !!view.clipping || !!view.sharpenMask || (view.visualize ?? -1) >= 0
   useEffect(() => {
     const canvas = ref.current
-    if (!canvas || !image) return
-    const bins = [new Float64Array(256), new Float64Array(256), new Float64Array(256)], { width, height, data } = image
+    if (!canvas || !image || frozen) return
+    const bins = [new Float64Array(256), new Float64Array(256), new Float64Array(256)], side = 64, plot = new Float64Array(side * side), { width, height, data } = image
     for (let y = 0; y < height; y += 2) for (let x = 0; x < width; x += 2) {
       const i = (y * width + x) * 4, a = data[i + 3]
-      if (a) for (let c = 0; c < 3; c++) bins[c][Math.min(255, Math.round(data[i + c] * 255 / a))] += a / 255
+      if (!a) continue
+      const r = Math.min(1, data[i] / a), g = Math.min(1, data[i + 1] / a), b = Math.min(1, data[i + 2] / a), w = a / 255
+      bins[0][Math.round(r * 255)] += w; bins[1][Math.round(g * 255)] += w; bins[2][Math.round(b * 255)] += w
+      const top = Math.max(r, g, b), chroma = top - Math.min(r, g, b)
+      if (chroma <= 1e-4 || top <= 1e-4) continue
+      let hue = (top === r ? (g - b) / chroma : top === g ? 2 + (b - r) / chroma : 4 + (r - g) / chroma) / 6
+      if (hue < 0) hue += 1
+      const angle = hue * 2 * Math.PI, saturation = chroma / top
+      const column = Math.min(side - 1, Math.max(0, Math.floor((0.5 + Math.cos(angle) * saturation * 0.48) * side))), line = Math.min(side - 1, Math.max(0, Math.floor((0.5 + Math.sin(angle) * saturation * 0.48) * side)))
+      plot[line * side + column] += w
     }
-    // Scaled to the tallest bin short of the ends, where clipping piles up.
-    const peak = Math.max(1e-9, ...bins.flatMap(b => [...b.subarray(1, 255)])) * 1.05
     const dpr = window.devicePixelRatio || 1, w = canvas.clientWidth, h = canvas.clientHeight
     canvas.width = w * dpr; canvas.height = h * dpr
     const c = canvas.getContext('2d')!
     c.setTransform(dpr, 0, 0, dpr, 0, 0)
     c.clearRect(0, 0, w, h)
+    if (scope === 'Vectorscope') {
+      const peak = Math.max(1e-9, ...plot), cell = Math.min(w, h) / side, left = (w - cell * side) / 2
+      plot.forEach((v, i) => { if (v > 0) { c.fillStyle = `rgba(255,255,255,${0.15 + 0.85 * Math.min(1, v / peak)})`; c.fillRect(left + (i % side) * cell, h - (Math.floor(i / side) + 1) * cell, cell + 0.2, cell + 0.2) } })
+      return
+    }
+    // Scaled to the tallest bin short of the ends, where clipping piles up.
+    const peak = Math.max(1e-9, ...bins.flatMap(b => [...b.subarray(1, 255)])) * 1.05
     c.globalCompositeOperation = 'lighter'
     bins.forEach((b, k) => {
       c.beginPath(); c.moveTo(0, h)
       for (let i = 0; i < 256; i++) c.lineTo(i * w / 255, h - h * Math.min(1, b[i] / peak))
       c.lineTo(w, h); c.closePath(); c.fillStyle = ['rgba(230,60,60,0.6)', 'rgba(60,200,80,0.6)', 'rgba(70,120,240,0.6)'][k]; c.fill()
     })
-  }, [image, state.pixelRevision])
-  return <canvas ref={ref} className="raw-histogram" title="Tones from black on the left to white on the right: blacks, shadows, midtones, highlights, whites" />
+  }, [image, state.pixelRevision, frozen, scope])
+  const triangle = (shadows: boolean) => {
+    const on = shadows ? view.shadows : view.highlights
+    return <button type="button" className="clip-triangle" style={{ [shadows ? 'left' : 'right']: 4, color: on ? (shadows ? '#4a8cff' : '#ff5050') : 'rgba(255,255,255,0.55)' }} title={shadows ? 'Show clipped shadows in blue on the preview' : 'Show clipped highlights in red on the preview'} onClick={() => setView({ ...view, [shadows ? 'shadows' : 'highlights']: !on })}>▲</button>
+  }
+  return (
+    <div className="raw-scope">
+      <canvas ref={ref} className="raw-histogram" onContextMenu={e => { e.preventDefault(); setScope(scope === 'Histogram' ? 'Vectorscope' : 'Histogram') }}
+        title={scope === 'Histogram' ? 'Tones from black on the left to white on the right: blacks, shadows, midtones, highlights, whites. Right-click to show the vectorscope.' : 'Hue around the wheel, saturation outward from the center. Right-click to show the histogram.'} />
+      {scope === 'Histogram' && <>{triangle(true)}{triangle(false)}</>}
+    </div>
+  )
 }
 
 // A color wheel for Color Grading: angle is hue, distance from the middle is saturation. Double-click empties it.
@@ -134,41 +173,63 @@ function rawTone(c: CurveSettings, x: number) {
 const presets: Record<string, CurvePoint[]> = { Linear: [{ x: 0, y: 0 }, { x: 1, y: 1 }], 'Medium Contrast': [{ x: 0, y: 0 }, { x: 0.25, y: 0.18 }, { x: 0.75, y: 0.82 }, { x: 1, y: 1 }], 'Strong Contrast': [{ x: 0, y: 0 }, { x: 0.25, y: 0.1 }, { x: 0.75, y: 0.9 }, { x: 1, y: 1 }] }
 const channelKeys = ['rgb', 'red', 'green', 'blue'] as const, channelLabels = ['RGB', 'Red', 'Green', 'Blue'] as const
 
-function CurveControls({ s, set }: { s: CameraRawSettings; set: Set }) {
-  const [page, setPage] = useState<'Parametric' | 'Point'>('Parametric'), [channel, setChannel] = useState(0)
+const Targeted = ({ on, onClick, title }: { on: boolean; onClick: () => void; title: string }) => <button type="button" className={on ? 'primary' : ''} title={title} onClick={onClick}>◎ Targeted Adjustment</button>
+
+function CurveControls({ s, set, ui, setUi }: { s: CameraRawSettings; set: Set } & UiProps) {
   const curve = s.curve, write = (c: Partial<CurveSettings>) => set(x => ({ ...x, curve: { ...x.curve, ...c } }))
-  const points = curve[channelKeys[channel]], preset = Object.keys(presets).find(k => JSON.stringify(presets[k]) === JSON.stringify(points)) ?? 'Custom'
+  const channel = ui.channel, points = curve[channelKeys[channel]], preset = Object.keys(presets).find(k => JSON.stringify(presets[k]) === JSON.stringify(points)) ?? 'Custom'
   const adjustment = { ...newAdjustment('Curves'), curves: { channel: channelLabels[channel], channels: channelKeys.map(k => curve[k].map(p => ({ x: Math.round(p.x * 255), y: Math.round(p.y * 255) }))) } } as ReturnType<typeof newAdjustment>
   return <>
-    <span className="segmented" title="Parametric lifts tonal regions. Point places anchors on the curve.">{(['Parametric', 'Point'] as const).map(p => <button key={p} type="button" className={page === p ? 'on' : ''} onClick={() => setPage(p)}>{p}</button>)}</span>
-    {page === 'Parametric' ? <>
+    <span className="segmented" title="Parametric lifts tonal regions. Point places anchors on the curve.">{(['Parametric', 'Point'] as const).map(p => <button key={p} type="button" className={ui.curvePage === p ? 'on' : ''} onClick={() => setUi({ curvePage: p })}>{p}</button>)}</span>
+    {ui.curvePage === 'Parametric' ? <>
       <ParametricCurve curve={curve} onChange={c => write(c)} />
-      <RawSlider label="Highlights" value={curve.highlights} min={-100} max={100} onChange={highlights => write({ highlights })} title="Moves the brightest region of the curve." />
-      <RawSlider label="Lights" value={curve.lights} min={-100} max={100} onChange={lights => write({ lights })} title="Moves the light region of the curve." />
-      <RawSlider label="Darks" value={curve.darks} min={-100} max={100} onChange={darks => write({ darks })} title="Moves the dark region of the curve." />
-      <RawSlider label="Shadows" value={curve.shadows} min={-100} max={100} onChange={shadows => write({ shadows })} title="Moves the darkest region of the curve." />
+      <RawSlider label="Highlights" value={curve.highlights} min={-100} max={100} onChange={highlights => write({ highlights })} title="Lifts or lowers the brightest tones." />
+      <RawSlider label="Lights" value={curve.lights} min={-100} max={100} onChange={lights => write({ lights })} title="Lifts or lowers the light tones." />
+      <RawSlider label="Darks" value={curve.darks} min={-100} max={100} onChange={darks => write({ darks })} title="Lifts or lowers the dark tones." />
+      <RawSlider label="Shadows" value={curve.shadows} min={-100} max={100} onChange={shadows => write({ shadows })} title="Lifts or lowers the darkest tones." />
     </> : <>
-      <div className="row"><span className="muted">Channel</span><select value={channel} title="RGB changes brightness. Red, green, and blue also shift the color." onChange={e => setChannel(+e.target.value)}>{channelLabels.map((l, i) => <option key={l} value={i}>{l}</option>)}</select><span /></div>
+      <div className="row"><span className="muted">Channel</span><select value={channel} title="RGB changes brightness. Red, green, and blue also shift the color." onChange={e => setUi({ channel: +e.target.value })}>{channelLabels.map((l, i) => <option key={l} value={i}>{l}</option>)}</select><span /></div>
       <CurvesEditor adjustment={adjustment} onChange={a => write({ [channelKeys[channel]]: a.curves.channels[channel].map(p => ({ x: p.x / 255, y: p.y / 255 })) })} />
       <div className="row"><span className="muted">Preset</span><select value={preset} title="Replaces this curve with a straight line or a contrast curve." onChange={e => presets[e.target.value] && write({ [channelKeys[channel]]: presets[e.target.value] })}><option disabled>Custom</option>{Object.keys(presets).map(k => <option key={k}>{k}</option>)}</select><span /></div>
     </>}
     <RawSlider label="Refine Saturation" value={curve.refineSaturation} min={-100} max={100} onChange={refineSaturation => write({ refineSaturation })} title="How much the curve also changes color strength. Zero matches Photoshop; lower keeps it to brightness, higher adds color." />
+    <Targeted on={ui.tool === 'curve'} onClick={() => setUi({ tool: ui.tool === 'curve' ? null : 'curve' })} title="Drag up or down on the picture to lift or lower the tones under the pointer." />
   </>
 }
 
-function MixerControls({ s, set }: { s: CameraRawSettings; set: Set }) {
-  const [page, setPage] = useState<'HSL' | 'Color'>('HSL'), [tab, setTab] = useState<'hue' | 'saturation' | 'luminance'>('hue'), [color, setColor] = useState(0)
+function MixerControls({ s, set, ui, setUi, view, setView }: { s: CameraRawSettings; set: Set; view: CameraRawView; setView: (v: CameraRawView) => void } & UiProps) {
   const write = (kind: 'hue' | 'saturation' | 'luminance', index: number, v: number) => set(x => ({ ...x, mixer: { ...x.mixer, [kind]: x.mixer[kind].map((old, i) => i === index ? v : old) } }))
   const track = (kind: 'hue' | 'saturation' | 'luminance', index: number) => tracks[kind](mixerCenters[index])
+  const points = s.mixer.points, point = points[ui.point]
+  const writePoint = (change: Partial<typeof point>) => set(x => ({ ...x, mixer: { ...x.mixer, points: x.mixer.points.map((p, i) => i === ui.point ? { ...p, ...change } : p) } }))
   return <>
-    <span className="segmented" title="HSL lists every color. Color edits one family.">{(['HSL', 'Color'] as const).map(p => <button key={p} type="button" className={page === p ? 'on' : ''} onClick={() => setPage(p)}>{p}</button>)}</span>
-    {page === 'HSL' ? <>
-      <span className="segmented" title="Hue shifts the color, Saturation its strength, and Luminance its brightness.">{(['hue', 'saturation', 'luminance'] as const).map(t => <button key={t} type="button" className={tab === t ? 'on' : ''} onClick={() => setTab(t)}>{t[0].toUpperCase() + t.slice(1)}</button>)}</span>
-      {mixerNames.map((name, i) => <RawSlider key={name} label={name} value={s.mixer[tab][i]} min={-100} max={100} track={track(tab, i)} onChange={v => write(tab, i, v)} />)}
-    </> : <>
-      <div style={{ display: 'flex', gap: 6 }}>{mixerNames.map((name, i) => <button key={name} type="button" title={`Edit ${name}`} className={`swatch-dot ${color === i ? 'on' : ''}`} style={{ background: hsb(mixerCenters[i], 0.85, 0.9) }} onClick={() => setColor(i)} />)}</div>
-      {(['hue', 'saturation', 'luminance'] as const).map(kind => <RawSlider key={kind} label={kind[0].toUpperCase() + kind.slice(1)} value={s.mixer[kind][color]} min={-100} max={100} track={track(kind, color)} onChange={v => write(kind, color, v)} />)}
+    <span className="segmented" title="HSL lists every color. Color edits one family. Point Color adjusts a color you pick.">{(['HSL', 'Color', 'Point Color'] as const).map(p => <button key={p} type="button" className={ui.mixerPage === p ? 'on' : ''} onClick={() => setUi({ mixerPage: p })}>{p}</button>)}</span>
+    {ui.mixerPage === 'HSL' && <>
+      <span className="segmented" title="Hue shifts the color, Saturation its strength, and Luminance its brightness.">{(['hue', 'saturation', 'luminance'] as const).map(t => <button key={t} type="button" className={ui.mixerTab === t ? 'on' : ''} onClick={() => setUi({ mixerTab: t })}>{t[0].toUpperCase() + t.slice(1)}</button>)}</span>
+      {mixerNames.map((name, i) => <RawSlider key={name} label={name} value={s.mixer[ui.mixerTab][i]} min={-100} max={100} track={track(ui.mixerTab, i)} onChange={v => write(ui.mixerTab, i, v)} />)}
     </>}
+    {ui.mixerPage === 'Color' && <>
+      <div style={{ display: 'flex', gap: 6 }}>{mixerNames.map((name, i) => <button key={name} type="button" title={`Edit ${name}`} className={`swatch-dot ${ui.mixerColor === i ? 'on' : ''}`} style={{ background: hsb(mixerCenters[i], 0.85, 0.9) }} onClick={() => setUi({ mixerColor: i })} />)}</div>
+      {(['hue', 'saturation', 'luminance'] as const).map(kind => <RawSlider key={kind} label={kind[0].toUpperCase() + kind.slice(1)} value={s.mixer[kind][ui.mixerColor]} min={-100} max={100} track={track(kind, ui.mixerColor)} onChange={v => write(kind, ui.mixerColor, v)} />)}
+    </>}
+    {ui.mixerPage === 'Point Color' && <>
+      <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+        <button type="button" className={`icon ${ui.tool === 'point' ? 'on' : ''}`} title="Click the picture to save a color. Up to eight colors." onClick={() => setUi({ tool: ui.tool === 'point' ? null : 'point' })}>⌖</button>
+        {points.map((p, i) => <button key={i} type="button" title="Select this picked color" className={`swatch-dot ${ui.point === i ? 'on' : ''}`} style={{ background: hsb(p.hue, p.saturation, p.luminance) }} onClick={() => setUi({ point: i })} />)}
+        {point && <button type="button" title="Remove this picked color" onClick={() => { set(x => ({ ...x, mixer: { ...x.mixer, points: x.mixer.points.filter((_, i) => i !== ui.point) } })); setUi({ point: Math.max(0, ui.point - 1) }); if (view.visualize !== undefined) setView({ ...view, visualize: -1 }) }}>Remove</button>}
+      </div>
+      {ui.tool === 'point' && <span className="muted">Click the picture to save its color.</span>}
+      {point && <>
+        <RawSlider label="Hue Shift" value={point.hueShift} min={-100} max={100} track={tracks.hue(point.hue)} title="Shifts the picked color around the color wheel." onChange={hueShift => writePoint({ hueShift })} />
+        <RawSlider label="Saturation Shift" value={point.saturationShift} min={-100} max={100} track={tracks.saturation(point.hue)} title="Makes the picked color stronger or quieter." onChange={saturationShift => writePoint({ saturationShift })} />
+        <RawSlider label="Luminance Shift" value={point.luminanceShift} min={-100} max={100} track={tracks.luminance(point.hue)} title="Makes the picked color lighter or darker." onChange={luminanceShift => writePoint({ luminanceShift })} />
+        <RawSlider label="Hue Range" value={point.hueRange} min={5} max={180} reset={30} title="How far in hue the adjustment reaches." onChange={hueRange => writePoint({ hueRange })} />
+        <RawSlider label="Saturation Range" value={point.saturationRange} min={0.05} max={1} reset={0.4} digits={2} title="How far in saturation the adjustment reaches." onChange={saturationRange => writePoint({ saturationRange })} />
+        <RawSlider label="Luminance Range" value={point.luminanceRange} min={0.05} max={1} reset={0.4} digits={2} title="How far in brightness the adjustment reaches." onChange={luminanceRange => writePoint({ luminanceRange })} />
+        <label title="Dims the picture outside this color's range. It is not kept when you press OK."><input type="checkbox" checked={view.visualize === ui.point} onChange={e => setView({ ...view, visualize: e.target.checked ? ui.point : -1 })} /> Visualize Range</label>
+      </>}
+    </>}
+    {ui.mixerPage !== 'Point Color' && <Targeted on={ui.tool === 'mixer'} onClick={() => setUi({ tool: ui.tool === 'mixer' ? null : 'mixer' })} title="Drag a color in the picture up or down. Nearby color families move together." />}
   </>
 }
 
@@ -192,15 +253,24 @@ function GradingControls({ s, set }: { s: CameraRawSettings; set: Set }) {
   </>
 }
 
-// What the eyedroppers read: the layer as it was before the filter, at a point on the canvas.
-function sampleOriginal(original: Raster, layerId: string, point: [number, number]): [number, number, number] | null {
+// What a layer's pixels hold at a point on the canvas: straight colors (0…1), or null outside or where it's clear.
+function sample(image: Raster | null | undefined, layerId: string, point: [number, number]): [number, number, number] | null {
   const layer = store.layer(layerId)
-  if (!layer) return null
-  const [x, y] = apply(invert(pixelToDocument(layer.transform, original.width, original.height)), ...point).map(Math.floor)
-  if (x < 0 || y < 0 || x >= original.width || y >= original.height) return null
-  const i = (y * original.width + x) * 4, a = original.data[i + 3]
-  return a ? [0, 1, 2].map(c => Math.min(1, original.data[i + c] / a)) as [number, number, number] : null
+  if (!layer || !image) return null
+  const [x, y] = apply(invert(pixelToDocument(layer.transform, image.width, image.height)), ...point).map(Math.floor)
+  if (x < 0 || y < 0 || x >= image.width || y >= image.height) return null
+  const i = (y * image.width + x) * 4, a = image.data[i + 3]
+  return a ? [0, 1, 2].map(c => Math.min(1, image.data[i + c] / a)) as [number, number, number] : null
 }
+const hueOf = ([r, g, b]: [number, number, number]) => { const max = Math.max(r, g, b), chroma = max - Math.min(r, g, b); if (chroma <= 1e-6) return 0; const h = (max === r ? (g - b) / chroma : max === g ? 2 + (b - r) / chroma : 4 + (r - g) / chroma) * 60; return h < 0 ? h + 360 : h }
+// A point on the canvas as a fraction of the layer's grid from its lower left, as Upright's guides keep them.
+function onGrid(layerId: string, image: Raster | null | undefined, point: [number, number]): [number, number] | null {
+  const layer = store.layer(layerId)
+  if (!layer || !image) return null
+  const [x, y] = apply(invert(pixelToDocument(layer.transform, image.width, image.height)), ...point)
+  return x < 0 || y < 0 || x > image.width || y > image.height ? null : [x / image.width, 1 - y / image.height]
+}
+const fromGrid = (layerId: string, image: Raster, x: number, y: number) => { const layer = store.layer(layerId)!; return stage.toScreen(...apply(pixelToDocument(layer.transform, image.width, image.height), x * image.width, (1 - y) * image.height)) }
 
 // Camera Raw's adjustment column (CameraRawControls.swift): the histogram, then each section, opened by its heading, with an eye that
 // leaves it out of the preview and OK, and a reset, both shown once it adjusts something.
@@ -211,54 +281,144 @@ export function CameraRawPanel({ params, set, layerId }: { params: CameraRawPara
   const original = useMemo(() => store.layer(layerId)?.image ?? null, [])
   const [open, setOpen] = useState<CameraRawGroup[]>(['Light', 'Color', 'Color Grading'])
   const [ready, setReady] = useState(false), [failed, setFailed] = useState<string | null>(null)
-  const [sampling, setSampling] = useState<'white' | 'defringe' | null>(null)
+  const [ui, setUiState] = useState<Ui>({ curvePage: 'Parametric', channel: 0, mixerPage: 'HSL', mixerTab: 'hue', mixerColor: 0, point: 0, tool: null })
+  const uiRef = useRef(ui)
+  uiRef.current = ui
+  const setUi = (u: Partial<Ui>) => setUiState(old => ({ ...old, ...u }))
+  const [readout, setReadout] = useState<number[] | null>(null)
+  const setView = (view: CameraRawView) => set({ view })
+  const showView = (kind: 1 | 2 | 'mask' | null) => {
+    const v = latest.current.view, next = { ...v, clipping: typeof kind === 'number' ? kind : 0, sharpenMask: kind === 'mask' } as CameraRawView
+    if (!!v.clipping !== !!next.clipping || v.clipping !== next.clipping || !!v.sharpenMask !== next.sharpenMask) set({ view: next })
+  }
   useEffect(() => { loadCameraRawTables().then(() => setReady(true), e => setFailed((e as Error).message)) }, [])
+  // Letting go of Option ends the clipping or sharpening-mask view.
   useEffect(() => {
-    if (!sampling || !original) return
-    canvasPicker.current = point => {
-      const rgb = sampleOriginal(original, layerId, point), current = latest.current.settings
-      if (!rgb) return
-      if (sampling === 'white') {
-        const solved = neutralize(...rgb)
-        if (solved) set({ settings: { ...current, whiteBalance: 'Custom', temperature: solved.temperature, tint: solved.tint } })
-        return
+    const key = (event: KeyboardEvent) => {
+      optionHeld = event.altKey
+      const v = latest.current.view
+      if (!event.altKey && (v.clipping || v.sharpenMask)) set({ view: { ...v, clipping: 0, sharpenMask: false } })
+    }
+    window.addEventListener('keydown', key); window.addEventListener('keyup', key)
+    return () => { window.removeEventListener('keydown', key); window.removeEventListener('keyup', key); optionHeld = false }
+  }, [])
+  // The color under the pointer, as the preview shows it.
+  useEffect(() => {
+    const move = (event: PointerEvent) => {
+      const element = (event.target as Element | null)?.closest?.('.stage')
+      if (!element) { setReadout(null); return }
+      const box = element.getBoundingClientRect(), rgb = sample(store.layer(layerId)?.image, layerId, stage.toDocument(event.clientX - box.left, event.clientY - box.top))
+      setReadout(rgb ? rgb.map(v => Math.round(v * 255)) : null)
+    }
+    window.addEventListener('pointermove', move)
+    return () => window.removeEventListener('pointermove', move)
+  }, [])
+  // The tool on the canvas: eyedroppers take clicks, the targeted drag and guides take drags.
+  useEffect(() => {
+    const tool = ui.tool
+    if (!tool) return
+    const shown = () => store.layer(layerId)?.image
+    if (tool === 'white' || tool === 'defringe' || tool === 'point') {
+      canvasPicker.current = point => {
+        const current = latest.current.settings
+        if (tool === 'point') {
+          const rgb = sample(shown(), layerId, point)
+          if (!rgb) return
+          const max = Math.max(...rgb), min = Math.min(...rgb), color = newPointColor(hueOf(rgb), max ? (max - min) / max : 0, (max + min) / 2)
+          const points = current.mixer.points, index = uiRef.current.point
+          if (points[index] && points.length >= 8) set({ settings: { ...current, mixer: { ...current.mixer, points: points.map((p, i) => i === index ? { ...color, hueShift: p.hueShift, saturationShift: p.saturationShift, luminanceShift: p.luminanceShift } : p) } } })
+          else if (points.length < 8) { set({ settings: { ...current, mixer: { ...current.mixer, points: [...points, color] } } }); setUi({ point: points.length }) }
+          return
+        }
+        const rgb = original && sample(original, layerId, point)
+        if (!rgb) return
+        if (tool === 'white') {
+          const solved = neutralize(...rgb)
+          if (solved) set({ settings: { ...current, whiteBalance: 'Custom', temperature: solved.temperature, tint: solved.tint } })
+          return
+        }
+        const hue = hueOf(rgb), o = current.optics, purple = Math.abs(hue - 290) < Math.abs(hue - 90), clampHue = (v: number) => Math.min(360, Math.max(0, v))
+        set({ settings: { ...current, optics: purple ? { ...o, purpleHueLow: clampHue(hue - 25), purpleHueHigh: clampHue(hue + 25), purpleAmount: o.purpleAmount || 50 } : { ...o, greenHueLow: clampHue(hue - 25), greenHueHigh: clampHue(hue + 25), greenAmount: o.greenAmount || 50 } } })
       }
-      const [r, g, b] = rgb, max = Math.max(r, g, b), chroma = max - Math.min(r, g, b)
-      let hue = chroma <= 1e-6 ? 0 : max === r ? (g - b) / chroma : max === g ? 2 + (b - r) / chroma : 4 + (r - g) / chroma
-      hue = (hue * 60 + 360) % 360
-      const o = current.optics, purple = Math.abs(hue - 290) < Math.abs(hue - 90), clampHue = (v: number) => Math.min(360, Math.max(0, v))
-      set({ settings: { ...current, optics: purple ? { ...o, purpleHueLow: clampHue(hue - 25), purpleHueHigh: clampHue(hue + 25), purpleAmount: o.purpleAmount || 50 } : { ...o, greenHueLow: clampHue(hue - 25), greenHueHigh: clampHue(hue + 25), greenAmount: o.greenAmount || 50 } } })
+      requestRender(false)
+      return () => { canvasPicker.current = null; requestRender(false) }
+    }
+    // Targeted adjustment (EditorSession.dragCameraRaw): up raises what's under the pointer where the drag began, by 0.35 a point.
+    let drag: { y: number; settings: CameraRawSettings; tone: number; hue: number } | null = null
+    let draft: Guide | null = null
+    canvasGesture.current = {
+      down: (point, screen) => {
+        if (tool === 'guides') { const at = onGrid(layerId, original, point); draft = at ? { startX: at[0], startY: at[1], endX: at[0], endY: at[1] } : null; return }
+        const rgb = sample(shown(), layerId, point)
+        drag = rgb ? { y: screen[1], settings: latest.current.settings, tone: 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2], hue: hueOf(rgb) } : null
+      },
+      move: point => {
+        if (tool === 'guides') { const at = onGrid(layerId, original, point); if (draft && at) { draft = { ...draft, endX: at[0], endY: at[1] }; requestRender(false) } return }
+        if (!drag) return
+        const delta = (drag.y - stage.toScreen(...point)[1]) * 0.35, base = drag.settings, u = uiRef.current, clamp = (v: number) => Math.min(100, Math.max(-100, v))
+        if (tool === 'curve') {
+          const c = base.curve
+          if (u.curvePage === 'Parametric') {
+            const key = drag.tone < c.shadowSplit / 100 ? 'shadows' : drag.tone < c.darkSplit / 100 ? 'darks' : drag.tone < c.lightSplit / 100 ? 'lights' : 'highlights'
+            set({ settings: { ...base, curve: { ...c, [key]: clamp(c[key] + delta) } } })
+          } else {
+            const key = channelKeys[u.channel], points = c[key], tone = drag.tone
+            const index = points.reduce((best, p, i) => Math.abs(p.x - tone) < Math.abs(points[best].x - tone) ? i : best, 0)
+            set({ settings: { ...base, curve: { ...c, [key]: points.map((p, i) => i === index ? { ...p, y: Math.min(1, Math.max(0, p.y + delta / 100)) } : p) } } })
+          }
+        } else {
+          const weights = mixerCenters.map(center => { let d = Math.abs(drag!.hue - center); if (d > 180) d = 360 - d; return Math.max(0, 1 - d / 40) })
+          const tab = u.mixerPage === 'HSL' ? u.mixerTab : 'hue'
+          set({ settings: { ...base, mixer: { ...base.mixer, [tab]: base.mixer[tab].map((v, i) => weights[i] > 0 ? clamp(v + delta * weights[i]) : v) } } })
+        }
+      },
+      up: () => {
+        drag = null
+        if (tool !== 'guides' || !draft) return
+        const g = latest.current.settings.geometry, done = draft
+        draft = null
+        if (Math.hypot(done.endX - done.startX, done.endY - done.startY) > 0.01) set({ settings: { ...latest.current.settings, geometry: { ...g, upright: 'Guided', guides: [...g.guides, done] } } })
+      },
+      draw: c => {
+        if (tool !== 'guides' || !original) return
+        for (const guide of [...latest.current.settings.geometry.guides, ...(draft ? [draft] : [])]) {
+          const [x0, y0] = fromGrid(layerId, original, guide.startX, guide.startY), [x1, y1] = fromGrid(layerId, original, guide.endX, guide.endY)
+          c.beginPath(); c.moveTo(x0, y0); c.lineTo(x1, y1); c.strokeStyle = 'rgba(0,0,0,0.7)'; c.lineWidth = 3; c.stroke(); c.strokeStyle = '#ffd60a'; c.lineWidth = 1.5; c.stroke()
+        }
+      },
     }
     requestRender(false)
-    return () => { canvasPicker.current = null }
-  }, [sampling])
+    return () => { canvasGesture.current = null; requestRender(false) }
+  }, [ui.tool])
+  useEffect(() => { if (ui.tool === 'guides') requestRender(false) }, [s.geometry.guides])
   const setWhiteBalance = (mode: 'Custom' | 'Auto') => {
     if (mode === 'Custom' || !original) { update(x => ({ ...x, whiteBalance: mode })); return }
     const solved = autoBalance(original)
     update(x => ({ ...x, whiteBalance: 'Auto', ...(solved ?? {}) }))
   }
   const toggle = (list: CameraRawGroup[], group: CameraRawGroup) => list.includes(group) ? list.filter(g => g !== group) : [...list, group]
+  const pick = (tool: Tool) => setUi({ tool: ui.tool === tool ? null : tool })
   const num = (key: keyof CameraRawSettings) => s[key] as number
-  const field = (label: string, key: keyof CameraRawSettings, min: number, max: number, extra: { reset?: number; digits?: number; track?: string[]; title?: string; disabled?: boolean } = {}) =>
+  const field = (label: string, key: keyof CameraRawSettings, min: number, max: number, extra: { reset?: number; digits?: number; track?: string[]; title?: string; disabled?: boolean; shows?: 1 | 2 } = {}) =>
     <RawSlider label={label} value={num(key)} min={min} max={max} {...extra} onChange={v => update(x => ({ ...x, [key]: v, ...(key === 'temperature' || key === 'tint' ? { whiteBalance: 'Custom' } : {}) }))} />
-  const sub = <K extends 'detail' | 'optics' | 'geometry' | 'calibration'>(group: K, label: string, key: keyof CameraRawSettings[K], min: number, max: number, extra: { reset?: number; title?: string; disabled?: boolean } = {}) =>
+  const sub = <K extends 'detail' | 'optics' | 'geometry' | 'calibration'>(group: K, label: string, key: keyof CameraRawSettings[K], min: number, max: number, extra: { reset?: number; title?: string; disabled?: boolean; shows?: 'mask' } = {}) =>
     <RawSlider label={label} value={s[group][key] as number} min={min} max={max} {...extra} onChange={v => update(x => ({ ...x, [group]: { ...x[group], [key]: v } }))} />
   const check = <K extends 'optics' | 'geometry'>(group: K, label: string, key: keyof CameraRawSettings[K], title: string) =>
     <label title={title}><input type="checkbox" checked={!!s[group][key]} onChange={e => update(x => ({ ...x, [group]: { ...x[group], [key]: e.target.checked } }))} /> {label}</label>
   const section = (group: CameraRawGroup) => {
     switch (group) {
       case 'Light': return <>
-        {field('Exposure', 'exposure', -5, 5, { digits: 2, title: 'Brightens or darkens the whole picture, in stops of light.' })}
+        {field('Exposure', 'exposure', -5, 5, { digits: 2, shows: 1, title: 'Brightens or darkens the whole picture, in stops of light. Hold Option to see clipped highlights.' })}
         {field('Contrast', 'contrast', -100, 100, { title: 'Makes light and dark tones more or less different, mostly around the middle.' })}
-        {field('Highlights', 'highlights', -100, 100, { title: 'Adjusts the bright parts of the picture.' })}
-        {field('Shadows', 'shadows', -100, 100, { title: 'Adjusts the dark parts of the picture.' })}
-        {field('Whites', 'whites', -100, 100, { title: 'Sets the brightest point.' })}
-        {field('Blacks', 'blacks', -100, 100, { title: 'Sets the darkest point.' })}
+        {field('Highlights', 'highlights', -100, 100, { shows: 1, title: 'Adjusts the bright parts of the picture. Hold Option to see clipped highlights.' })}
+        {field('Shadows', 'shadows', -100, 100, { shows: 2, title: 'Adjusts the dark parts of the picture. Hold Option to see clipped shadows.' })}
+        {field('Whites', 'whites', -100, 100, { shows: 1, title: 'Sets the brightest point. Hold Option to see clipped highlights.' })}
+        {field('Blacks', 'blacks', -100, 100, { shows: 2, title: 'Sets the darkest point. Hold Option to see clipped shadows.' })}
       </>
       case 'Color': return <>
         <div className="row" title="Auto balances the average color. Custom follows Temperature and Tint."><span className="muted">White Balance</span><select value={s.whiteBalance} onChange={e => setWhiteBalance(e.target.value as 'Custom' | 'Auto')}><option>Custom</option><option>Auto</option></select>
-          <button type="button" className={`icon ${sampling === 'white' ? 'on' : ''}`} title="White Balance Selector: click a pixel that should be neutral" onClick={() => setSampling(sampling === 'white' ? null : 'white')}>⌖</button></div>
-        {sampling === 'white' && <span className="muted">Click the layer where it should be neutral. Click the eyedropper again to stop.</span>}
+          <button type="button" className={`icon ${ui.tool === 'white' ? 'on' : ''}`} title="White Balance Selector: click a pixel that should be neutral" onClick={() => pick('white')}>⌖</button></div>
+        {ui.tool === 'white' && <span className="muted">Click the layer where it should be neutral. Click the eyedropper again to stop.</span>}
         {field('Temperature', 'temperature', -100, 100, { track: tracks.temperature, title: 'Shifts the picture from blue to yellow.' })}
         {field('Tint', 'tint', -100, 100, { track: tracks.tint, title: 'Shifts the picture from green to mauve.' })}
         {field('Vibrance', 'vibrance', -100, 100, { track: tracks.chroma, title: 'Strengthens quiet colors more than colors that are already strong, and protects skin tones.' })}
@@ -287,14 +447,14 @@ export function CameraRawPanel({ params, set, layerId }: { params: CameraRawPara
         {field('Size', 'grainSize', 0, 100, { reset: 25, title: 'Makes the grain coarser or finer.' })}
         {field('Roughness', 'grainRoughness', 0, 100, { reset: 50, title: 'Makes the grain smoother or more uneven.' })}
       </>
-      case 'Curve': return <CurveControls s={s} set={update} />
-      case 'Color Mixer': return <MixerControls s={s} set={update} />
+      case 'Curve': return <CurveControls s={s} set={update} ui={ui} setUi={setUi} />
+      case 'Color Mixer': return <MixerControls s={s} set={update} ui={ui} setUi={setUi} view={params.view} setView={setView} />
       case 'Detail': return <>
         <Heading>Sharpening</Heading>
         {sub('detail', 'Amount', 'sharpenAmount', 0, 150, { title: 'Controls how strong the sharpening is.' })}
         {sub('detail', 'Radius', 'sharpenRadius', 0, 100, { reset: 10, title: 'How far from each edge the sharpening reaches, in pixels.' })}
         {sub('detail', 'Detail', 'sharpenDetail', 0, 100, { reset: 25, title: 'Emphasizes fine texture over broader edges.' })}
-        {sub('detail', 'Masking', 'sharpenMasking', 0, 100, { title: 'Limits sharpening to stronger edges.' })}
+        {sub('detail', 'Masking', 'sharpenMasking', 0, 100, { shows: 'mask', title: 'Limits sharpening to stronger edges. Hold Option to see the mask.' })}
         <Heading>Noise Reduction</Heading>
         {sub('detail', 'Luminance', 'noiseLuminance', 0, 100, { title: 'Smooths grain and noise in brightness.' })}
         {sub('detail', 'Luminance Detail', 'noiseLuminanceDetail', 0, 100, { reset: 50, disabled: !s.detail.noiseLuminance, title: 'Preserves fine texture while luminance noise is reduced.' })}
@@ -313,8 +473,8 @@ export function CameraRawPanel({ params, set, layerId }: { params: CameraRawPara
         </>}
         <Heading>Manual</Heading>
         {sub('optics', 'Distortion', 'distortion', -100, 100, { title: 'Straightens barrel or pincushion bending.' })}
-        <div className="row" title="Click a purple or green fringe to set its hue range."><span className="muted">Defringe</span><button type="button" className={`icon ${sampling === 'defringe' ? 'on' : ''}`} style={{ justifySelf: 'start' }} title="Defringe Selector: click a purple or green fringe" onClick={() => setSampling(sampling === 'defringe' ? null : 'defringe')}>⌖</button><span /></div>
-        {sampling === 'defringe' && <span className="muted">Click the fringe on the layer. Click the eyedropper again to stop.</span>}
+        <div className="row" title="Click a purple or green fringe to set its hue range."><span className="muted">Defringe</span><button type="button" className={`icon ${ui.tool === 'defringe' ? 'on' : ''}`} style={{ justifySelf: 'start' }} title="Defringe Selector: click a purple or green fringe" onClick={() => pick('defringe')}>⌖</button><span /></div>
+        {ui.tool === 'defringe' && <span className="muted">Click the fringe on the layer. Click the eyedropper again to stop.</span>}
         {sub('optics', 'Purple Amount', 'purpleAmount', 0, 100, { title: 'Weakens purple fringes inside the purple hue range.' })}
         {sub('optics', 'Purple Hue Low', 'purpleHueLow', 0, 360, { reset: 270, title: 'Start of the purple hue range, in degrees.' })}
         {sub('optics', 'Purple Hue High', 'purpleHueHigh', 0, 360, { reset: 310, title: 'End of the purple hue range, in degrees.' })}
@@ -325,6 +485,12 @@ export function CameraRawPanel({ params, set, layerId }: { params: CameraRawPara
         {sub('optics', 'Midpoint', 'vignetteMidpoint', 0, 100, { reset: 50, title: 'Moves the vignette correction inward or outward.' })}
       </>
       case 'Geometry': return <>
+        <div className="row" title="Off leaves the picture as it is. Guided straightens from lines you draw on the picture."><span className="muted">Upright</span><span className="segmented">{(['Off', 'Guided'] as const).map(mode => <button key={mode} type="button" className={s.geometry.upright === mode ? 'on' : ''} onClick={() => { update(x => ({ ...x, geometry: { ...x.geometry, upright: mode } })); if (mode === 'Off' && ui.tool === 'guides') setUi({ tool: null }) }}>{mode}</button>)}</span><span /></div>
+        {s.geometry.upright === 'Guided' && <div style={{ display: 'flex', gap: 6 }}>
+          <button type="button" className={ui.tool === 'guides' ? 'primary' : ''} title="Draw two or more lines on the preview that should be level or vertical." onClick={() => pick('guides')}>Draw Guides</button>
+          {s.geometry.guides.length > 0 && <button type="button" title="Remove every guide line" onClick={() => update(x => ({ ...x, geometry: { ...x.geometry, guides: [] } }))}>Clear Guides</button>}
+        </div>}
+        {ui.tool === 'guides' && <span className="muted">Drag on the layer to place a guide. Draw at least two lines.</span>}
         <Choice label="Projection" value={s.geometry.projection} options={['Perspective', 'Rectilinear'] as const} title="Perspective allows stronger keystone. Rectilinear keeps the warp gentler." onChange={projection => update(x => ({ ...x, geometry: { ...x.geometry, projection } }))} />
         {sub('geometry', 'Vertical', 'vertical', -100, 100, { title: 'Straightens vertical lines toward the center.' })}
         {sub('geometry', 'Horizontal', 'horizontal', -100, 100, { title: 'Straightens horizontal lines toward the center.' })}
@@ -348,23 +514,26 @@ export function CameraRawPanel({ params, set, layerId }: { params: CameraRawPara
     }
   }
   return (
-    <div className="camera-raw">
-      <Histogram layerId={layerId} />
-      {failed && <span style={{ color: '#ffb35c' }}>{failed}</span>}
-      {!ready && !failed && <span className="muted">Loading Camera Raw’s color tables…</span>}
-      <div className="raw-sections">
-        {cameraRawGroups.map(group => {
-          const edited = adjusts(s, group), shown = !params.hidden.includes(group), expanded = open.includes(group)
-          return <div key={group} className="raw-section">
-            <div className="raw-heading">
-              <button type="button" className="disclosure" onClick={() => setOpen(toggle(open, group))}>{expanded ? '▾' : '▸'} {group}</button>
-              {edited && <button type="button" className="icon" title={shown ? `Hide ${group} in the preview` : `Show ${group} in the preview`} onClick={() => set({ hidden: toggle(params.hidden, group) })}>{shown ? '◉' : '○'}</button>}
-              {edited && <button type="button" className="icon" title={`Reset ${group} to its defaults`} onClick={() => set({ settings: resetGroup(s, group), hidden: params.hidden.filter(g => g !== group) })}>↺</button>}
+    <ShowView.Provider value={showView}>
+      <div className="camera-raw">
+        <Histogram layerId={layerId} view={params.view} setView={setView} />
+        <span className="muted readout" title="Red, green, and blue of the pixel under the pointer">{readout ? `R ${readout[0]}   G ${readout[1]}   B ${readout[2]}` : 'R —   G —   B —'}</span>
+        {failed && <span style={{ color: '#ffb35c' }}>{failed}</span>}
+        {!ready && !failed && <span className="muted">Loading Camera Raw’s color tables…</span>}
+        <div className="raw-sections">
+          {cameraRawGroups.map(group => {
+            const edited = adjusts(s, group), shown = !params.hidden.includes(group), expanded = open.includes(group)
+            return <div key={group} className="raw-section">
+              <div className="raw-heading">
+                <button type="button" className="disclosure" onClick={() => setOpen(toggle(open, group))}>{expanded ? '▾' : '▸'} {group}</button>
+                {edited && <button type="button" className="icon" title={shown ? `Hide ${group} in the preview` : `Show ${group} in the preview`} onClick={() => set({ hidden: toggle(params.hidden, group) })}>{shown ? '◉' : '○'}</button>}
+                {edited && <button type="button" className="icon" title={`Reset ${group} to its defaults`} onClick={() => set({ settings: resetGroup(s, group), hidden: params.hidden.filter(g => g !== group) })}>↺</button>}
+              </div>
+              {expanded && <div className="raw-controls">{section(group)}</div>}
             </div>
-            {expanded && <div className="raw-controls">{section(group)}</div>}
-          </div>
-        })}
+          })}
+        </div>
       </div>
-    </div>
+    </ShowView.Provider>
   )
 }

@@ -151,7 +151,10 @@ kbd { font: inherit; color: var(--muted); }
 .app:not(.phone) .modal.filter.docked { width: 320px; height: 100%; overflow-x: hidden; max-height: none; border-radius: 0; border-width: 0 0 0 1px; box-shadow: none; }
 .camera-raw { display: flex; flex-direction: column; gap: 8px; }
 .camera-raw .row { grid-template-columns: 104px 1fr 52px; }
-.raw-histogram { width: 100%; height: 110px; background: rgba(0,0,0,0.35); border-radius: 4px; }
+.raw-scope { position: relative; }
+.raw-histogram { display: block; width: 100%; height: 110px; background: rgba(0,0,0,0.35); border-radius: 4px; }
+.clip-triangle { position: absolute; top: 4px; background: none; border: none; padding: 0 2px; font-size: 10px; }
+.camera-raw .readout { font-variant-numeric: tabular-nums; font-size: 12px; }
 .raw-section { display: flex; flex-direction: column; gap: 6px; padding: 4px 0; border-bottom: 1px solid var(--line); }
 .raw-heading { display: flex; align-items: center; gap: 4px; }
 .raw-heading .disclosure { background: none; border: none; padding: 2px 0; font-weight: 600; margin-right: auto; text-align: left; }

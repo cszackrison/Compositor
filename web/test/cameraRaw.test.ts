@@ -2,7 +2,7 @@ import { describe, expect, it, beforeAll } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { loadKernels } from '../src/kernels'
 import { Raster } from '../src/model/raster'
-import { applyCameraRaw, autoBalance, defaultCameraRaw, isIdentity, loadCameraRawTables, neutralize, normalized, resetGroup, cameraRawGroups, adjusts, type CameraRawSettings } from '../src/model/cameraRaw'
+import { applyCameraRaw, newPointColor, autoBalance, defaultCameraRaw, isIdentity, loadCameraRawTables, neutralize, normalized, resetGroup, cameraRawGroups, adjusts, type CameraRawSettings } from '../src/model/cameraRaw'
 
 beforeAll(async () => {
   await loadKernels(readFileSync(new URL('../public/kernels.wasm', import.meta.url)))
@@ -103,5 +103,33 @@ describe('Camera Raw', () => {
     expect(straight(turned, 15 * 40 + 20)).toEqual([200, 100, 50])
     expect(graded(input, s => { s.geometry.scale = -50 }).data[3]).toBe(0)
     expect(near(straight(graded(input, s => { s.geometry.scale = -50; s.geometry.constrainCrop = true }), 2 * 40 + 2), [200, 100, 50], 1)).toBe(true)
+  })
+
+  it('shifts a picked color and leaves the others', () => {
+    const pair = row([220, 60, 60], [60, 60, 220])
+    const shifted = graded(pair, s => { s.mixer.points = [{ ...newPointColor(0, 0.73, 0.55), hueShift: 60 }] })
+    expect(straight(shifted, 0)).not.toEqual([220, 60, 60])
+    expect(near(straight(shifted, 1), [60, 60, 220], 2)).toBe(true)
+  })
+
+  it('shows clipping, the sharpening mask and the triangles only when asked', () => {
+    const brightAndMid = row([230, 230, 230], [128, 128, 128]), s = { ...defaultCameraRaw(), whites: 100 }
+    expect([straight(applyCameraRaw(brightAndMid, s, 0, 1, { clipping: 1 }), 0), straight(applyCameraRaw(brightAndMid, s, 0, 1, { clipping: 1 }), 1)]).toEqual([[255, 255, 255], [0, 0, 0]])
+    const marked = applyCameraRaw(row([255, 255, 255], [0, 0, 0]), defaultCameraRaw(), 0, 1, { shadows: true, highlights: true })
+    expect(straight(marked, 0)[0]).toBeGreaterThan(straight(marked, 0)[2])
+    expect(straight(marked, 1)[2]).toBeGreaterThan(straight(marked, 1)[0])
+    const masked = applyCameraRaw(solid([128, 128, 128], 8, 8), { ...defaultCameraRaw(), detail: { ...defaultCameraRaw().detail, sharpenAmount: 50 } }, 0, 1, { sharpenMask: true })
+    expect(straight(masked, 27)[0]).not.toBe(128)
+  })
+
+  it('levels a tilted guide line when Upright is Guided', () => {
+    // A bright bar running down to the right, a guide along it (from the lower left, so its end is lower), straightened: the bar's
+    // ends come out level.
+    const width = 80, height = 60, input = new Raster(width, height, 4)
+    for (let x = 0; x < width; x++) for (let y = 0; y < height; y++) { const bar = Math.abs(y - (20 + x * 0.25)) < 2; input.data.set(bar ? [255, 255, 255, 255] : [0, 0, 0, 255], (y * width + x) * 4) }
+    const guide = { startX: 0.1, startY: 1 - (20 + 8 * 0.25) / height, endX: 0.9, endY: 1 - (20 + 72 * 0.25) / height }
+    const level = graded(input, s => { s.geometry = { ...s.geometry, upright: 'Guided', guides: [guide] } })
+    const rowOf = (x: number) => { let best = 0, at = 0; for (let y = 0; y < height; y++) { const v = level.data[(y * width + x) * 4]; if (v > best) { best = v; at = y } } return at }
+    expect(Math.abs(rowOf(20) - rowOf(60))).toBeLessThanOrEqual(1)
   })
 })

@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { FilterSession, isJob, type FilterJob, type FilterRun } from '../editor/filters'
 
-// A filter's sheet: controls on the left of OK/Cancel, the canvas previewing every change live on the layer itself.
-export function FilterDialog<P>({ title, initial, run, onClose, onCommit, children, preview = true, trim = false, masks = false, growEmpty = false, docked = false }: { title: string; initial: P; run: (params: P) => FilterRun | FilterJob; onClose: () => void; onCommit?: (params: P) => void; children: (params: P, set: (changes: Partial<P>) => void) => ReactNode; preview?: boolean; trim?: boolean; masks?: boolean; growEmpty?: boolean; docked?: boolean }) {
+// A filter's sheet: controls on the left of OK/Cancel, the canvas previewing every change live on the layer itself. `docked` stands it
+// at the window's right, full height, as Camera Raw's column.
+export function FilterDialog<P>({ title, initial, run, onClose, onCommit, children, preview = true, trim = false, masks = false, growEmpty = false, docked = false, final }: { title: string; initial: P; run: (params: P) => FilterRun | FilterJob; onClose: () => void; onCommit?: (params: P) => void; children: (params: P, set: (changes: Partial<P>) => void) => ReactNode; preview?: boolean; trim?: boolean; masks?: boolean; growEmpty?: boolean; docked?: boolean; final?: (params: P) => FilterRun | FilterJob | undefined }) {
   const session = useRef<FilterSession | null>(null)
   const [params, setParams] = useState(initial)
   const [live, setLive] = useState(preview)
@@ -26,7 +27,9 @@ export function FilterDialog<P>({ title, initial, run, onClose, onCommit, childr
     if (!ok || error) { session.current = null; s.cancel(); onClose(); return }
     // OK waits for a filter still working in the background; one that fails changes nothing.
     setFinishing(true)
-    const kept = await s.commit(title, live ? undefined : guarded(run(params)), trim)
+    // What OK keeps: the filter as previewed, or `final`'s run when the preview showed something OK leaves out.
+    const clean = final?.(params)
+    const kept = await s.commit(title, clean ? guarded(clean) : live ? undefined : guarded(run(params)), trim)
     session.current = null
     if (kept) onCommit?.(params)
     onClose()

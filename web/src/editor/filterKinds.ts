@@ -4,7 +4,7 @@ import { call, floats, withBuffers } from '../kernels'
 import { apply, invert } from '../render/gl'
 import type { FilterInput, FilterOutput } from './filters'
 import type { Adjustment } from '../model/types'
-import { applyCameraRaw, type CameraRawSettings } from '../model/cameraRaw'
+import { applyCameraRaw, type CameraRawSettings, type CameraRawView } from '../model/cameraRaw'
 import { channelTables, cubeSize, hueSaturationCube } from '../model/adjustments'
 
 const clamp01 = (v: number) => Math.min(1, Math.max(0, v))
@@ -327,7 +327,7 @@ export function adjustPixels(input: FilterInput, adjustment: Adjustment): Filter
 
 // Filter › Camera Raw Filter: the whole grade (model/cameraRaw.ts). `scale` is preview pixels per layer pixel, so radii match a
 // full-size render; the worker loads the measured tables first.
-export function cameraRaw(input: FilterInput, settings: CameraRawSettings, seed: number, scale = 1): FilterOutput {
-  const out = applyCameraRaw(input.pixels, settings, seed, scale)
+export function cameraRaw(input: FilterInput, settings: CameraRawSettings, seed: number, scale = 1, view: CameraRawView = {}): FilterOutput {
+  const out = applyCameraRaw(input.pixels, settings, seed, scale, view)
   return out === input.pixels ? null : out
 }

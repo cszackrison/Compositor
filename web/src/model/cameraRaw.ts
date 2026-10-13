@@ -12,11 +12,14 @@ export type GlowStyle = 'Diffusion' | 'Bloom' | 'Halation'
 export type VignetteStyle = 'Highlight Priority' | 'Color Priority' | 'Paint Overlay'
 export type Wheel = { hue: number; saturation: number; luminance: number }
 export type CurveSettings = { shadows: number; darks: number; lights: number; highlights: number; shadowSplit: number; darkSplit: number; lightSplit: number; rgb: CurvePoint[]; red: CurvePoint[]; green: CurvePoint[]; blue: CurvePoint[]; refineSaturation: number }
-export type MixerSettings = { hue: number[]; saturation: number[]; luminance: number[] }
+export type PointColor = { hue: number; saturation: number; luminance: number; hueShift: number; saturationShift: number; luminanceShift: number; hueRange: number; saturationRange: number; luminanceRange: number; visualize: boolean }
+export type MixerSettings = { hue: number[]; saturation: number[]; luminance: number[]; points: PointColor[] }
 export type GradingSettings = { shadows: Wheel; midtones: Wheel; highlights: Wheel; global: Wheel; blending: number; balance: number }
 export type DetailSettings = { sharpenAmount: number; sharpenRadius: number; sharpenDetail: number; sharpenMasking: number; noiseLuminance: number; noiseLuminanceDetail: number; noiseLuminanceContrast: number; noiseColor: number; noiseColorDetail: number; noiseColorSmoothness: number }
 export type OpticsSettings = { removeChromaticAberration: boolean; enableLensProfile: boolean; profileDistortion: number; profileVignetting: number; distortion: number; purpleAmount: number; purpleHueLow: number; purpleHueHigh: number; greenAmount: number; greenHueLow: number; greenHueHigh: number; vignetteAmount: number; vignetteMidpoint: number }
-export type GeometrySettings = { projection: 'Perspective' | 'Rectilinear'; vertical: number; horizontal: number; rotate: number; aspect: number; scale: number; offsetX: number; offsetY: number; constrainCrop: boolean }
+// A guide line drawn on the layer, its ends as fractions of the layer's width and height from its lower left.
+export type Guide = { startX: number; startY: number; endX: number; endY: number }
+export type GeometrySettings = { upright: 'Off' | 'Guided'; guides: Guide[]; projection: 'Perspective' | 'Rectilinear'; vertical: number; horizontal: number; rotate: number; aspect: number; scale: number; offsetX: number; offsetY: number; constrainCrop: boolean }
 export const processVersions = ['Version 1', 'Version 2', 'Version 3', 'Version 4', 'Version 5', 'Version 6'] as const
 export type CalibrationSettings = { process: typeof processVersions[number]; shadowTint: number; redHue: number; redSaturation: number; greenHue: number; greenSaturation: number; blueHue: number; blueSaturation: number }
 export type CameraRawSettings = {
@@ -32,11 +35,12 @@ export type CameraRawSettings = {
 const linear = (): CurvePoint[] => [{ x: 0, y: 0 }, { x: 1, y: 1 }]
 const wheel = (): Wheel => ({ hue: 0, saturation: 0, luminance: 0 })
 export const defaultCurve = (): CurveSettings => ({ shadows: 0, darks: 0, lights: 0, highlights: 0, shadowSplit: 25, darkSplit: 50, lightSplit: 75, rgb: linear(), red: linear(), green: linear(), blue: linear(), refineSaturation: 0 })
-export const defaultMixer = (): MixerSettings => ({ hue: Array(8).fill(0), saturation: Array(8).fill(0), luminance: Array(8).fill(0) })
+export const defaultMixer = (): MixerSettings => ({ hue: Array(8).fill(0), saturation: Array(8).fill(0), luminance: Array(8).fill(0), points: [] })
+export const newPointColor = (hue: number, saturation: number, luminance: number): PointColor => ({ hue, saturation, luminance, hueShift: 0, saturationShift: 0, luminanceShift: 0, hueRange: 30, saturationRange: 0.4, luminanceRange: 0.4, visualize: false })
 export const defaultGrading = (): GradingSettings => ({ shadows: wheel(), midtones: wheel(), highlights: wheel(), global: wheel(), blending: 50, balance: 0 })
 export const defaultDetail = (): DetailSettings => ({ sharpenAmount: 0, sharpenRadius: 10, sharpenDetail: 25, sharpenMasking: 0, noiseLuminance: 0, noiseLuminanceDetail: 50, noiseLuminanceContrast: 0, noiseColor: 0, noiseColorDetail: 50, noiseColorSmoothness: 50 })
 export const defaultOptics = (): OpticsSettings => ({ removeChromaticAberration: false, enableLensProfile: false, profileDistortion: 100, profileVignetting: 100, distortion: 0, purpleAmount: 0, purpleHueLow: 270, purpleHueHigh: 310, greenAmount: 0, greenHueLow: 60, greenHueHigh: 120, vignetteAmount: 0, vignetteMidpoint: 50 })
-export const defaultGeometry = (): GeometrySettings => ({ projection: 'Perspective', vertical: 0, horizontal: 0, rotate: 0, aspect: 0, scale: 0, offsetX: 0, offsetY: 0, constrainCrop: false })
+export const defaultGeometry = (): GeometrySettings => ({ upright: 'Off', guides: [], projection: 'Perspective', vertical: 0, horizontal: 0, rotate: 0, aspect: 0, scale: 0, offsetX: 0, offsetY: 0, constrainCrop: false })
 export const defaultCalibration = (): CalibrationSettings => ({ process: 'Version 6', shadowTint: 0, redHue: 0, redSaturation: 0, greenHue: 0, greenSaturation: 0, blueHue: 0, blueSaturation: 0 })
 export const defaultCameraRaw = (): CameraRawSettings => ({
   whiteBalance: 'Custom', temperature: 0, tint: 0, exposure: 0, contrast: 0, highlights: 0, shadows: 0, whites: 0, blacks: 0, vibrance: 0, saturation: 0,
@@ -60,14 +64,17 @@ export function adjusts(s: CameraRawSettings, group: CameraRawGroup): boolean {
     case 'Color': return !!(s.temperature || s.tint || s.vibrance || s.saturation)
     case 'Effects': return !!(s.texture || s.clarity || s.dehaze || s.glow || s.vignetteAmount || s.grainAmount)
     case 'Curve': { const c = s.curve; return !!(c.shadows || c.darks || c.lights || c.highlights || c.refineSaturation) || ![c.rgb, c.red, c.green, c.blue].every(isLinear) }
-    case 'Color Mixer': return [...s.mixer.hue, ...s.mixer.saturation, ...s.mixer.luminance].some(v => v !== 0)
+    case 'Color Mixer': return [...s.mixer.hue, ...s.mixer.saturation, ...s.mixer.luminance].some(v => v !== 0) || s.mixer.points.some(p => p.hueShift || p.saturationShift || p.luminanceShift)
     case 'Color Grading': return [s.grading.shadows, s.grading.midtones, s.grading.highlights, s.grading.global].some(w => w.saturation !== 0 || w.luminance !== 0)
     case 'Detail': return !!(s.detail.sharpenAmount || s.detail.noiseLuminance || s.detail.noiseColor)
     case 'Optics': { const o = s.optics; return o.removeChromaticAberration || o.enableLensProfile || !!(o.distortion || o.purpleAmount || o.greenAmount || o.vignetteAmount) }
-    case 'Geometry': { const g = s.geometry; return !!(g.vertical || g.horizontal || g.rotate || g.aspect || g.scale || g.offsetX || g.offsetY) }
+    case 'Geometry': { const g = s.geometry; return usesGuides(g) || !!(g.vertical || g.horizontal || g.rotate || g.aspect || g.scale || g.offsetX || g.offsetY) }
     case 'Calibration': { const c = s.calibration; return !!(c.shadowTint || c.redHue || c.redSaturation || c.greenHue || c.greenSaturation || c.blueHue || c.blueSaturation) }
   }
 }
+// Guided counts only once a guide is long enough to read: an empty Guided choice mustn't warp the picture.
+const longEnough = (g: Guide) => Math.hypot(g.endX - g.startX, g.endY - g.startY) > 0.01
+const usesGuides = (g: GeometrySettings) => g.upright === 'Guided' && g.guides.some(longEnough)
 export const isIdentity = (s: CameraRawSettings) => cameraRawGroups.every(g => !adjusts(s, g))
 
 // A section put back to its defaults (its header's reset), or left out of the result (its eye turned off).
@@ -116,11 +123,11 @@ export function normalized(s: CameraRawSettings): CameraRawSettings {
     vignetteAmount: t(s.vignetteAmount), vignetteMidpoint: u(s.vignetteMidpoint, 50), vignetteRoundness: t(s.vignetteRoundness), vignetteFeather: u(s.vignetteFeather, 50), vignetteHighlights: u(s.vignetteHighlights),
     grainAmount: u(s.grainAmount), grainSize: u(s.grainSize, 25), grainRoughness: u(s.grainRoughness, 50),
     curve: { shadows: t(c.shadows), darks: t(c.darks), lights: t(c.lights), highlights: t(c.highlights), refineSaturation: t(c.refineSaturation), shadowSplit, darkSplit, lightSplit: clamp(c.lightSplit, darkSplit + 2, 98, 75), rgb: repair(c.rgb), red: repair(c.red), green: repair(c.green), blue: repair(c.blue) },
-    mixer: { hue: s.mixer.hue.map(t), saturation: s.mixer.saturation.map(t), luminance: s.mixer.luminance.map(t) },
+    mixer: { hue: s.mixer.hue.map(t), saturation: s.mixer.saturation.map(t), luminance: s.mixer.luminance.map(t), points: s.mixer.points.slice(0, 8).map(p => ({ ...p, hue: clamp(p.hue, 0, 360, 0), saturation: clamp(p.saturation, 0, 1, 0), luminance: clamp(p.luminance, 0, 1, 0), hueShift: t(p.hueShift), saturationShift: t(p.saturationShift), luminanceShift: t(p.luminanceShift), hueRange: clamp(p.hueRange, 5, 180, 30), saturationRange: clamp(p.saturationRange, 0.05, 1, 0.4), luminanceRange: clamp(p.luminanceRange, 0.05, 1, 0.4) })) },
     grading: { shadows: w(s.grading.shadows), midtones: w(s.grading.midtones), highlights: w(s.grading.highlights), global: w(s.grading.global), blending: u(s.grading.blending, 50), balance: t(s.grading.balance) },
     detail: { sharpenAmount: clamp(s.detail.sharpenAmount, 0, 150, 0), sharpenRadius: u(s.detail.sharpenRadius, 10), sharpenDetail: u(s.detail.sharpenDetail, 25), sharpenMasking: u(s.detail.sharpenMasking), noiseLuminance: u(s.detail.noiseLuminance), noiseLuminanceDetail: u(s.detail.noiseLuminanceDetail, 50), noiseLuminanceContrast: u(s.detail.noiseLuminanceContrast), noiseColor: u(s.detail.noiseColor), noiseColorDetail: u(s.detail.noiseColorDetail, 50), noiseColorSmoothness: u(s.detail.noiseColorSmoothness, 50) },
     optics: { ...o, profileDistortion: u(o.profileDistortion, 100), profileVignetting: u(o.profileVignetting, 100), distortion: t(o.distortion), purpleAmount: u(o.purpleAmount), greenAmount: u(o.greenAmount), vignetteAmount: t(o.vignetteAmount), vignetteMidpoint: u(o.vignetteMidpoint, 50), purpleHueLow, purpleHueHigh, greenHueLow, greenHueHigh },
-    geometry: { ...s.geometry, vertical: t(s.geometry.vertical), horizontal: t(s.geometry.horizontal), rotate: clamp(s.geometry.rotate, -45, 45, 0), aspect: t(s.geometry.aspect), scale: t(s.geometry.scale), offsetX: t(s.geometry.offsetX), offsetY: t(s.geometry.offsetY) },
+    geometry: { ...s.geometry, guides: s.geometry.guides.filter(longEnough), vertical: t(s.geometry.vertical), horizontal: t(s.geometry.horizontal), rotate: clamp(s.geometry.rotate, -45, 45, 0), aspect: t(s.geometry.aspect), scale: t(s.geometry.scale), offsetX: t(s.geometry.offsetX), offsetY: t(s.geometry.offsetY) },
     calibration: { ...s.calibration, shadowTint: t(s.calibration.shadowTint), redHue: t(s.calibration.redHue), redSaturation: t(s.calibration.redSaturation), greenHue: t(s.calibration.greenHue), greenSaturation: t(s.calibration.greenSaturation), blueHue: t(s.calibration.blueHue), blueSaturation: t(s.calibration.blueSaturation) },
   }
 }
@@ -274,17 +281,26 @@ function brightness(pixels: Raster): Brightness {
 
 const glowStyles: GlowStyle[] = ['Diffusion', 'Bloom', 'Halation'], vignetteStyles: VignetteStyle[] = ['Highlight Priority', 'Color Priority', 'Paint Overlay']
 
+// What the preview shows instead of, or over, the grade, never kept by OK: the Option-drag clipping view (1 highlights, 2 shadows),
+// Detail's sharpening mask, the histogram's clipping triangles, and a point color's range (its index).
+export type CameraRawView = { clipping?: 0 | 1 | 2; sharpenMask?: boolean; shadows?: boolean; highlights?: boolean; visualize?: number }
+
 // The whole grade on premultiplied RGBA (CameraRawSettings.apply): Geometry first, then Calibration's shadow tint, Light, Color and the
-// measured stages as one composed lookup with Curve, Color Mixer and Color Grading folded in (or drawn by the curve pass when Refine
-// Saturation or moved dividers need it), then Effects and Grain, then Optics and Detail. `scale` is preview pixels per layer pixel.
-export function applyCameraRaw(source: Raster, raw: CameraRawSettings, seed = 0, scale = 1): Raster {
-  const s = normalized(raw)
-  if (isIdentity(s)) return source
+// measured stages as one composed lookup with Curve, Color Mixer and Color Grading folded in (or drawn by the curve pass when point
+// colors, Refine Saturation or moved dividers need it), then Effects and Grain, then Optics and Detail. `scale` is preview pixels per
+// layer pixel.
+export function applyCameraRaw(source: Raster, raw: CameraRawSettings, seed = 0, scale = 1, view: CameraRawView = {}): Raster {
+  const s = normalized(raw), clipping = view.clipping ?? 0, sharpenMask = !!view.sharpenMask, visualize = view.visualize ?? -1
+  const overlay = !clipping && !sharpenMask && (!!view.shadows || !!view.highlights)
+  if (isIdentity(s) && !clipping && !sharpenMask && visualize < 0 && !overlay) return source
   if (!tablesAt) throw new Error('Camera Raw’s color tables are not loaded.')
-  const pixels = adjusts(s, 'Geometry') ? warp(source, s.geometry) : source.clone()
+  const plain = !clipping && !sharpenMask
+  const folds = plain && visualize < 0 && !s.mixer.points.length && s.curve.refineSaturation === 0
+  const colorAdjusts = adjusts(s, 'Curve') || adjusts(s, 'Color Mixer') || adjusts(s, 'Color Grading')
+  const paintColor = !folds && plain && (colorAdjusts || visualize >= 0)
+  const pixels = plain && visualize < 0 && adjusts(s, 'Geometry') ? warp(source, s.geometry) : source.clone()
   const { width, height } = pixels, stride = width * 4
   const b = s.contrast || s.highlights || s.shadows ? brightness(pixels) : { brightest: 128, luminance: 128, logBrightest: 128 }
-  const folds = s.curve.refineSaturation === 0, colorAdjusts = adjusts(s, 'Curve') || adjusts(s, 'Color Mixer') || adjusts(s, 'Color Grading')
   let lookup = compose(stages(s, b))
   if (folds && colorAdjusts) {
     lookup ??= identityTable()
@@ -293,24 +309,27 @@ export function applyCameraRaw(source: Raster, raw: CameraRawSettings, seed = 0,
     if (more.length) compose(more, lookup)
   }
   withBuffers([{ data: pixels.data, out: true }, ...(lookup ? [{ data: lookup }] : [])], ([p, t]) => {
-    if (s.calibration.shadowTint) call('adjust_camera_raw_calibration', p, width, height, stride, s.calibration.shadowTint, 0, 0, 0, 0, 0, 0, processVersions.indexOf(s.calibration.process) + 1)
-    if (t) call('adjust_camera_raw', p, width, height, stride, t, grid, 0)
+    if (plain && s.calibration.shadowTint) call('adjust_camera_raw_calibration', p, width, height, stride, s.calibration.shadowTint, 0, 0, 0, 0, 0, 0, processVersions.indexOf(s.calibration.process) + 1)
+    if (t || clipping) call('adjust_camera_raw', p, width, height, stride, t ?? 0, grid, clipping)
   })
-  if (!folds && colorAdjusts) {
+  if (paintColor) {
     const mixerTable = compose(mixerStages(s.mixer)), gradeTable = compose(gradingStages(s.grading))
-    withBuffers([{ data: pixels.data, out: true }, { data: toneTable(s.curve) }, { data: channelTable(s.curve.red) }, { data: channelTable(s.curve.green) }, { data: channelTable(s.curve.blue) }, { data: new Float32Array(24) }, { data: new Float32Array(9) }, { data: new Float32Array(12) }, { data: mixerTable ?? new Float32Array(1) }, { data: gradeTable ?? new Float32Array(1) }],
-      ([p, tone, r, g, bl, mixer, points, grade, mt, gt]) => call('adjust_camera_raw_curve_color', p, width, height, stride, tone, r, g, bl, s.curve.refineSaturation / 100, mixer, 0, points, grade, s.grading.blending / 100, s.grading.balance / 100, -1, mixerTable ? mt : 0, gradeTable ? gt : 0, grid))
+    const points = Float32Array.from(s.mixer.points.flatMap(p => [p.hue / 360, p.saturation, p.luminance, p.hueShift / 100, p.saturationShift / 100, p.luminanceShift / 100, p.hueRange / 360, p.saturationRange, p.luminanceRange]))
+    withBuffers([{ data: pixels.data, out: true }, { data: toneTable(s.curve) }, { data: channelTable(s.curve.red) }, { data: channelTable(s.curve.green) }, { data: channelTable(s.curve.blue) }, { data: new Float32Array(24) }, { data: points.length ? points : new Float32Array(9) }, { data: new Float32Array(12) }, { data: mixerTable ?? new Float32Array(1) }, { data: gradeTable ?? new Float32Array(1) }],
+      ([p, tone, r, g, bl, mixer, pts, grade, mt, gt]) => call('adjust_camera_raw_curve_color', p, width, height, stride, tone, r, g, bl, s.curve.refineSaturation / 100, mixer, s.mixer.points.length, pts, grade, s.grading.blending / 100, s.grading.balance / 100, visualize, mixerTable ? mt : 0, gradeTable ? gt : 0, grid))
   }
-  if (s.texture || s.clarity || s.dehaze || s.glow || s.vignetteAmount || s.grainAmount) withBuffers([{ data: pixels.data, out: true }], ([p]) => {
+  if (plain && adjusts(s, 'Effects')) withBuffers([{ data: pixels.data, out: true }], ([p]) => {
     if (s.texture || s.clarity || s.dehaze || s.glow || s.vignetteAmount) call('adjust_camera_raw_effects', p, width, height, stride, s.texture, s.clarity, s.dehaze, s.glow, glowStyles.indexOf(s.glowStyle), s.glowRange, s.glowSpread, s.glowWarmth, s.vignetteAmount, s.vignetteMidpoint, s.vignetteRoundness, s.vignetteFeather, s.vignetteHighlights, vignetteStyles.indexOf(s.vignetteStyle), scale)
     if (s.grainAmount > 0) call('adjust_grain', p, width, height, stride, s.grainAmount, 0.5 + s.grainSize / 100 * 19.5, s.grainRoughness, seed >>> 0, 0, 0, 1 / scale)
   })
-  if (adjusts(s, 'Optics') || adjusts(s, 'Detail')) withBuffers([{ data: pixels.data, out: true }], ([p]) => {
+  if (!clipping && (adjusts(s, 'Optics') || adjusts(s, 'Detail') || sharpenMask)) withBuffers([{ data: pixels.data, out: true }], ([p]) => {
     const o = s.optics, d = s.detail, lensStrength = 0.35
+    if (sharpenMask) { call('adjust_camera_raw_sharpen_mask_overlay', p, width, height, stride, d.sharpenRadius, d.sharpenDetail, d.sharpenMasking, scale); return }
     if (adjusts(s, 'Optics')) call('adjust_camera_raw_optics', p, width, height, stride, +o.removeChromaticAberration, +o.enableLensProfile, o.profileDistortion, o.profileVignetting,
       o.distortion / 100 * lensStrength + (o.enableLensProfile ? o.profileDistortion / 100 * lensStrength : 0), o.purpleAmount, o.purpleHueLow, o.purpleHueHigh, o.greenAmount, o.greenHueLow, o.greenHueHigh, o.vignetteAmount, o.vignetteMidpoint, scale, table(exposureStart), size)
     if (adjusts(s, 'Detail')) call('adjust_camera_raw_detail', p, width, height, stride, d.sharpenAmount, d.sharpenRadius, d.sharpenDetail, d.sharpenMasking, d.noiseLuminance, d.noiseLuminanceDetail, d.noiseLuminanceContrast, d.noiseColor, d.noiseColorDetail, d.noiseColorSmoothness, scale)
   })
+  if (overlay) withBuffers([{ data: pixels.data, out: true }], ([p]) => call('adjust_camera_raw_clip_overlay', p, width, height, stride, +!!view.shadows, +!!view.highlights))
   pixels.touch()
   return pixels
 }
@@ -324,7 +343,28 @@ function identityTable() {
 // MARK: Geometry (CameraRawGeometryCalibration.swift)
 
 // The picture's corners moved by the sliders, top-left first, in pixels with y down; the image is mapped onto them.
-function corners(g: GeometrySettings, w: number, h: number): [number, number][] {
+// The guides' straightening, their angles taken in pixels so a line comes out level on a layer of any shape (the Mac measures them in
+// fractions of the width and height).
+function guided(guides: Guide[], w: number, h: number) {
+  const first = guides[0]
+  if (!first) return { vertical: 0, horizontal: 0, rotate: 0 }
+  const length = Math.hypot(first.endX - first.startX, first.endY - first.startY)
+  if (length <= 1e-4) return { vertical: 0, horizontal: 0, rotate: 0 }
+  let rotate = -Math.atan2((first.endY - first.startY) * h, (first.endX - first.startX) * w) * 180 / Math.PI
+  if (rotate > 45) rotate -= 90; else if (rotate < -45) rotate += 90
+  let vertical = 0, horizontal = 0
+  const second = guides[1]
+  if (second && Math.hypot(second.endX - second.startX, second.endY - second.startY) > 1e-4) {
+    const angle = Math.atan2((second.endY - second.startY) * h, (second.endX - second.startX) * w) * 180 / Math.PI
+    vertical = Math.abs(angle) > 45 ? (angle > 0 ? 25 : -25) : 0
+    horizontal = Math.abs(angle) <= 45 ? (angle > 0 ? 25 : -25) : 0
+  }
+  return { vertical, horizontal, rotate }
+}
+
+function corners(geometry: GeometrySettings, w: number, h: number): [number, number][] {
+  const extra = geometry.upright === 'Guided' ? guided(geometry.guides, w, h) : { vertical: 0, horizontal: 0, rotate: 0 }
+  const g = { ...geometry, vertical: geometry.vertical + extra.vertical, horizontal: geometry.horizontal + extra.horizontal, rotate: geometry.rotate + extra.rotate }
   const strength = g.projection === 'Perspective' ? 1 : 0.55
   const v = g.vertical / 100 * w * 0.18 * strength, hz = g.horizontal / 100 * h * 0.18 * strength
   const aspect = 1 + g.aspect / 200, zoom = 1 + g.scale / 100, shiftX = g.offsetX / 100 * w * 0.15, shiftY = g.offsetY / 100 * h * 0.15
