@@ -22,6 +22,9 @@ export function takeDraggedLayers(): Layer[] | null {
   return ids.flatMap(id => [source.layer(id)!, ...source.descendants(id)]).filter(Boolean)
 }
 
+// One at a time, each asking about unsaved changes; Cancel stops there.
+async function closeEach(targets: Store[]) { for (const target of targets) if (!(await closeProject(target))) return }
+
 const tabWidth = 170, overflowWidth = 120
 
 export function TabBar() {
@@ -63,8 +66,8 @@ export function TabBar() {
 
   const items = (tab: Store): MenuItem[] => [
     { label: 'Close Tab', action: () => closeProject(tab) },
-    { label: 'Close Other Tabs', action: () => tabs.filter(other => other !== tab).forEach(other => closeProject(other)), disabled: tabs.length < 2 },
-    { label: 'Close Tabs to the Right', action: () => tabs.slice(tabs.indexOf(tab) + 1).forEach(other => closeProject(other)), disabled: tabs.indexOf(tab) === tabs.length - 1 },
+    { label: 'Close Other Tabs', action: () => closeEach(tabs.filter(other => other !== tab)), disabled: tabs.length < 2 },
+    { label: 'Close Tabs to the Right', action: () => closeEach(tabs.slice(tabs.indexOf(tab) + 1)), disabled: tabs.indexOf(tab) === tabs.length - 1 },
   ]
 
   const dropInto = async (e: React.DragEvent, tab: Store | 'new') => {

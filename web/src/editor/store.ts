@@ -69,6 +69,8 @@ export class Store {
     foreground: [0, 0, 0], background: [255, 255, 255], target: null, saved: true, revision: 0, pixelRevision: 0, message: null, inspector: null, panel: null, effectSelection: null, maskPaintWhite: false,
   }
   hasDocument = false
+  // An unsaved project's name, the lowest "Untitled N" free when it was first shown (documentName); a project opened afresh gets a new one.
+  untitled: string | null = null
   history = new History<Snapshot>()
   static renderer: Renderer | null = null
   // Where this project's view was, restored when its tab comes back.
@@ -151,6 +153,7 @@ export class Store {
   open(doc: Doc, activeId: string | null, target: PackageTarget | null) {
     this.history.clear()
     this.hasDocument = true
+    this.untitled = null
     this.set({ doc, activeId, selectedIds: activeId ? [activeId] : [], selection: null, editingMask: false, target, saved: true, inspector: null })
   }
 

@@ -19,12 +19,37 @@ function guard<T extends unknown[]>(body: (...args: T) => Promise<void> | void) 
 }
 
 // Closes a tab, asking first when its project has unsaved changes.
-export function closeProject(target: Store = store) {
-  if (target.hasDocument && !target.state.saved && !confirm(`Close “${documentName(target)}” without saving its changes?`)) return
+// The unsaved-changes prompt, answered from its dialog: Save, Don't Save or Cancel.
+export type UnsavedChoice = 'save' | 'discard' | 'cancel'
+let answer: ((choice: UnsavedChoice) => void) | null = null
+export function answerUnsaved(choice: UnsavedChoice) { const settle = answer; answer = null; settle?.(choice) }
+
+// Closes a project's tab, first asking whether to save its changes. False when it stays open.
+export async function closeProject(target: Store = store): Promise<boolean> {
+  if (target.hasDocument && !target.state.saved) {
+    answerUnsaved('cancel')
+    activateTab(target)
+    const choice = await new Promise<UnsavedChoice>(resolve => { answer = resolve; target.set({ panel: 'Unsaved Changes' }) })
+    if (target.state.panel === 'Unsaved Changes') target.set({ panel: null })
+    if (choice === 'cancel') return false
+    if (choice === 'save') { await save(); if (!target.state.saved) return false }
+  }
   closeTab(target)
+  return true
 }
 
-export const documentName = (of: Store = store) => of.state.target?.name.replace(/\.comp$/, '') ?? 'Untitled'
+// A project's name: its file's, or for one never saved "Untitled", else the lowest "Untitled N" no other tab shows, as Finder and Safari
+// number them.
+export function documentName(of: Store = store) {
+  if (of.state.target) return of.state.target.name.replace(/\.comp$/, '')
+  if (!of.untitled) {
+    const taken = new Set(tabs.filter(tab => tab !== of && tab.hasDocument && !tab.state.target).map(tab => tab.untitled))
+    let n = 1
+    while (taken.has(n === 1 ? 'Untitled' : `Untitled ${n}`)) n++
+    of.untitled = n === 1 ? 'Untitled' : `Untitled ${n}`
+  }
+  return of.untitled
+}
 
 export const newCanvas = guard((width: number, height: number, fill: 'white' | 'black' | 'transparent', resolution: number = 72) => {
   width = Math.round(Math.min(maxSide, Math.max(1, width))); height = Math.round(Math.min(maxSide, Math.max(1, height)))

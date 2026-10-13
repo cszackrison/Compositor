@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { store, tabForOpening } from '../editor/store'
-import { newCanvas, documentName, placeImages } from '../editor/actions'
+import { answerUnsaved, newCanvas, documentName, placeImages } from '../editor/actions'
 import { download } from '../io/files'
 import { prefs, setPrefs, gridColors } from '../editor/prefs'
 import { chordLabel, chordOf, currentOverrides, definitions, effective, problem, saveOverrides, unassigned, type Chord } from '../editor/shortcuts'
@@ -337,10 +337,33 @@ function ColorRange() {
   )
 }
 
+// Closing a project with unsaved changes: Save the one colored button, Don't Save as quiet as Cancel. Escape or a click outside cancels.
+function UnsavedChanges() {
+  useEffect(() => {
+    const escape = (event: KeyboardEvent) => { if (event.key === 'Escape') { event.preventDefault(); answerUnsaved('cancel') } }
+    window.addEventListener('keydown', escape)
+    return () => { window.removeEventListener('keydown', escape); answerUnsaved('cancel') }
+  }, [])
+  return (
+    <div className="modal-back" onPointerDown={e => { if (e.target === e.currentTarget) answerUnsaved('cancel') }}>
+      <form noValidate className="modal" style={{ width: 380 }} onSubmit={e => { e.preventDefault(); answerUnsaved('save') }}>
+        <h2>Do you want to save the changes you made to “{documentName()}”?</h2>
+        <span className="muted">Your changes will be lost if you don't save them.</span>
+        <div className="buttons">
+          <button type="button" style={{ marginRight: 'auto' }} onClick={() => answerUnsaved('discard')}>Don't Save</button>
+          <button type="button" onClick={() => answerUnsaved('cancel')}>Cancel</button>
+          <button type="submit" className="primary" autoFocus>Save</button>
+        </div>
+      </form>
+    </div>
+  )
+}
+
 export const panels: Record<string, () => React.ReactNode> = {
   'New Canvas': () => <NewCanvas />, 'Canvas Size': () => <CanvasSize />, 'Image Size': () => <ImageSize />, Trim: () => <Trim />, 'Export JPEG': () => <ExportJPEG />,
   About: () => <About />, 'Expand Selection': () => <Amount kind="expand" />, 'Contract Selection': () => <Amount kind="contract" />, 'Feather Selection': () => <Amount kind="feather" />,
   Effect: () => <EffectPanel />, 'Grid Settings': () => <GridSettings />, 'Keyboard Shortcuts': () => <KeyboardShortcuts />, 'Color Range': () => <ColorRange />,
+  'Unsaved Changes': () => <UnsavedChanges />,
 }
 
 export function DialogHost() {

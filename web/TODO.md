@@ -98,8 +98,8 @@ new C needs. Hashes are upstream's commits; effort is a guess.
   throw them all away (`load()` in `editor/shortcuts.ts`). Small.
 - [x] **HEIF from cameras** (.hif, .heif, 70b3e14): accept them by extension, as `file.type` is often empty. Decoding still needs
   Safari, or a wasm decoder. Small.
-- [ ] Untitled projects numbered with the lowest free number (d0ec2f3), rather than all "Untitled". Small.
-- [ ] Save, Don't Save and Cancel on closing an unsaved project, instead of `window.confirm`, with Save the one colored button
+- [x] Untitled projects numbered with the lowest free number (d0ec2f3), rather than all "Untitled". Small.
+- [x] Save, Don't Save and Cancel on closing an unsaved project, instead of `window.confirm`, with Save the one colored button
   (283d360, 4e035bf). Small.
 - [x] Adjustment layer button before the layer effects button in the Layers footer (067fca4). Trivial.
 - [x] Drop anywhere on the tab bar to open in a new project (d3d0ce7). Trivial.
