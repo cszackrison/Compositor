@@ -90,7 +90,7 @@ opt-in pen pressure, a web app manifest for the home screen, a large-canvas warn
   in a 390 px frame on a desktop.
 - [x] Phones on their side get a phone layout of their own: the tools down the left, the bar above the canvas and the tool's options
   below it (a coarse pointer and at most 500 px tall).
-- [ ] Reordering layers by dragging on touch (Move Up and Move Down in the long-press menu for now).
+- [x] Reordering layers by touch: each row has a grip (≡) to drag it above, below or into a folder, as the mouse's drag does.
 - [x] Offline use: a service worker (`public/sw.js`) keeps the app's files as it installs (listed by the build in `offline.json`) and the
   optional parts (HEIC, RAW, the AI runtimes) once used; a new build waits for open tabs to close. HTTPS or localhost only.
 - [x] Saving in the browser asks for persistent storage, and on iOS away from the Home Screen the notice says Safari can clear it after a
