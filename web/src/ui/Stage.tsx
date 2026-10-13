@@ -437,8 +437,11 @@ export function Stage() {
     const wheel = (event: WheelEvent) => {
       event.preventDefault()
       const box = element.getBoundingClientRect()
-      if (event.ctrlKey || event.metaKey) view.zoomAt(Math.exp(-event.deltaY * 0.01), event.clientX - box.left, event.clientY - box.top)
-      else { view.offsetX -= event.deltaX; view.offsetY -= event.deltaY }
+      // A pinch sends small deltas and zooms smoothly; a mouse wheel's click comes as a whole line or page, or 100 px or more, and
+      // zooms a step of about 20%.
+      const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? box.height : 1, deltaX = event.deltaX * unit, deltaY = event.deltaY * unit
+      if (event.ctrlKey || event.metaKey) view.zoomAt(Math.exp(-Math.max(-18, Math.min(18, deltaY)) * 0.01), event.clientX - box.left, event.clientY - box.top)
+      else { view.offsetX -= deltaX; view.offsetY -= deltaY }
       viewChanged()
       requestRender(false)
     }
