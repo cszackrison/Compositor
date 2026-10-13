@@ -9,7 +9,7 @@ import { ContextMenu, type MenuItem } from './Menu'
 import { copyMerged } from '../editor/actions'
 import { copyLayersInto, paste } from '../editor/clipboard'
 import { draggedFromOtherProject, takeDraggedLayers } from './Tabs'
-import { actualSize, canvasDrag, canvasPicker, compositor, fit, onFrame, renderFull, renderScaleFor, requestRender, setCompositor, snapLines, view, viewChanged, modifierHeld, releaseOnceModifiers, subscribeModifiers, tapModifier, touchModifiers, type ModifierKey } from './canvasState'
+import { actualSize, canvasDrag, canvasOnly, canvasPicker, compositor, fit, onFrame, renderFull, renderScaleFor, requestRender, setCompositor, snapLines, view, viewChanged, modifierHeld, releaseOnceModifiers, subscribeModifiers, tapModifier, touchModifiers, type ModifierKey } from './canvasState'
 import { useCoarse } from './layout'
 import type { Pointer, ToolHandler } from '../tools/tool'
 import { eyedropper, paint } from '../tools/paint'
@@ -39,7 +39,8 @@ let antsFor: { selection: Raster | null; loops: Int32Array[] | null } = { select
 // The composite, then everything drawn over it: grid, guides, snap lines, the selection's marching ants, the tool's own marks, rulers.
 // The canvas's background, from the stylesheet: read once, not every frame.
 let canvasRGB: [number, number, number] | null = null
-function canvasColor() {
+function canvasColor(): [number, number, number] {
+  if (canvasOnly) return [0, 0, 0]
   if (!canvasRGB) {
     const style = getComputedStyle(document.documentElement).getPropertyValue('--canvas').trim() || '#161617'
     canvasRGB = [1, 3, 5].map(i => parseInt(style.slice(i, i + 2), 16) / 255) as [number, number, number]
@@ -121,7 +122,7 @@ export function drawOverlay() {
     c.setLineDash([])
   }
   activeHandler().draw?.(c)
-  if (prefs.rulers) drawRulers(c)
+  if (prefs.rulers && !canvasOnly) drawRulers(c)
 }
 
 // Rulers in document pixels along the top and left, ticked at the first round step at least 70 points apart.
@@ -328,7 +329,7 @@ export function Stage() {
     lastPointer.current = p
     if (event.button === 1 && (event.metaKey || event.ctrlKey)) { middleZoom.current = { screen: p.screen, y: event.clientY, zoom: view.zoom, out: false }; updateCursor(); return }
     if (space || store.state.tool === 'hand' || event.button === 1) { pan.current = { x: event.clientX, y: event.clientY, offsetX: view.offsetX, offsetY: view.offsetY }; updateCursor(); return }
-    if (prefs.rulers && event.button === 0 && (p.screen[0] < rulerSize || p.screen[1] < rulerSize)) {
+    if (prefs.rulers && !canvasOnly && event.button === 0 && (p.screen[0] < rulerSize || p.screen[1] < rulerSize)) {
       if ((p.screen[0] >= rulerSize || p.screen[1] >= rulerSize) && !prefs.lockGuides) { startGuideDrag(p.screen[1] < rulerSize ? 'horizontal' : 'vertical', null, p); guideGesture.current = true }
       return
     }

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { store } from '../editor/store'
-import { newCanvas, documentName } from '../editor/actions'
+import { store, tabForOpening } from '../editor/store'
+import { newCanvas, documentName, placeImages } from '../editor/actions'
 import { download } from '../io/files'
 import { prefs, setPrefs, gridColors } from '../editor/prefs'
 import { chordLabel, chordOf, currentOverrides, definitions, effective, problem, saveOverrides, unassigned, type Chord } from '../editor/shortcuts'
@@ -10,7 +10,7 @@ import { EffectPanel, Scrub } from './Inspector'
 import { ColorSwatch } from './ColorPicker'
 import { useEditor } from './hooks'
 import type { Raster } from '../model/raster'
-import type { Transform } from '../model/types'
+import { type Transform, maxSide } from '../model/types'
 import { outline } from '../model/selection'
 
 const close = () => store.set({ panel: null })
@@ -36,21 +36,62 @@ function Modal({ title, children, onSubmit, submit = 'OK', wide, floating, disab
   )
 }
 
-const presets = [['1920 × 1080', 1920, 1080], ['3840 × 2160', 3840, 2160], ['1080 × 1080', 1080, 1080], ['1080 × 1350', 1080, 1350], ['A4 at 300 ppi', 2480, 3508], ['4000 × 3000', 4000, 3000]] as const
+// New Canvas (NewCanvasSheet.swift): presets for screens and common formats, grouped as the Mac's menu divides them.
+const presetGroups = [
+  [['4K', 3840, 2160], ['1440p', 2560, 1440], ['1080p', 1920, 1080]],
+  [['iPhone 18 Pro', 1206, 2622], ['iPhone 18 Pro Max', 1320, 2868], ['MacBook Pro 14"', 3024, 1964], ['MacBook Pro 16"', 3456, 2234], ['Studio Display', 5120, 2880]],
+  [['Instagram Square', 1080, 1080], ['Instagram Portrait', 1080, 1350], ['Instagram Story', 1080, 1920], ['YouTube Thumb', 1080, 608]],
+] as const
+// Units sizes can be typed in, with how many make an inch; print units turn into pixels at the chosen DPI.
+const canvasUnits = [['px', 'Pixels', 0], ['in', 'Inches', 1], ['cm', 'Centimeters', 2.54], ['mm', 'Millimeters', 25.4]] as const
+const canvasFills = ['transparent', 'white', 'black'] as const
 
 function NewCanvas() {
-  const [width, setWidth] = useState(1920), [height, setHeight] = useState(1080)
-  const [fill, setFill] = useState<'white' | 'transparent' | 'background'>('white')
+  // Always starting from the common case: transparent, in pixels, at 72 DPI.
+  const [width, setWidth] = useState('1920'), [height, setHeight] = useState('1080')
+  const [unit, setUnit] = useState(0), [resolution, setResolution] = useState(72), [fill, setFill] = useState(0)
+  const pixels = (text: string) => {
+    const value = Number(text.trim().replace(',', '.')), perInch = canvasUnits[unit][2]
+    if (!(value > 0) || !Number.isFinite(value)) return null
+    const px = perInch ? Math.round(value / perInch * resolution) : value
+    return Number.isInteger(px) && px >= 1 && px <= maxSide ? px : null
+  }
+  const text = (px: number, u = unit) => { const perInch = canvasUnits[u][2]; return perInch ? String(+(px / resolution * perInch).toFixed(2)) : String(px) }
+  const pixelWidth = pixels(width), pixelHeight = pixels(height)
+  const setPixels = (w: number, h: number) => { setWidth(text(w)); setHeight(text(h)) }
+  const switchUnit = () => { const next = (unit + 1) % canvasUnits.length; if (pixelWidth && pixelHeight) { setWidth(text(pixelWidth, next)); setHeight(text(pixelHeight, next)) } setUnit(next) }
+  const preset = presetGroups.flat().findIndex(p => p[1] === pixelWidth && p[2] === pixelHeight)
+  // An image pasted here makes the canvas from it, as pasting on the Mac's New Canvas screen does.
+  useEffect(() => {
+    const paste = (event: ClipboardEvent) => {
+      const file = [...event.clipboardData?.files ?? []].find(f => f.type.startsWith('image/'))
+      if (!file) return
+      event.preventDefault(); event.stopPropagation()
+      close(); tabForOpening(); store.close(); placeImages([file])
+    }
+    window.addEventListener('paste', paste, true)
+    return () => window.removeEventListener('paste', paste, true)
+  }, [])
+  const field = (label: string, value: string, set: (v: string) => void, focus = false) => (
+    <label style={{ flex: 1, flexDirection: 'column', alignItems: 'stretch', gap: 6 }}><span className="muted">{label}</span>
+      <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}><input type="text" inputMode="decimal" value={value} onChange={e => set(e.target.value)} autoFocus={focus} style={{ flex: 1, padding: '7px 9px' }} /><span className="muted">{canvasUnits[unit][0]}</span></span>
+    </label>
+  )
   return (
-    <Modal title="New Canvas" onSubmit={() => newCanvas(width, height, fill)} submit="Create">
-      <div className="grid">
-        <span className="muted">Preset</span>
-        <select onChange={e => { const p = presets[+e.target.value]; setWidth(p[1]); setHeight(p[2]) }} defaultValue=""><option value="" disabled>Choose…</option>{presets.map((p, i) => <option key={p[0]} value={i}>{p[0]}</option>)}</select>
-        <span className="muted">Width</span><input type="number" min={1} max={30000} value={width} onChange={e => setWidth(+e.target.value)} autoFocus />
-        <span className="muted">Height</span><input type="number" min={1} max={30000} value={height} onChange={e => setHeight(+e.target.value)} />
-        <span className="muted">Background</span>
-        <select value={fill} onChange={e => setFill(e.target.value as typeof fill)}><option value="white">White</option><option value="background">Background color</option><option value="transparent">Transparent</option></select>
+    <Modal title="New Canvas" onSubmit={() => pixelWidth && pixelHeight && newCanvas(pixelWidth, pixelHeight, canvasFills[fill], resolution)} submit="Create Canvas" disabled={!pixelWidth || !pixelHeight}>
+      <div style={{ display: 'flex', alignItems: 'flex-end', gap: 10 }}>
+        {field('Width', width, setWidth, true)}<span className="muted" style={{ paddingBottom: 8 }}>×</span>{field('Height', height, setHeight)}
+        <select title="Preset sizes for screens and common formats" value={preset} onChange={e => { const p = presetGroups.flat()[+e.target.value]; if (p) setPixels(p[1], p[2]) }} style={{ width: 34, padding: '7px 4px' }}>
+          <option value={-1}>Custom</option>
+          {presetGroups.map((group, g) => <optgroup key={g} label={g ? '──────' : 'Sizes'}>{group.map(p => <option key={p[0]} value={presetGroups.flat().indexOf(p)}>{p[0]} · {p[1]} × {p[2]}</option>)}</optgroup>)}
+        </select>
       </div>
+      <div className="muted" style={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+        <button type="button" className="pill" title="Start see-through, or with a white or black Background layer. Click to switch." onClick={() => setFill((fill + 1) % canvasFills.length)}>{canvasFills[fill][0].toUpperCase() + canvasFills[fill].slice(1)} canvas</button>·
+        <button type="button" className="pill" title="Units: pixels, inches, centimeters or millimeters. Click to switch." onClick={switchUnit}>{canvasUnits[unit][1]}</button>·
+        <button type="button" className="pill" title={`Resolution: 72 for screens, 300 for print. Click to switch.${unit && pixelWidth && pixelHeight ? ` · ${resolution} DPI: ${pixelWidth} × ${pixelHeight} pixels` : ''}`} onClick={() => setResolution(resolution === 300 ? 72 : 300)}>{resolution} DPI</button>
+      </div>
+      {(!pixelWidth || !pixelHeight) && <span style={{ color: '#ffb35c' }}>{unit ? `Enter a size up to ${maxSide.toLocaleString()} pixels at this DPI.` : `Enter whole numbers from 1 to ${maxSide.toLocaleString()} pixels.`}</span>}
     </Modal>
   )
 }

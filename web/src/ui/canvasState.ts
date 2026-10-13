@@ -14,6 +14,21 @@ const viewListeners = new Set<() => void>()
 export function subscribeView(listener: () => void) { viewListeners.add(listener); return () => { viewListeners.delete(listener) } }
 export function viewChanged() { viewListeners.forEach(listener => listener()) }
 
+// Canvas Only (View › Toggle Fullscreen, F): the canvas alone on black over the whole screen, every bar and panel put away.
+export let canvasOnly = false
+const canvasOnlyListeners = new Set<() => void>()
+export function subscribeCanvasOnly(listener: () => void) { canvasOnlyListeners.add(listener); return () => { canvasOnlyListeners.delete(listener) } }
+export function setCanvasOnly(on: boolean) {
+  if (on === canvasOnly) return
+  canvasOnly = on
+  if (on) document.documentElement.requestFullscreen?.().catch(() => {})
+  else if (document.fullscreenElement) document.exitFullscreen().catch(() => {})
+  canvasOnlyListeners.forEach(listener => listener())
+  requestRender(false)
+}
+// The browser's own Escape leaves fullscreen without a key event reaching the page.
+if (typeof document !== 'undefined') document.addEventListener('fullscreenchange', () => { if (!document.fullscreenElement) setCanvasOnly(false) })
+
 const pixelBudget = 36_000_000
 export function renderScaleFor(doc: Doc, maxSize: number) {
   return Math.min(1, maxSize / Math.max(doc.width, doc.height), Math.sqrt(pixelBudget / (doc.width * doc.height)))

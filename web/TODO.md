@@ -83,11 +83,11 @@ new C needs. Hashes are upstream's commits; effort is a guess.
 - [x] **Image › Rotate Canvas 90° Clockwise and Counterclockwise** (754f188, `CanvasRotation.swift`): width and height swap, each
   transform quarter-turns about the canvas (no resampling), guides swap axis, the selection turns too. Model on
   `store.flipCanvas`. Small.
-- [ ] **Canvas Only** on F (ad4bddf, 088a5c1, 720c121): the canvas alone on black over the whole window, F or Esc to leave, maybe
+- [x] **Canvas Only** on F (ad4bddf, 088a5c1, 720c121): the canvas alone on black over the whole window, F or Esc to leave, maybe
   `requestFullscreen` too. Small.
-- [ ] **New Canvas** (b0b4f01, ab9779a, a00d8b6): sizes in px, in, cm or mm at 72 or 300 DPI, Transparent, White or Black, every
+- [x] **New Canvas** (b0b4f01, ab9779a, a00d8b6): sizes in px, in, cm or mm at 72 or 300 DPI, Transparent, White or Black, every
   setting a pill, always starting transparent in pixels at 72 DPI. The unit math is in the Image Size dialog. Small.
-- [ ] **Paste an image on the New Canvas screen** to make the canvas from it (2522e3b). `onPaste` skips text fields, and the width
+- [x] **Paste an image on the New Canvas screen** to make the canvas from it (2522e3b). `onPaste` skips text fields, and the width
   field has focus. Small.
 - [x] **Reveal the selected layer in the Layers panel** (d2b8aaf): open its folders and scroll its row into view when it's chosen on
   the canvas. Small.

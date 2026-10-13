@@ -26,9 +26,9 @@ export function closeProject(target: Store = store) {
 
 export const documentName = (of: Store = store) => of.state.target?.name.replace(/\.comp$/, '') ?? 'Untitled'
 
-export const newCanvas = guard((width: number, height: number, fill: 'white' | 'transparent' | 'background', resolution: number = 72) => {
+export const newCanvas = guard((width: number, height: number, fill: 'white' | 'black' | 'transparent', resolution: number = 72) => {
   width = Math.round(Math.min(maxSide, Math.max(1, width))); height = Math.round(Math.min(maxSide, Math.max(1, height)))
-  const color = fill === 'white' ? [255, 255, 255, 255] : fill === 'background' ? [...store.state.background, 255] : [0, 0, 0, 0]
+  const color = fill === 'white' ? [255, 255, 255, 255] : fill === 'black' ? [0, 0, 0, 255] : [0, 0, 0, 0]
   const layer = newLayer({ name: fill === 'transparent' ? 'Layer 1' : 'Background', transform: fullTransform(width, height), image: Raster.filled(width, height, 4, color) })
   const doc: Doc = { id: uuid(), width, height, resolution, layers: [layer], guides: [], extra: {} }
   tabForOpening().open(doc, layer.id, null)

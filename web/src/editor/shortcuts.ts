@@ -56,7 +56,7 @@ export const definitions: ShortcutDefinition[] = ([
   ['Menus', 'Toggle Clipping Mask', c('g', 3)], ['Menus', 'Group Layers', c('g', 1)], ['Menus', 'Ungroup Layers', c('g', 9)], ['Menus', 'New Blank Layer', c('n', 11)],
   ['Menus', 'Move Layer Up', c(']', 1)], ['Menus', 'Move Layer Down', c('[', 1)], ['Menus', 'Merge Layers', c('e', 1)], ['Menus', 'Show Grid', c("'", 1)],
   ['Menus', 'Show Guides', c(';', 1)], ['Menus', 'Show Rulers', c('r', 1)], ['Menus', 'Snap', c(';', 9)], ['Menus', 'Lock Guides', c(';', 3)],
-  ['Canvas & Layers', 'Select tool', c('a')], ['Canvas & Layers', 'Move / Transform tool', c('v')], ['Canvas & Layers', 'Hand tool', c('h')], ['Canvas & Layers', 'Zoom tool', c('z')],
+  ['Canvas & Layers', 'Toggle Fullscreen: the canvas alone on black (Esc also leaves)', c('f')], ['Canvas & Layers', 'Select tool', c('a')], ['Canvas & Layers', 'Move / Transform tool', c('v')], ['Canvas & Layers', 'Hand tool', c('h')], ['Canvas & Layers', 'Zoom tool', c('z')],
   ['Canvas & Layers', 'Brush tool', c('b')], ['Canvas & Layers', 'Eraser', c('e')], ['Canvas & Layers', 'Spot Healing', c('j')], ['Canvas & Layers', 'Clone Stamp', c('s')],
   ['Canvas & Layers', 'Gradient tool', c('g')], ['Canvas & Layers', 'Shape tool', c('u')], ['Canvas & Layers', 'Eyedropper tool', c('i')], ['Canvas & Layers', 'Marquee / cycle shape', c('m')],
   ['Canvas & Layers', 'Magic', c('w')], ['Canvas & Layers', 'Lasso / cycle mode', c('l')], ['Canvas & Layers', 'Blur / Smudge / Liquify', c('r')], ['Canvas & Layers', 'Crop tool', c('c')],

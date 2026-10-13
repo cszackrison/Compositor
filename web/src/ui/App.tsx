@@ -22,7 +22,7 @@ import { definitionFor, shortcutText, subscribeShortcuts } from '../editor/short
 import { brushKey } from '../tools/paint'
 import { beginTransformSelection } from '../editor/floating'
 import { clearGuides } from '../tools/guides'
-import { requestRender } from './canvasState'
+import { canvasOnly, requestRender, setCanvasOnly, subscribeCanvasOnly } from './canvasState'
 import { useCompact } from './layout'
 import { selectSubject } from '../ai/RemoveBackground'
 import { PhoneMenu, Sheet } from './Phone'
@@ -117,6 +117,8 @@ function canvasCommand(title: string): boolean {
     store.setTool(tool)
     return true
   }
+  if (title === 'Toggle Fullscreen: the canvas alone on black (Esc also leaves)') { setCanvasOnly(!canvasOnly); return true }
+  if (title === 'Cancel current canvas operation' && canvasOnly) { setCanvasOnly(false); return true }
   if (title === 'Select tool') { store.setTool('move'); return true }
   if (title === 'Swap foreground/background') { store.swapColors(); return true }
   if (title === 'Reset colors') { store.resetColors(); return true }
@@ -147,6 +149,8 @@ export function App() {
   const recent = useSyncExternalStore(subscribeRecent, recentProjects)
   useEffect(() => { loadRecent() }, [])
   const saved = useSyncExternalStore(subscribeBrowserProjects, browserProjects)
+  const only = useSyncExternalStore(subscribeCanvasOnly, () => canvasOnly)
+  useEffect(() => { if (only && !store.hasDocument) setCanvasOnly(false) })
   useEffect(() => { if (!canWriteDirectories) loadBrowserProjects() }, [])
   // Phones and tablets give a tab far less memory than a computer: warn once per project when its canvas is large for one.
   const coarse = useCoarse()
@@ -255,6 +259,8 @@ export function App() {
       { label: state.editingMask && active?.mask ? 'Delete Layer Mask' : state.selectedIds.length > 1 ? 'Delete Layers' : 'Delete Layer', action: () => store.deleteSelected(), disabled: !active },
     ] },
     { title: 'View', items: [
+      { label: 'Toggle Fullscreen', shortcut: shortcutText('Toggle Fullscreen: the canvas alone on black (Esc also leaves)', 'Canvas & Layers'), checked: canvasOnly, action: () => setCanvasOnly(!canvasOnly), disabled: !doc },
+      'divider',
       item('Fit Canvas', 'Fit Canvas'), item('Actual Pixels', 'Actual Pixels'), item('Zoom In', 'Zoom In'), item('Zoom Out', 'Zoom Out'),
       { label: 'Pixel Grid (800% and above)', checked: prefs.pixelGrid, action: () => setPrefs({ pixelGrid: !prefs.pixelGrid }) },
       item('Show Transform Controls', 'Show Transform Controls', { checked: prefs.transformControls }),
@@ -362,7 +368,7 @@ export function App() {
   )
 
   return (
-    <div className="app" {...dropProps}>
+    <div className={`app ${only ? 'canvas-only' : ''}`} {...dropProps}>
       <header className="menubar">
         <span className="title"><img src="./icon.png" alt="" />Compositor</span>
         <MenuBar menus={menus} />
