@@ -26,6 +26,9 @@ export type State = Snapshot & {
   marqueeShape: 'rect' | 'ellipse'
   lassoKind: 'freehand' | 'polygonal'
   wand: { tolerance: number; contiguous: boolean; sampleAll: boolean; sampleSize: number }
+  // The Magic tool's mode, and Object's own settings (ObjectSelectionSettings): sampling the picture as shown, and moving the edge.
+  wandMode: 'Magic Wand' | 'Object'
+  objectSelection: { sampleAll: boolean; edgeOffset: number }
   // The selection tools' header: the sticky mode (Shift and Option override it) and anti-aliasing for new selections.
   selectionMode: SelectionMode
   selectionAntialias: boolean
@@ -63,7 +66,7 @@ const emptyDoc: Doc = { id: '', width: 1, height: 1, resolution: 72, layers: [],
 export class Store {
   state: State = {
     doc: emptyDoc, activeId: null, selectedIds: [], selection: null, editingMask: false, tool: 'move', marqueeShape: 'rect', lassoKind: 'freehand',
-    wand: { tolerance: 32, contiguous: true, sampleAll: false, sampleSize: 0 }, selectionMode: 'replace', selectionAntialias: true, modifyAmounts: { expand: 1, contract: 1, feather: 2 },
+    wand: { tolerance: 32, contiguous: true, sampleAll: false, sampleSize: 0 }, wandMode: 'Magic Wand', objectSelection: { sampleAll: true, edgeOffset: 0 }, selectionMode: 'replace', selectionAntialias: true, modifyAmounts: { expand: 1, contract: 1, feather: 2 },
     brush: { diameter: 40, hardness: 1, opacity: 1, smoothing: 0, erasing: false },
     healMode: 'Content-Aware', clone: { aligned: true, sampleAll: false, source: null, offset: null }, smearMode: 'Liquify', blurRadius: 5,
     gradient: { shape: 'Linear', style: 'Foreground to Transparent', reversed: false, opacity: 1 }, shape: { kind: 'Rectangle', cornerRadius: 0, lineWidth: 4 }, crop: { ratio: 'Free', rect: null },

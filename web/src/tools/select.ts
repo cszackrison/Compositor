@@ -106,6 +106,23 @@ export const lasso: ToolHandler = {
   settle: () => finishPolygon(),
 }
 
+// Object mode: the object under the click, found by the object model (ai/objects.ts), as a selection.
+let finding = false
+async function selectObjectAt(point: [number, number], mode: SelectionMode) {
+  if (finding) return
+  const { sampleAll, edgeOffset } = store.state.objectSelection, pixels = samplePixels(sampleAll)
+  if (!pixels) { store.notify('Choose a layer with pixels, or sample all layers.'); return }
+  finding = true
+  const owner = store
+  try {
+    const { selectObject, describeObject } = await import('../ai/objects')
+    const found = await selectObject(pixels, point, edgeOffset, owner.state.selectionAntialias, status => owner.notify(describeObject(status), 'info'))
+    owner.set({ message: null })
+    if (found) owner.setSelection(found, mode, 'Object Selection')
+    else owner.notify('No object was found there.', 'info')
+  } catch (error) { owner.notify((error as Error).message) } finally { finding = false }
+}
+
 export const magic: ToolHandler = {
   down(p) {
     if (startMoves(p)) return
@@ -115,6 +132,7 @@ export const magic: ToolHandler = {
   up() {
     const d = drag
     drag = null
+    if (d?.kind === 'click' && store.state.wandMode === 'Object') { selectObjectAt(d.start, d.mode); return }
     if (d?.kind === 'click') {
       const pixels = samplePixels(store.state.wand.sampleAll)
       if (!pixels) { store.notify('Choose a layer with pixels, or sample all layers.'); return }

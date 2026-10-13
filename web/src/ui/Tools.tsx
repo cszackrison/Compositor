@@ -155,7 +155,14 @@ export function ToolHeader() {
         <Choice value={state.lassoKind === 'freehand' ? 'Freehand' : 'Polygonal'} options={['Freehand', 'Polygonal'] as const} onChange={v => store.set({ lassoKind: v === 'Freehand' ? 'freehand' : 'polygonal' })} />
         <SelectionHeader />
       </>}
-      {state.tool === 'wand' && <>
+      {state.tool === 'wand' && <Choice value={state.wandMode} options={['Magic Wand', 'Object'] as const} onChange={wandMode => store.set({ wandMode })} />}
+      {state.tool === 'wand' && state.wandMode === 'Object' && <>
+        <Choice value={state.objectSelection.sampleAll ? 'All Layers' : 'This Layer'} options={['All Layers', 'This Layer'] as const} onChange={v => store.set({ objectSelection: { ...state.objectSelection, sampleAll: v === 'All Layers' } })} />
+        <Range label="Edge" value={state.objectSelection.edgeOffset} min={-10} max={10} suffix="px" onChange={edgeOffset => store.set({ objectSelection: { ...state.objectSelection, edgeOffset } })} />
+        <SelectionHeader />
+        <span className="muted">Click an object to select it. Uses the SlimSAM model (Apache-2.0) in your browser.</span>
+      </>}
+      {state.tool === 'wand' && state.wandMode === 'Magic Wand' && <>
         <Range label="Tolerance" value={state.wand.tolerance} min={0} max={255} onChange={tolerance => store.set({ wand: { ...state.wand, tolerance } })} />
         <select value={state.wand.sampleSize} onChange={e => store.set({ wand: { ...state.wand, sampleSize: +e.target.value } })}><option value={0}>Point Sample</option><option value={1}>3 by 3 Average</option><option value={2}>5 by 5 Average</option></select>
         <Choice value={state.wand.sampleAll ? 'All Layers' : 'This Layer'} options={['This Layer', 'All Layers'] as const} onChange={v => store.set({ wand: { ...state.wand, sampleAll: v === 'All Layers' } })} />

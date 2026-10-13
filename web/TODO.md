@@ -39,7 +39,10 @@ existing features were.
   through the file's profile or color description; 10-bit HEIF comes in as a 16-bit layer.
 - [x] **Select Subject and Remove Background**, with the ormbg model (Apache-2.0) in the browser instead of Apple's Vision:
   downloaded from Hugging Face on first use (88 MB on WebGPU, 44 MB on the CPU) and cached. Results differ from the Mac's.
-- [ ] **Object selection (Magic tool)**: a click-to-select model (MobileSAM or SlimSAM) on the same runtime.
+- [x] **Object selection (Magic tool)**: the Magic tool's Object mode selects the object under a click with SlimSAM-77 (Apache-2.0,
+  quantized, 14 MB from Hugging Face on first use, run on the CPU in `ai/objectWorker.ts`), the whole object rather than a part of
+  it, with the Mac's Sample and Edge settings. The picture is read once until it changes; each click after is quick. The masks
+  differ from Vision's.
 - [ ] Try Select Subject and Remove Background on phones (WebGPU in Chrome on Android and Safari on iOS 26).
 - [x] Remove Background's full-size refine (Advanced) runs in a worker (`ai/matteWorker.ts`), so OK doesn't pause the page.
 - [ ] **Live reload when the project changes on disk** (an AI agent or script writing the `.comp`). Browsers can't watch folders,

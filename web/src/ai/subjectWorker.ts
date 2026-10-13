@@ -1,5 +1,6 @@
 import * as ort from 'onnxruntime-web/webgpu'
 import wasm from 'onnxruntime-web/ort-wasm-simd-threaded.asyncify.wasm?url'
+import { downloadModel, gpuDevice } from './models'
 
 // The subject model off the main thread: ormbg (Apache-2.0, an ISNet trained for cutting out subjects), downloaded from Hugging
 // Face the first time and kept in the browser's cache. On WebGPU it runs in half precision where the GPU has it (88 MB) or full
@@ -19,42 +20,7 @@ type Request = { kind: 'load' } | { kind: 'run'; id: number; width: number; heig
 let session: Promise<ort.InferenceSession> | null = null
 let backend = ''
 
-async function download(variant: Variant): Promise<Uint8Array> {
-  const url = repository + variants[variant].file
-  const cache = typeof caches !== 'undefined' ? await caches.open('compositor-models').catch(() => null) : null
-  const cached = await cache?.match(url)
-  if (cached) return new Uint8Array(await cached.arrayBuffer())
-  const response = await fetch(url)
-  if (!response.ok || !response.body) throw new Error(`Couldn’t download the subject model (${response.status}).`)
-  const total = Number(response.headers.get('content-length')) || variants[variant].size
-  const reader = response.body.getReader(), parts: Uint8Array[] = []
-  let received = 0, reported = 0
-  for (;;) {
-    const { done, value } = await reader.read()
-    if (done) break
-    parts.push(value)
-    received += value.byteLength
-    if (received - reported > total / 100) { reported = received; self.postMessage({ kind: 'progress', received, total }) }
-  }
-  const bytes = new Uint8Array(received)
-  let at = 0
-  for (const part of parts) { bytes.set(part, at); at += part.byteLength }
-  await cache?.put(url, new Response(bytes, { headers: { 'content-type': 'application/octet-stream' } })).catch(() => {})
-  return bytes
-}
-
-// A WebGPU device asking for the adapter's real limits: the model has shaders with more storage buffers than WebGPU's default
-// allows (17 against 16), which most GPUs support when asked.
-async function gpuDevice(): Promise<GPUDevice | null> {
-  const adapter = await navigator.gpu?.requestAdapter().catch(() => null)
-  if (!adapter) return null
-  const limits = adapter.limits as unknown as Record<string, number>
-  const wanted = ['maxStorageBuffersPerShaderStage', 'maxStorageBufferBindingSize', 'maxBufferSize', 'maxComputeWorkgroupStorageSize', 'maxComputeInvocationsPerWorkgroup', 'maxComputeWorkgroupSizeX', 'maxComputeWorkgroupSizeY', 'maxComputeWorkgroupSizeZ']
-  return adapter.requestDevice({
-    requiredFeatures: (['shader-f16', 'subgroups'] as GPUFeatureName[]).filter(f => adapter.features.has(f)),
-    requiredLimits: Object.fromEntries(wanted.filter(name => name in limits).map(name => [name, limits[name]])),
-  }).catch(() => null)
-}
+const download = (variant: Variant) => downloadModel(repository + variants[variant].file, variants[variant].size, 'subject')
 
 function create(bytes: Uint8Array, device: GPUDevice | null) {
   return ort.InferenceSession.create(bytes, { executionProviders: device ? [{ name: 'webgpu', device } as ort.InferenceSession.ExecutionProviderConfig] : ['wasm'], graphOptimizationLevel: 'all' })
