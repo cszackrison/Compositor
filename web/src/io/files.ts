@@ -79,15 +79,28 @@ async function folderImages(name: string, files: () => Promise<File[]>, project:
   try { rootedAtManifest(await project()); return null } catch { throw new Error(`There are no images in “${name}”.`) }
 }
 
+// Whether a drag carries something a drop can open: files, or links dragged from another page.
+export const carriesFiles = (types: readonly string[]) => types.includes('Files') || types.includes('text/uri-list')
+
+// A file from a link dropped from another page: the samples page, or an image elsewhere that allows it to be fetched.
+async function fileFromLink(link: string): Promise<File> {
+  const url = new URL(link, location.href), name = decodeURIComponent(url.pathname.split('/').pop() || 'image')
+  const response = await fetch(url).catch(() => null)
+  if (!response?.ok) throw new Error(`“${name}” couldn’t be downloaded. Save it first, then drop the file.`)
+  const blob = await response.blob()
+  return new File([blob], name, { type: blob.type })
+}
+
 // A drop is either a project folder, a zipped project, a folder of images, or image files to place as layers. `folder` names a folder
 // whose images these are, which opens as one project.
 export async function readDrop(transfer: DataTransfer): Promise<{ project?: { files: PackageFiles; target: PackageTarget }; images: File[]; folder?: string }> {
+  // The browser only lets a drop be read while its event runs, so everything is taken from it before the first await.
   const items = [...transfer.items].filter(item => item.kind === 'file')
-  const handles = await Promise.all(items.map(item => 'getAsFileSystemHandle' in item ? (item as any).getAsFileSystemHandle().catch(() => null) as Promise<FileSystemHandle | null> : Promise.resolve(null)))
-  const entries = items.map(item => item.webkitGetAsEntry())
+  const dropped = items.map(item => ({ handle: 'getAsFileSystemHandle' in item ? ((item as any).getAsFileSystemHandle() as Promise<FileSystemHandle | null>).catch(() => null) : null, entry: item.webkitGetAsEntry?.() ?? null, file: item.getAsFile() }))
+  const links = items.length ? [] : transfer.getData('text/uri-list').split(/\r?\n/).map(line => line.trim()).filter(line => line && !line.startsWith('#'))
   const images: File[] = []
-  for (let index = 0; index < items.length; index++) {
-    const handle = handles[index], entry = entries[index]
+  for (const { handle: pending, entry, file } of dropped) {
+    const handle = await pending
     if (handle?.kind === 'directory') {
       const directory = handle as FileSystemDirectoryHandle
       const found = await folderImages(directory.name, () => filesInHandle(directory), () => readDirectoryHandle(directory))
@@ -101,11 +114,17 @@ export async function readDrop(transfer: DataTransfer): Promise<{ project?: { fi
       await readEntry(entry, '', files)
       return { project: { files: rootedAtManifest(files), target: { kind: 'download', name: entry.name } }, images }
     }
-    const file = items[index].getAsFile()
     if (!file) continue
     if (file.name.endsWith('.zip')) return { project: { files: unzipPackage(new Uint8Array(await file.arrayBuffer())), target: { kind: 'download', name: file.name.replace(/\.zip$/, '') } }, images }
     if (isImageFile(file)) images.push(file)
   }
+  for (const link of links) {
+    const file = await fileFromLink(link)
+    if (file.name.endsWith('.zip')) return { project: { files: unzipPackage(new Uint8Array(await file.arrayBuffer())), target: { kind: 'download', name: file.name.replace(/\.zip$/, '') } }, images }
+    if (isImageFile(file)) images.push(file)
+    else throw new Error(`“${file.name}” isn’t an image or a project.`)
+  }
+  if (!images.length && items.length) throw new Error(items.length === 1 ? 'That file isn’t an image or a project.' : 'None of those files are images or projects.')
   return { images }
 }
 

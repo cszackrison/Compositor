@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { copyLayersInto } from '../editor/clipboard'
 import { activateTab, moveTab, store, tabForOpening, tabs, type Store } from '../editor/store'
 import { closeProject, documentName, openFiles, placeImages } from '../editor/actions'
-import { readDrop } from '../io/files'
+import { carriesFiles, readDrop } from '../io/files'
 import { useTabs } from './hooks'
 import { ContextMenu, type MenuItem } from './Menu'
 import { type Layer, maxSide, uuid } from '../model/types'
@@ -42,7 +42,7 @@ export function TabBar() {
     const observer = new ResizeObserver(([entry]) => setWidth(entry.contentRect.width))
     if (ref.current) observer.observe(ref.current)
     // A drag of files or layers anywhere in the window shows the "New" slot at the end of the strip.
-    const enter = (e: DragEvent) => { if (e.dataTransfer?.types.some(t => t === 'Files' || t === 'application/x-compositor-layers')) setAirborne(true) }
+    const enter = (e: DragEvent) => { if (e.dataTransfer && (carriesFiles(e.dataTransfer.types) || e.dataTransfer.types.includes('application/x-compositor-layers'))) setAirborne(true) }
     const end = () => { setAirborne(false); setTarget(null) }
     window.addEventListener('dragenter', enter)
     window.addEventListener('drop', end)
@@ -104,7 +104,7 @@ export function TabBar() {
             onDragStart={e => { setDragging(index); e.dataTransfer.setData('application/x-compositor-tab', String(index)) }}
             onDragOver={e => {
               if (dragging !== null) { e.preventDefault(); return }
-              const layers = dragged && dragged.from !== tab && !e.altKey, files = e.dataTransfer.types.includes('Files')
+              const layers = dragged && dragged.from !== tab && !e.altKey, files = carriesFiles(e.dataTransfer.types)
               if (!layers && !files) return
               e.preventDefault()
               setTarget(tab)

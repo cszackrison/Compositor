@@ -6,7 +6,7 @@ import { browserProjects, loadBrowserProjects, subscribeBrowserProjects } from '
 import { useCoarse } from './layout'
 import { closeProject, deleteBrowserProject, openBrowserProject, openRecent, documentName, downloadZip, exportImage, importFolder, importImage, openFiles, openProject, openSample, openZip, placeImages, save } from '../editor/actions'
 import { copy, cut, layerViaCopy, paste } from '../editor/clipboard'
-import { readDrop, canWriteDirectories } from '../io/files'
+import { carriesFiles, readDrop, canWriteDirectories } from '../io/files'
 import { adjustmentKinds, blendModes } from '../model/types'
 import { MenuBar, type MenuItem } from './Menu'
 import { Stage, actualSize, fit, zoomBy, activeHandler } from './Stage'
@@ -352,7 +352,7 @@ export function App() {
     if (images.length) await placeImages(images)
   }
 
-  const dropProps = { onDragOver: (e: React.DragEvent) => { if (e.dataTransfer.types.includes('Files')) { e.preventDefault(); setDragging(true) } }, onDragLeave: (e: React.DragEvent) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragging(false) }, onDrop }
+  const dropProps = { onDragOver: (e: React.DragEvent) => { if (carriesFiles(e.dataTransfer.types)) { e.preventDefault(); setDragging(true) } }, onDragLeave: (e: React.DragEvent) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragging(false) }, onDrop }
   const canvas = (
     <main className="workspace">
       <TabBar />
