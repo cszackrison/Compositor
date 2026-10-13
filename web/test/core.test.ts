@@ -2,7 +2,8 @@ import { describe, expect, it, beforeAll } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { encode } from 'fast-png'
 import { loadKernels, withBuffers, call, floats } from '../src/kernels'
-import { Raster, decodeHDR, decodeLayerFile, decodePNG, encodePNG, pngDepth } from '../src/model/raster'
+import { Raster, decodeHDR, decodeLayerFile, decodePNG, encodePNG, pngDepth, readEXR } from '../src/model/raster'
+import { encodeEXR, toHalf } from '../src/io/exr'
 import { readProject, writeProject } from '../src/io/project'
 import { channelTables, curveValue, hueSaturationCube, kernelCube } from '../src/model/adjustments'
 import { newAdjustment, newLayer, fullTransform, type Doc } from '../src/model/types'
@@ -113,16 +114,29 @@ describe('project format', () => {
     ;[...doc.layers[1].image!.data].forEach((v, i) => expect(Math.abs(v - expected[i])).toBeLessThanOrEqual(1))
   })
 
-  it('imports Radiance HDR top row first, and keeps an imported EXR or 16-bit PNG as the layer\'s file', async () => {
+  it('imports Radiance HDR top row first, and keeps an imported HDR image or 16-bit PNG as the layer\'s file', async () => {
     const hdr = await decodeHDR(new Uint8Array(readFileSync(new URL('./fixtures/quad.hdr', import.meta.url))))
     const expected = [255, 0, 0, 255, 255, 0, 0, 255, 0, 255, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 0, 0, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255]
     expect([hdr.width, hdr.height]).toEqual([4, 2])
     ;[...hdr.data].forEach((v, i) => expect(Math.abs(v - expected[i])).toBeLessThanOrEqual(1))
+    const radiance = await decodeLayerFile(new File([readFileSync(new URL('./fixtures/quad.hdr', import.meta.url))], 'Sky.hdr'))
+    expect(radiance.wide?.file).toBe('exr')
+    const kept = await readEXR(radiance.wide!.bytes)
+    expect([kept.width, kept.height, ...[...kept.data.subarray(0, 4)].map(v => Math.round(v * 100) / 100)]).toEqual([4, 2, 1, 0, 0, 1])
     const exr = new File([readFileSync(new URL('./fixtures/quad-piz.exr', import.meta.url))], 'Render.exr')
     const placed = await decodeLayerFile(exr)
     expect([placed.wide?.file, placed.wide?.version]).toEqual(['exr', placed.image.version])
     const png = await decodeLayerFile(new File([encodePNG(Raster.filled(2, 2, 4, [1, 2, 3, 255])) as Uint8Array<ArrayBuffer>], 'Flat.png', { type: 'image/png' }))
     expect(png.wide).toBeUndefined()
+  })
+
+  it('writes OpenEXR that reads back, highlights and transparency kept', async () => {
+    expect([toHalf(1), toHalf(-2), toHalf(65504), toHalf(1e6), toHalf(2 ** -24), toHalf(0.1)]).toEqual([0x3c00, 0xc000, 0x7bff, 0x7c00, 1, 0x2e66])
+    const width = 37, height = 21, data = new Float32Array(width * height * 4)
+    for (let i = 0; i < width * height; i++) { const a = (i % 5) / 4; data.set([(i % 7) * 1.5 * a, (i % 3) * 0.2158 * a, 16 * a, a], i * 4) }
+    const read = await readEXR(encodeEXR(data, width, height))
+    expect([read.width, read.height]).toEqual([width, height])
+    read.data.forEach((v, i) => expect(Math.abs(v - data[i])).toBeLessThanOrEqual(Math.abs(data[i]) / 1024 + 1e-6))
   })
 
   it('keeps PNG pixels exact', () => {

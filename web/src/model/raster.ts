@@ -1,5 +1,6 @@
 import { decode, encode } from 'fast-png'
 import { call, withBuffers } from '../kernels'
+import { encodeEXR } from '../io/exr'
 
 let nextVersion = 1
 
@@ -121,41 +122,58 @@ export function decodePNG(bytes: Uint8Array, channels: 1 | 4): Raster {
 }
 
 // Floats in linear light (4 a pixel, premultiplied) as the Mac shows an HDR layer: clipped to white, in sRGB, rounded to 8 bits with a
-// fine noise. `bottomFirst`: rows as three's EXR loader gives them, flipped for WebGL.
-function fromLinear(data: Float32Array, width: number, height: number, bottomFirst: boolean) {
+// fine noise, top row first.
+export function fromLinear(data: Float32Array, width: number, height: number) {
   const wide = new Uint16Array(width * height * 4)
   const toSRGB = (v: number) => v <= 0 ? 0 : v >= 1 ? 1 : v <= 0.0031308 ? v * 12.92 : 1.055 * Math.pow(v, 1 / 2.4) - 0.055
   for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
-    const s = ((bottomFirst ? height - 1 - y : y) * width + x) * 4, d = (y * width + x) * 4, a = Math.min(1, Math.max(0, data[s + 3]))
+    const s = (y * width + x) * 4, d = (y * width + x) * 4, a = Math.min(1, Math.max(0, data[s + 3]))
     wide[d + 3] = Math.round(a * 65535)
     if (a > 0) for (let c = 0; c < 3; c++) wide[d + c] = Math.round(toSRGB(data[s + c] / a) * a * 65535)
   }
   return quantize16(wide, width, height)
 }
 
-// An HDR layer's OpenEXR (half floats, premultiplied, linear light as EXR keeps it).
-export async function decodeEXR(bytes: Uint8Array): Promise<Raster> {
+export type LinearImage = { width: number; height: number; data: Float32Array }
+
+// An OpenEXR's pixels: premultiplied linear light, RGBA floats, top row first.
+export async function readEXR(bytes: Uint8Array): Promise<LinearImage> {
   const { EXRLoader } = await import('three/examples/jsm/loaders/EXRLoader.js')
   const { FloatType } = await import('three')
-  const exr = new EXRLoader().setDataType(FloatType).parse(bytes.slice().buffer) as unknown as { width: number; height: number; data: Float32Array }
-  return fromLinear(exr.data, exr.width, exr.height, true)
+  const exr = new EXRLoader().setDataType(FloatType).parse(bytes.slice().buffer) as unknown as LinearImage
+  const { width, height } = exr, data = new Float32Array(width * height * 4), row = width * 4
+  for (let y = 0; y < height; y++) data.set(exr.data.subarray((height - 1 - y) * row, (height - y) * row), y * row)
+  return { width, height, data }
+}
+
+// An HDR layer's OpenEXR (half floats, premultiplied, linear light as EXR keeps it).
+export async function decodeEXR(bytes: Uint8Array): Promise<Raster> {
+  const exr = await readEXR(bytes)
+  return fromLinear(exr.data, exr.width, exr.height)
 }
 
 // A Radiance HDR image (linear light, opaque).
-export async function decodeHDR(bytes: Uint8Array): Promise<Raster> {
+export async function readHDR(bytes: Uint8Array): Promise<LinearImage> {
   const { RGBELoader } = await import('three/examples/jsm/loaders/RGBELoader.js')
   const { FloatType } = await import('three')
-  const hdr = new RGBELoader().setDataType(FloatType).parse(bytes.slice().buffer) as unknown as { width: number; height: number; data: Float32Array }
-  return fromLinear(hdr.data, hdr.width, hdr.height, false)
+  const { width, height, data } = new RGBELoader().setDataType(FloatType).parse(bytes.slice().buffer) as unknown as LinearImage
+  return { width, height, data }
+}
+export async function decodeHDR(bytes: Uint8Array): Promise<Raster> {
+  const hdr = await readHDR(bytes)
+  return fromLinear(hdr.data, hdr.width, hdr.height)
 }
 
-// An image file placed as a layer: its pixels, and for a 16-bit PNG or an OpenEXR the file itself, which the project keeps as the
-// layer's image until it's edited, as the Mac keeps 16-bit and HDR layers. Radiance HDR shows as EXR does but saves as 8 bits.
+// An image file placed as a layer: its pixels, and for a 16-bit PNG or an HDR image the file the project keeps as the layer's image
+// until it's edited, as the Mac keeps 16-bit and HDR layers. Radiance HDR is kept as an OpenEXR, the format projects hold HDR in.
 export async function decodeLayerFile(file: File): Promise<{ image: Raster; wide?: { file: 'png' | 'exr'; bytes: Uint8Array; version: number } }> {
   const name = file.name.toLowerCase()
   if (!name.endsWith('.exr') && !name.endsWith('.hdr') && !(file.type === 'image/png' || name.endsWith('.png'))) return { image: await decodeImageFile(file) }
   const bytes = new Uint8Array(await file.arrayBuffer())
-  if (name.endsWith('.hdr')) return { image: await decodeHDR(bytes) }
+  if (name.endsWith('.hdr')) {
+    const hdr = await readHDR(bytes), image = fromLinear(hdr.data, hdr.width, hdr.height)
+    return { image, wide: { file: 'exr', bytes: encodeEXR(hdr.data, hdr.width, hdr.height), version: image.version } }
+  }
   const exr = name.endsWith('.exr'), image = exr ? await decodeEXR(bytes) : decodePNG(bytes, 4)
   return exr || pngDepth(bytes) === 16 ? { image, wide: { file: exr ? 'exr' : 'png', bytes, version: image.version } } : { image }
 }

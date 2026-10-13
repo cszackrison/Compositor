@@ -127,7 +127,7 @@ new C needs. Hashes are upstream's commits; effort is a guess.
   kernels are already in `kernels.wasm`), 16-bit textures dithered to the screen, Convert to 8/16 Bits and the depth tag.
 - [x] **Import 16-bit images, EXR and Radiance HDR** (d9cdb81, 7f239dc). They come in dithered to 8 bits as the Mac shows them, and a
   16-bit PNG or EXR is kept as the layer's file until it's edited, so saving keeps its depth.
-  - [ ] Radiance HDR saves as an 8-bit PNG: keeping it needs an EXR writer (three's EXRExporter wrote unreadable files in tests).
+  - [x] Radiance HDR is kept as an OpenEXR (`io/exr.ts` writes half-float, ZIP-compressed EXR; ImageMagick and OpenEXR read it).
 - [ ] **EXR export** for documents with HDR layers (b9186f7).
 - [ ] **CMYK**: proof and gamut warning on the canvas, JPEG, TIFF and PDF in a profile's inks (59025aa, dac3bc6). Needs ICC
   color management in the browser.
