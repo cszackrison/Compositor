@@ -54,8 +54,8 @@ existing features were.
   - [ ] Core Graphics high-quality resampling (Catmull-Rom here)
   - [ ] `CIMotionBlur`
   - [ ] `CIBloom` (Bloom / Glow)
-- [ ] Filter previews run at full size (in a worker now, so the page stays responsive); the Mac caps most at 2048 px. Worth
-  matching if large layers still feel slow on phones.
+- [x] Filter previews run on a copy at most 2048 px on its longest side, as the Mac's do, except Add Noise, Grain, Dither, Scanlines
+  and Content-Aware Fill, which preview at full size; OK runs at full size.
 - [ ] Spot Healing and the Blur smear mode still paint on the CPU (Brush, Eraser, Clone Stamp, Smudge and Liquify run on the GPU).
 - [ ] The low-latency canvas and pointer prediction were only checked in desktop Chrome; try them on a phone.
 

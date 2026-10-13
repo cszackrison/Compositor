@@ -87,7 +87,6 @@ See [TODO.md](TODO.md) for what's left, largest first.
 - **Size changes keep layer effects:** Crop, Canvas Size, Image Size and Trim keep them (the Mac app drops them). Image Size scales their sizes.
 - **Approximations:**
   - Bloom / Glow stands in for Core Image's `CIBloom`.
-  - Previews run at full size rather than at the Mac's 2048 px cap.
 - **Tabs:** they have a right-click menu (close, close others, close to the right); the Mac app's don't.
 
 

@@ -61,7 +61,9 @@ function filterWorker(): Worker | null {
 // The filters whose settings are in pixels, by which arguments: a preview of a large layer scales those with the copy it runs on.
 const previewLimit = 2048
 const pixelSettings: Partial<Record<keyof typeof kinds, number[]>> = { gaussianBlur: [0], motionBlur: [1], progressiveBlur: [0, 1], bloom: [1], tonalContrast: [4], cameraRaw: [2] }
-const previewScale = (j: FilterJob, input: FilterInput) => pixelSettings[j.job] ? Math.min(1, previewLimit / Math.max(input.pixels.width, input.pixels.height)) : 1
+// Noise, grain, dither and scanlines preview at full size, as on the Mac: made on a smaller copy they'd look coarser once enlarged.
+const fullSize = (j: FilterJob) => j.job === 'addNoise' || j.job === 'dither' || j.job === 'scanlines' || j.job === 'contentAwareFill' || (j.job === 'adjustPixels' && (j.args[0] as Adjustment).kind === 'Grain')
+const previewScale = (j: FilterJob, input: FilterInput) => fullSize(j) ? 1 : Math.min(1, previewLimit / Math.max(input.pixels.width, input.pixels.height))
 
 // A filter job on a 16-bit or HDR layer's pixels at their full depth (deepFilters.ts), on `grid` when it spreads past the layer.
 function runDeepJob(j: FilterJob, input: Omit<FilterInput, 'pixels'>, deep: DeepPixels, grid: DeepGrid | null, single = false): Promise<DeepPixels> {
