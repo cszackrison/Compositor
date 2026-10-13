@@ -161,6 +161,17 @@ export class Store {
     this.set({ ...entry.after, saved: false, pixelRevision: this.state.pixelRevision + 1 })
   }
 
+  // The project as it now is on disk (io/watch.ts), in place of the open one: the view stays, and the chosen layers where they're
+  // still there. Undo starts afresh, as on opening.
+  reload(doc: Doc, activeId: string | null) {
+    const ids = new Set(doc.layers.map(l => l.id)), active = this.state.activeId && ids.has(this.state.activeId) ? this.state.activeId : activeId
+    const selection = this.state.selection && this.state.selection.width === doc.width && this.state.selection.height === doc.height ? this.state.selection : null
+    this.history.clear()
+    this.set({ doc, activeId: active, selectedIds: [...new Set([...this.state.selectedIds.filter(id => ids.has(id)), ...(active ? [active] : [])])], selection, editingMask: false, saved: true, inspector: null })
+  }
+  // Asks whether to take the version on disk over unsaved work (Revert) or keep it; set by the app's dialogs.
+  static askToRevert: ((name: string) => Promise<boolean>) | null = null
+
   open(doc: Doc, activeId: string | null, target: PackageTarget | null) {
     this.history.clear()
     this.hasDocument = true

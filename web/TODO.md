@@ -45,8 +45,9 @@ existing features were.
   differ from Vision's.
 - [ ] Try Select Subject and Remove Background on phones (WebGPU in Chrome on Android and Safari on iOS 26).
 - [x] Remove Background's full-size refine (Advanced) runs in a worker (`ai/matteWorker.ts`), so OK doesn't pause the page.
-- [ ] **Live reload when the project changes on disk** (an AI agent or script writing the `.comp`). Browsers can't watch folders,
-  so this would mean polling the directory handle in Chrome and Edge.
+- [x] **Live reload when the project changes on disk** (ProjectController+ExternalChanges.swift): a project opened from a folder
+  (Chrome and Edge) is looked at every 1.5 s while its tab shows (`io/watch.ts`); a real change in content reloads it in place,
+  keeping the view and chosen layers, and with unsaved work asks Revert or Keep Mine. Saves of our own aren't changes.
 
 ## Rendering
 

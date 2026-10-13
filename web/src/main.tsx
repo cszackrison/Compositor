@@ -6,5 +6,5 @@ import './styles.css'
 
 await loadKernels()
 // For poking at the running app from the console while developing.
-if (import.meta.env.DEV) Object.assign(window, { compositorStore: store, compositorDev: { canvas: await import('./ui/canvasState'), smear: await import('./tools/smear'), paint: await import('./tools/paint'), gradient: await import('./tools/gradient'), raster: await import('./model/raster'), gpuBrush: await import('./render/gpuBrush') } })
+if (import.meta.env.DEV) Object.assign(window, { compositorStore: store, compositorDev: { canvas: await import('./ui/canvasState'), smear: await import('./tools/smear'), paint: await import('./tools/paint'), gradient: await import('./tools/gradient'), raster: await import('./model/raster'), gpuBrush: await import('./render/gpuBrush'), actions: await import('./editor/actions'), files: await import('./io/files'), editorStore: await import('./editor/store') } })
 createRoot(document.getElementById('root')!).render(<App />)

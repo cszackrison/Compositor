@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
-import { store, tabForOpening } from '../editor/store'
+import { Store, store, tabForOpening } from '../editor/store'
 import { answerUnsaved, encodeExport, newCanvas, documentName, placeImages, saveFile } from '../editor/actions'
 import { prefs, setPrefs, gridColors } from '../editor/prefs'
 import { chordLabel, chordOf, currentOverrides, definitions, effective, problem, saveOverrides, unassigned, type Chord } from '../editor/shortcuts'
@@ -17,7 +17,7 @@ import { RawDevelop } from './RawDevelop'
 
 const close = () => store.set({ panel: null })
 
-function Modal({ title, children, onSubmit, submit = 'OK', wide, floating, disabled, onCancel }: { title: string; children: React.ReactNode; onSubmit?: () => void; submit?: string; wide?: boolean; floating?: boolean; disabled?: boolean; onCancel?: () => void }) {
+function Modal({ title, children, onSubmit, submit = 'OK', cancelLabel = 'Cancel', wide, floating, disabled, onCancel }: { title: string; children: React.ReactNode; onSubmit?: () => void; submit?: string; cancelLabel?: string; wide?: boolean; floating?: boolean; disabled?: boolean; onCancel?: () => void }) {
   const cancel = () => { onCancel?.(); close() }
   // Escape closes the dialog wherever focus is.
   const latest = useRef(cancel)
@@ -32,7 +32,7 @@ function Modal({ title, children, onSubmit, submit = 'OK', wide, floating, disab
       <form noValidate className={`modal ${floating ? 'filter' : ''}`} style={wide ? { width: 660, maxWidth: 'calc(100vw - 40px)' } : undefined} onSubmit={e => { e.preventDefault(); if (disabled) return; onSubmit?.(); close() }} onKeyDown={e => { if (e.key === 'Escape') cancel(); e.stopPropagation() }}>
         <h2>{title}</h2>
         {children}
-        <div className="buttons">{onSubmit && <button type="button" onClick={cancel}>Cancel</button>}<button type="submit" className="primary" disabled={disabled}>{submit}</button></div>
+        <div className="buttons">{onSubmit && <button type="button" onClick={cancel}>{cancelLabel}</button>}<button type="submit" className="primary" disabled={disabled}>{submit}</button></div>
       </form>
     </div>
   )
@@ -422,11 +422,24 @@ function UnsavedChanges() {
   )
 }
 
+// A project changed on disk while it has unsaved work (ProjectController.askToRevert): take the version on disk, or keep what's open.
+let revertAsk: { name: string; resolve: (revert: boolean) => void } | null = null
+Store.askToRevert = name => new Promise(resolve => { revertAsk?.resolve(false); revertAsk = { name, resolve }; store.set({ panel: 'Changed on Disk' }) })
+function ChangedOnDisk() {
+  const ask = revertAsk
+  const answer = (revert: boolean) => { if (revertAsk === ask) revertAsk = null; ask?.resolve(revert) }
+  return (
+    <Modal title={`“${ask?.name ?? 'This project'}” was changed on disk.`} submit="Revert" cancelLabel="Keep Mine" onSubmit={() => answer(true)} onCancel={() => answer(false)}>
+      <p className="muted" style={{ margin: 0, maxWidth: 380 }}>Another app changed this project. You can revert to the version on disk, losing your unsaved changes, or keep what you have.</p>
+    </Modal>
+  )
+}
+
 export const panels: Record<string, () => React.ReactNode> = {
   'New Canvas': () => <NewCanvas />, 'Canvas Size': () => <CanvasSize />, 'Image Size': () => <ImageSize />, Trim: () => <Trim />, 'Export JPEG': () => <ExportAs start="JPEG" />, 'Export As': () => <ExportAs />,
   About: () => <About />, 'Expand Selection': () => <Amount kind="expand" />, 'Contract Selection': () => <Amount kind="contract" />, 'Feather Selection': () => <Amount kind="feather" />,
   Effect: () => <EffectPanel />, 'Grid Settings': () => <GridSettings />, 'Keyboard Shortcuts': () => <KeyboardShortcuts />, 'Color Range': () => <ColorRange />,
-  'Unsaved Changes': () => <UnsavedChanges />, 'Develop RAW': () => <RawDevelop />,
+  'Unsaved Changes': () => <UnsavedChanges />, 'Develop RAW': () => <RawDevelop />, 'Changed on Disk': () => <ChangedOnDisk />,
 }
 
 export function DialogHost() {

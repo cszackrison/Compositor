@@ -1,3 +1,4 @@
+import { savingProject, watchProject, watching } from '../io/watch'
 import { isRAW } from '../io/raw'
 import { encode } from 'fast-png'
 import { floatsToDeep, unpremultiplied16 } from '../model/deep'
@@ -69,8 +70,9 @@ export const newCanvas = guard((width: number, height: number, fill: 'white' | '
 
 export const openFiles = guard(async (files: PackageFiles, target: PackageTarget) => {
   const { doc, activeId } = await readProject(files)
-  tabForOpening().open(doc, activeId, target)
-  if (target.kind === 'directory') noteRecent(target.handle)
+  const tab = tabForOpening()
+  tab.open(doc, activeId, target)
+  if (target.kind === 'directory') { noteRecent(target.handle); watchProject(tab, target.handle, files) }
 })
 
 export const openProject = guard(async () => {
@@ -162,7 +164,9 @@ export const save = guard(async (as: boolean = false) => {
       return
     }
   }
-  await writeDirectory(target.handle, files)
+  const owner = store
+  await savingProject(owner, () => writeDirectory(target.handle, files))
+  if (!(await watching(owner))) watchProject(owner, target.handle)
   noteRecent(target.handle)
   store.set({ saved: true, target })
   store.notify(`Saved ${target.name}`, 'info')
