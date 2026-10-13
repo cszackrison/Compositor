@@ -116,6 +116,10 @@ kbd { font: inherit; color: var(--muted); }
 .modal h2 { margin: 0; font-size: 14px; }
 .modal .buttons { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
 .modal .grid { display: grid; grid-template-columns: auto 1fr; gap: 8px 12px; align-items: center; }
+.modal .conversions { margin: 0; padding: 0; list-style: none; min-height: 180px; max-height: 50vh; overflow-y: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); }
+.modal .conversions li { display: flex; flex-direction: column; gap: 3px; padding: 8px 10px; border-bottom: 1px solid var(--line); }
+.modal .conversions li:last-child { border-bottom: none; }
+.modal .conversions.reading { display: flex; align-items: center; justify-content: center; }
 .toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); background: #3b2324; border: 1px solid #6b3b3d; color: #ffd7d7; padding: 8px 14px; border-radius: 8px; z-index: 200; max-width: 70vw; }
 .toast.info { background: #22303f; border-color: #35506d; color: #d7e8ff; }
 .tabbar { display: flex; gap: 1px; height: 30px; background: var(--bg); border-bottom: 1px solid var(--line); overflow-x: auto; flex: none; }

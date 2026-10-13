@@ -48,8 +48,11 @@ async function readEntry(entry: FileSystemEntry, prefix: string, files: PackageF
   }
 }
 
+// A Photoshop file (.psd or .psb) by its signature, whatever it's named.
+export const isPSD = (bytes: Uint8Array) => bytes.length >= 4 && bytes[0] === 0x38 && bytes[1] === 0x42 && bytes[2] === 0x50 && bytes[3] === 0x53
+
 // Images by type, or by name where the browser gives none (cameras' .hif and .heif often come without one). Hidden files aren't.
-export const isImageFile = (file: { name: string; type: string }) => !file.name.startsWith('.') && (file.type.startsWith('image/') || /\.(png|jpe?g|webp|gif|bmp|avif|heic|heif|hif|tiff?|svg|exr|hdr)$/i.test(file.name))
+export const isImageFile = (file: { name: string; type: string }) => !file.name.startsWith('.') && (file.type.startsWith('image/') || /\.(png|jpe?g|webp|gif|bmp|avif|heic|heif|hif|tiff?|svg|exr|hdr|psd|psb)$/i.test(file.name))
 // The images among `files` in the Finder's name order ("2" before "10").
 export const imagesIn = (files: File[]) => files.filter(isImageFile).sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }))
 

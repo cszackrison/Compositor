@@ -6,6 +6,7 @@ import { type Adjustment, type AdjustmentKind, type BlendMode, type Doc, type Ef
 import { combine, contractSelection, coverageFromRaster, expandSelection, featherSelection, invertSelection, isEmpty, offsetSelection, type SelectionMode } from '../model/selection'
 import { blurRaster } from '../model/pixels'
 import type { PackageTarget } from '../io/files'
+import type { PSDImport } from '../io/psd'
 import type { BrushSettings } from '../tools/brush'
 import { drawOrder, effectivelyVisible, following, pixelToDocument, transformCorners } from '../render/compositor'
 import { apply, invert } from '../render/gl'
@@ -214,11 +215,11 @@ export class Store {
     this.set({ activeId: id, selectedIds, editingMask: this.state.editingMask && !!layer?.mask && layer.id === this.state.activeId, inspector: layer?.adjustment ? layer.id : this.state.inspector === id ? id : null, effectSelection: null })
   }
 
-  // Inserts above the active layer, in its folder, as the Mac app does.
-  private insert(layers: Layer[], above = this.state.activeId): Layer[] {
+  // Inserts above the active layer, in its folder, as the Mac app does (`into` a folder instead: on top of what's in it).
+  private insert(layers: Layer[], above = this.state.activeId, into?: string): Layer[] {
     const all = [...this.doc.layers]
     const anchor = this.layer(above)
-    const parentId = anchor?.parentId ?? null
+    const parentId = into ?? anchor?.parentId ?? null
     const placed = layers.map(layer => layers.some(l => l.id === layer.parentId) ? layer : { ...layer, parentId })
     let index = all.length
     if (anchor) {
@@ -237,6 +238,21 @@ export class Store {
   addLayer(layer: Layer, name = 'New Layer') {
     if (!this.hasDocument) return
     this.commit(name, { doc: this.replaceLayers(this.insert([layer])), activeId: layer.id, selectedIds: [layer.id], editingMask: false })
+  }
+
+  // A Photoshop file's layers (EditorSession.insertPhotoshop): a new project when none is open; otherwise inside a folder named for the
+  // file, above the active layer or on top of the active folder's contents, as one step.
+  addPhotoshop(imported: PSDImport, name: string) {
+    const { width, height, resolution, layers } = imported
+    if ((this.hasDocument ? this.doc.layers.length + 1 : 0) + layers.length > 10_000) throw new Error('This Photoshop file has too many layers to import.')
+    if (!this.hasDocument) {
+      const active = layers.findLast(l => l.parentId === null) ?? layers.at(-1)
+      this.open({ id: uuid(), width, height, resolution, layers, guides: [], extra: {} }, active?.id ?? null, { kind: 'download', name })
+      return
+    }
+    const folder = newLayer({ name, isGroup: true, transform: fullTransform(this.doc.width, this.doc.height) })
+    const incoming = layers.map(l => l.parentId === null ? { ...l, parentId: folder.id } : l), active = this.active
+    this.commit('Import Photoshop File', { doc: this.replaceLayers(this.insert([folder, ...incoming], active?.id, active?.isGroup ? active.id : undefined)), activeId: folder.id, selectedIds: [folder.id], editingMask: false })
   }
 
   addBlankLayer() {
