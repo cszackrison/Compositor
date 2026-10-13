@@ -93,8 +93,8 @@ opt-in pen pressure, a web app manifest for the home screen, a large-canvas warn
 - [ ] Reordering layers by dragging on touch (Move Up and Move Down in the long-press menu for now).
 - [x] Offline use: a service worker (`public/sw.js`) keeps the app's files as it installs (listed by the build in `offline.json`) and the
   optional parts (HEIC, RAW, the AI runtimes) once used; a new build waits for open tabs to close. HTTPS or localhost only.
-- [ ] iOS may clear browser storage for sites not added to the home screen after a week unused; projects saved in the browser
-  should be downloaded as a zip to keep.
+- [x] Saving in the browser asks for persistent storage, and on iOS away from the Home Screen the notice says Safari can clear it after a
+  week without a visit, pointing to Add to Home Screen or Download as Zip.
 
 ## From upstream (Mac 1.4.6 to 1.5.1)
 

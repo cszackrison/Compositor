@@ -224,7 +224,12 @@ export const save = guard(async (as: boolean = false) => {
       const id = !as && target?.kind === 'browser' ? target.id : uuid()
       await saveToBrowser(id, name, zipPackage(name, files))
       store.set({ saved: true, target: { kind: 'browser', id, name } })
-      store.notify(`Saved ${name} in this browser. Download as Zip to keep a copy elsewhere.`, 'info')
+      // Kept unless space runs out where the browser grants it; Safari on iOS clears what a site stores after a week without a visit
+      // unless it's on the Home Screen, so it says so.
+      const kept = await navigator.storage?.persist?.().catch(() => false)
+      const ios = /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)
+      const homeScreen = (navigator as Navigator & { standalone?: boolean }).standalone || matchMedia('(display-mode: standalone)').matches
+      store.notify(ios && !homeScreen && !kept ? `Saved ${name} in this browser. Safari can clear it after a week without a visit: add Compositor to the Home Screen, or Download as Zip to keep a copy.` : `Saved ${name} in this browser. Download as Zip to keep a copy elsewhere.`, 'info')
       return
     }
   }
