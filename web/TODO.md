@@ -27,7 +27,12 @@ existing features were.
     their angle in fractions of the width and height).
 - [ ] **PSD/PSB import**, with the conversion report (about 1,500 lines of Swift in `Compositor/IO/PSD`). CMYK PSDs too, since 1.5
   (896d5c8).
-- [ ] **Camera RAW import** and its develop step. Needs a wasm decoder (LibRaw or similar).
+- [x] **Camera RAW import** and its develop sheet: LibRaw in WebAssembly (`io/raw.ts`, libraw-wasm, loaded on first use) decodes to
+  linear light at 16 bits; the sheet's Exposure, Temperature and Tint (from the camera's own reading), Boost, Noise Reduction and
+  Highlight Recovery develop it (`model/rawDevelop.ts`), previewed small, and Import brings the full frame in as a 16-bit layer.
+  - [ ] The look differs from the Mac's, which is Apple's RAW engine: Boost is a filmic curve here, Noise Reduction LibRaw's wavelet
+    denoise, and Lens Correction is unavailable (LibRaw doesn't apply lens profiles).
+
 - [x] **TIFF and SVG import.** TIFF is read here (UTIF, lazily loaded) where the browser can't, including 16-bit and CMYK; SVG is
   drawn by the browser, fitted to the canvas as the Mac does.
 - [x] **HEIC import** everywhere: libheif in WebAssembly (`io/heif.ts`, libheif-js, LGPL, loaded on first use), converted to sRGB

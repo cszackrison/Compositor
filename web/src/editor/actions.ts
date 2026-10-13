@@ -1,3 +1,4 @@
+import { isRAW } from '../io/raw'
 import { encode } from 'fast-png'
 import { floatsToDeep, unpremultiplied16 } from '../model/deep'
 import { commitFloating } from './floating'
@@ -97,7 +98,10 @@ export const openZip = guard(async () => {
 // Opens an image as a new document when nothing is open, or places it as a layer.
 export const placeImages = guard(async (files: File[]) => {
   for (const file of files) {
-    const { image, deep, profile } = await decodeLayerFile(file, store.hasDocument ? store.state.doc : undefined)
+    // A camera RAW is developed first, in its sheet; cancelled, it's skipped.
+    const developed = isRAW(file.name) ? await (await import('../ui/RawDevelop')).developRaw(file) : null
+    if (isRAW(file.name) && !developed) continue
+    const { image, deep, profile }: Awaited<ReturnType<typeof decodeLayerFile>> = developed ?? await decodeLayerFile(file, store.hasDocument ? store.state.doc : undefined)
     const name = file.name.replace(/\.[^.]+$/, '')
     if (!store.hasDocument) {
       // A CMYK file starting a project: its profile is kept and chosen, so proofing and CMYK export go back to the inks it was made for.
@@ -130,7 +134,7 @@ export const importFolder = guard(async () => {
 })
 
 export const importImage = guard(async () => {
-  const input = Object.assign(document.createElement('input'), { type: 'file', accept: 'image/*,.hif,.heif,.heic,.tif,.tiff,.svg,.exr,.hdr', multiple: true })
+  const input = Object.assign(document.createElement('input'), { type: 'file', accept: 'image/*,.hif,.heif,.heic,.tif,.tiff,.svg,.exr,.hdr,.dng,.cr2,.cr3,.nef,.nrw,.arw,.raf,.orf,.rw2,.pef,.srw,.3fr,.iiq,.erf,.kdc,.mos,.mrw,.raw,.rwl,.x3f', multiple: true })
   input.onchange = () => input.files?.length && placeImages([...input.files])
   input.click()
 })

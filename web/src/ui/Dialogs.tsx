@@ -13,6 +13,7 @@ import { type Transform, maxSide } from '../model/types'
 import { isDeep, isHDR } from '../model/deep'
 import { chosenProfile, pickProfile, subscribeProfiles } from '../io/cmyk'
 import { outline } from '../model/selection'
+import { RawDevelop } from './RawDevelop'
 
 const close = () => store.set({ panel: null })
 
@@ -425,7 +426,7 @@ export const panels: Record<string, () => React.ReactNode> = {
   'New Canvas': () => <NewCanvas />, 'Canvas Size': () => <CanvasSize />, 'Image Size': () => <ImageSize />, Trim: () => <Trim />, 'Export JPEG': () => <ExportAs start="JPEG" />, 'Export As': () => <ExportAs />,
   About: () => <About />, 'Expand Selection': () => <Amount kind="expand" />, 'Contract Selection': () => <Amount kind="contract" />, 'Feather Selection': () => <Amount kind="feather" />,
   Effect: () => <EffectPanel />, 'Grid Settings': () => <GridSettings />, 'Keyboard Shortcuts': () => <KeyboardShortcuts />, 'Color Range': () => <ColorRange />,
-  'Unsaved Changes': () => <UnsavedChanges />,
+  'Unsaved Changes': () => <UnsavedChanges />, 'Develop RAW': () => <RawDevelop />,
 }
 
 export function DialogHost() {

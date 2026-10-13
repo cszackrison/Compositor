@@ -25,6 +25,7 @@
     "fast-png": "^8.0.0",
     "fflate": "^0.8.3",
     "libheif-js": "^1.19.8",
+    "libraw-wasm": "^1.6.0",
     "onnxruntime-web": "^1.30.0",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
