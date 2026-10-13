@@ -769,6 +769,18 @@ export class Compositor {
     ;[group, alpha, restored].forEach(t => this.pool.give(t))
   }
 
+  // The CMYK proof's color lookup (io/cmyk.ts), 33 points a side, red fastest; null shows the document's own colors.
+  private proofCube: WebGLTexture | null = null
+  setProof(lookup: Float32Array | null) {
+    const gl = this.gl
+    if (this.proofCube) { gl.deleteTexture(this.proofCube); this.proofCube = null }
+    if (!lookup) return
+    this.proofCube = gl.createTexture()!
+    gl.bindTexture(gl.TEXTURE_3D, this.proofCube)
+    gl.texImage3D(gl.TEXTURE_3D, 0, gl.RGBA16F, 33, 33, 33, 0, gl.RGBA, gl.FLOAT, lookup)
+    for (const [p, v] of [[gl.TEXTURE_MIN_FILTER, gl.LINEAR], [gl.TEXTURE_MAG_FILTER, gl.LINEAR], [gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_R, gl.CLAMP_TO_EDGE]]) gl.texParameteri(gl.TEXTURE_3D, p, v)
+  }
+
   // Draws the composite into the visible canvas: `documentToScreen` maps document pixels to device pixels.
   present(documentToScreen: Mat3, screenWidth: number, screenHeight: number, background: [number, number, number]) {
     const gl = this.gl
@@ -782,7 +794,7 @@ export class Compositor {
     gl.bindTexture(gl.TEXTURE_2D, this.output.texture)
     setSampling(gl, zoom >= 1 ? gl.NEAREST : gl.LINEAR_MIPMAP_LINEAR)
     const toClip = chain(translate(-1, 1), scale(2 / screenWidth, -2 / screenHeight), documentToScreen, scale(docWidth, docHeight))
-    use(gl, this.displayProgram, { toClip, toSource: identity(), image: { texture: this.output.texture, unit: 0 }, docSize: [docWidth, docHeight], zoom })
+    use(gl, this.displayProgram, { toClip, toSource: identity(), image: { texture: this.output.texture, unit: 0 }, docSize: [docWidth, docHeight], zoom, proof: this.proofCube ? 1 : 0, proofCube: { texture: this.proofCube ?? undefined, unit: 1, target: gl.TEXTURE_3D } })
     this.bindQuad()
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4)
   }

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { store, tabForOpening } from '../editor/store'
 import { answerUnsaved, encodeExport, newCanvas, documentName, placeImages, saveFile } from '../editor/actions'
 import { prefs, setPrefs, gridColors } from '../editor/prefs'
@@ -10,6 +10,7 @@ import { ColorSwatch } from './ColorPicker'
 import { useEditor } from './hooks'
 import type { Raster } from '../model/raster'
 import { type Transform, isHDRLayer, maxSide } from '../model/types'
+import { chosenProfile, pickProfile, subscribeProfiles } from '../io/cmyk'
 import { outline } from '../model/selection'
 
 const close = () => store.set({ panel: null })
@@ -169,15 +170,18 @@ function Trim() {
 // Export JPEG with a live preview of the encoded file, so its artifacts and size show before saving.
 // File › Export As… (ExportAsSheet.swift): the flattened canvas as a JPEG, a PNG or a one-page PDF, at its own size or scaled,
 // previewed as it will be written, on the checkerboard where it keeps transparency. With an HDR layer, EXR too: flattened in half
-// floats, the one format that keeps light brighter than white.
-type ExportFormat = 'JPEG' | 'PNG' | 'PDF' | 'EXR'
+// floats, the one format that keeps light brighter than white. JPEG, TIFF and PDF can be written in a CMYK profile's inks instead, for
+// print: RGB at each opening, as most exports are for screens.
+type ExportFormat = 'JPEG' | 'PNG' | 'TIFF' | 'PDF' | 'EXR'
 let lastExportFormat: ExportFormat = 'PNG'
 function ExportAs({ start }: { start?: ExportFormat }) {
   const pixels = useMemo(() => renderFull(store.state.doc), [])
   const linear = useMemo(() => store.state.doc.layers.some(isHDRLayer) ? renderLinear(store.state.doc) : null, [])
-  const others: ExportFormat[] = linear ? ['PDF', 'EXR'] : ['PDF']
+  const others: ExportFormat[] = linear ? ['TIFF', 'PDF', 'EXR'] : ['TIFF', 'PDF']
   const resolution = store.state.doc.resolution || 72
   const [format, setFormat] = useState<ExportFormat>(() => { const f = start ?? lastExportFormat; return f === 'EXR' && !linear ? 'PNG' : f })
+  const [cmyk, setCMYK] = useState(false), profile = useSyncExternalStore(subscribeProfiles, chosenProfile)
+  const takesCMYK = format === 'JPEG' || format === 'TIFF' || format === 'PDF', inks = cmyk && takesCMYK
   const [width, setWidth] = useState(pixels.width), [height, setHeight] = useState(pixels.height)
   const [quality, setQuality] = useState(prefs.jpegQuality)
   const [background, setBackground] = useState<[number, number, number]>([255, 255, 255])
@@ -185,12 +189,14 @@ function ExportAs({ start }: { start?: ExportFormat }) {
   const shownUrl = useRef<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [zoom, setZoom] = useState<'fit' | number>('fit')
-  const key = JSON.stringify([format, width, height, format === 'JPEG' ? quality : 0, format === 'PNG' || format === 'EXR' ? 0 : background])
+  const keepsClear = format === 'PNG' || format === 'EXR' || (format === 'TIFF' && !inks)
+  const key = JSON.stringify([format, width, height, format === 'JPEG' ? quality : 0, keepsClear ? 0 : background, inks ? profile?.name ?? '' : ''])
   const ready = result?.key === key && !error
   useEffect(() => {
     const timer = setTimeout(async () => {
       try {
-        const encoded = await encodeExport(pixels, format, width, height, quality, background, resolution, linear)
+        if (inks && !profile) throw new Error('Load a CMYK profile to export in inks.')
+        const encoded = await encodeExport(pixels, format, width, height, { quality, background, resolution, linear, cmyk: inks ? profile : null })
         if (shownUrl.current) URL.revokeObjectURL(shownUrl.current)
         shownUrl.current = URL.createObjectURL(encoded.preview)
         setResult({ blob: encoded.blob, url: shownUrl.current, key })
@@ -225,15 +231,19 @@ function ExportAs({ start }: { start?: ExportFormat }) {
         <button type="button" onClick={() => step(false)}>−</button><button type="button" onClick={() => step(true)}>+</button>
       </div>
       <div className="export-preview" style={{ overflow: zoom === 'fit' ? 'hidden' : 'auto', display: zoom === 'fit' ? 'flex' : 'block' }} onDoubleClick={() => setZoom(zoom === 'fit' ? 1 : 'fit')} title="Double-click switches between Fit and 100%">
-        {result && <img src={result.url} alt="" className={format === 'PNG' || format === 'EXR' ? 'checkered' : ''} style={zoom === 'fit' ? { maxWidth: '100%', maxHeight: '100%' } : { width: width * zoom / devicePixelRatio, imageRendering: zoom >= 1 ? 'pixelated' : 'auto' }} />}
+        {result && <img src={result.url} alt="" className={keepsClear ? 'checkered' : ''} style={zoom === 'fit' ? { maxWidth: '100%', maxHeight: '100%' } : { width: width * zoom / devicePixelRatio, imageRendering: zoom >= 1 ? 'pixelated' : 'auto' }} />}
         {!ready && !error && <span className="muted" style={{ position: 'absolute', right: 10, bottom: 8 }}>Updating…</span>}
       </div>
-      <div className="grid" style={{ gridTemplateColumns: '84px 1fr', gridTemplateRows: 'repeat(4, minmax(28px, auto))', alignContent: 'start' }}>
+      <div className="grid" style={{ gridTemplateColumns: '84px 1fr', gridTemplateRows: 'repeat(5, minmax(28px, auto))', alignContent: 'start' }}>
         <span className="muted">Format</span>
         <span style={{ display: 'flex', gap: 10 }}>
           <span className="segmented">{(['JPEG', 'PNG'] as const).map(f => <button key={f} type="button" className={format === f ? 'on' : ''} onClick={() => setFormat(f)}>{f}</button>)}</span>
-          <select title={`Other formats: PDF${linear ? ', and EXR to keep light brighter than white' : ''}`} className={others.includes(format) ? 'on' : ''} value={others.includes(format) ? format : ''} onChange={e => e.target.value && setFormat(e.target.value as ExportFormat)}><option value="" disabled>More</option>{others.map(f => <option key={f}>{f}</option>)}</select>
+          <select title={`Other formats: TIFF and PDF${linear ? ', and EXR to keep light brighter than white' : ''}`} className={others.includes(format) ? 'on' : ''} value={others.includes(format) ? format : ''} onChange={e => e.target.value && setFormat(e.target.value as ExportFormat)}><option value="" disabled>More</option>{others.map(f => <option key={f}>{f}</option>)}</select>
         </span>
+        {takesCMYK && <><span className="muted">Color</span><span style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <select value={cmyk ? 'CMYK' : 'RGB'} title="CMYK writes a printer's inks through the profile in View › CMYK › Profile" onChange={e => setCMYK(e.target.value === 'CMYK')}><option>RGB</option><option>CMYK</option></select>
+          {cmyk && <button type="button" title="Use a CMYK ICC profile, such as the one your printer gave you" onClick={() => { pickProfile().catch(e => setError((e as Error).message)) }}>Load Profile…</button>}
+        </span></>}
         <span className="muted">Size</span>
         <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
           <input type="number" min={1} style={{ width: 72 }} value={typed?.side === 'width' ? typed.text : width} title="Width in pixels; the height follows, keeping the proportions" onChange={e => type('width', e.target.value)} onBlur={() => setTyped(null)} />×
@@ -242,10 +252,10 @@ function ExportAs({ start }: { start?: ExportFormat }) {
         </span>
         {format === 'JPEG' && <><span className="muted">Quality</span><span style={{ display: 'flex', alignItems: 'center', gap: 8 }}><input type="range" min={0} max={1} step={0.01} value={quality} onChange={e => setQuality(+e.target.value)} style={{ width: 300 }} /><span>{Math.round(quality * 100)}%</span></span></>}
         {format === 'PDF' && <><span className="muted">Page</span><span className="muted">{+(width / resolution).toFixed(2)} × {+(height / resolution).toFixed(2)} in at {Math.round(resolution)} DPI</span></>}
-        {format !== 'PNG' && format !== 'EXR' && <><span className="muted">Background</span><ColorSwatch title="Export Background" sampling={false} value={background} onChange={setBackground} /></>}
+        {!keepsClear && <><span className="muted">Background</span><ColorSwatch title="Export Background" sampling={false} value={background} onChange={setBackground} /></>}
       </div>
       <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-        <span className="muted">{format === 'EXR' ? 'Brighter than white kept · Transparency kept' : format === 'PNG' ? 'Transparency kept · sRGB' : 'sRGB'}</span>
+        <span className="muted">{format === 'EXR' ? 'Brighter than white kept · Transparency kept' : inks ? `CMYK – ${profile?.name ?? 'No profile'}` : keepsClear ? 'Transparency kept · sRGB' : 'sRGB'}</span>
         {error ? <span style={{ color: 'var(--danger)' }}>{error}</span> : <span className="muted">{ready ? (size > 1e6 ? `${(size / 1e6).toFixed(1)} MB` : `${Math.max(1, Math.round(size / 1e3))} KB`) : 'Updating…'}</span>}
       </div>
     </Modal>

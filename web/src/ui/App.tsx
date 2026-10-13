@@ -1,4 +1,4 @@
-import { useEffect, useState, useSyncExternalStore } from 'react'
+import { useEffect, useReducer, useState, useSyncExternalStore } from 'react'
 import { useEditor } from './hooks'
 import { store, tabs, type Tool } from '../editor/store'
 import { clearRecent, loadRecent, recentProjects, subscribeRecent } from '../io/recent'
@@ -24,7 +24,8 @@ import { definitionFor, shortcutText, subscribeShortcuts } from '../editor/short
 import { brushKey } from '../tools/paint'
 import { beginTransformSelection } from '../editor/floating'
 import { clearGuides } from '../tools/guides'
-import { canvasOnly, requestRender, setCanvasOnly, subscribeCanvasOnly } from './canvasState'
+import { canvasOnly, proofing, requestRender, setCanvasOnly, setProofing, subscribeCanvasOnly, subscribeProofing } from './canvasState'
+import { chooseProfile, chosenProfile, cmykProfiles, loadProfiles, pickProfile, subscribeProfiles } from '../io/cmyk'
 import { useCompact } from './layout'
 import { selectSubject } from '../ai/RemoveBackground'
 import { PhoneMenu, Sheet } from './Phone'
@@ -276,6 +277,14 @@ export function App() {
       { label: 'Navigator (300% and above)', checked: prefs.navigator, action: () => setPrefs({ navigator: !prefs.navigator }) },
       item('Show Transform Controls', 'Show Transform Controls', { checked: prefs.transformControls }),
       'divider',
+      // Print: the canvas as the chosen CMYK profile will print it, tucked in a submenu as few need it.
+      { label: 'CMYK', submenu: [
+        { label: 'Proof Colors', checked: proofing.colors, action: () => setProofing({ colors: !proofing.colors }), disabled: !doc },
+        { label: 'Gamut Warning', checked: proofing.gamut, action: () => setProofing({ gamut: !proofing.gamut }), disabled: !doc },
+        'divider',
+        { label: 'Profile', submenu: [...cmykProfiles().map(p => ({ label: p.name, checked: chosenProfile()?.name === p.name, action: () => chooseProfile(p) })), ...(cmykProfiles().length ? ['divider' as const] : []), { label: 'Load Profile…', action: () => { pickProfile().catch(e => store.notify((e as Error).message)) } }] },
+      ] },
+      'divider',
       item('Grid', 'Show Grid', { checked: prefs.grid }),
       item('Guides', 'Show Guides', { checked: prefs.guides }),
       { label: 'Grid Settings…', action: open('Grid Settings') },
@@ -289,6 +298,10 @@ export function App() {
     ] },
     { title: 'Help', items: [{ label: 'About Compositor for the Web', action: open('About') }] },
   ]
+
+  // The CMYK profiles kept in the browser, and proofing's menu checks.
+  const [, redraw] = useReducer((n: number) => n + 1, 0)
+  useEffect(() => { loadProfiles(); const a = subscribeProfiles(redraw), b = subscribeProofing(redraw); return () => { a(); b() } }, [])
 
   useEffect(() => {
     const keydown = (event: KeyboardEvent) => {

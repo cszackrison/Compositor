@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useReducer, useRef, useState, useSyncExternalStore } from 'react'
 import { useEditor } from './hooks'
 import { Store, store, type Tool } from '../editor/store'
 import { prefs, subscribePrefs, gridLines } from '../editor/prefs'
@@ -9,7 +9,8 @@ import { ContextMenu, type MenuItem } from './Menu'
 import { copyMerged } from '../editor/actions'
 import { copyLayersInto, paste } from '../editor/clipboard'
 import { draggedFromOtherProject, takeDraggedLayers } from './Tabs'
-import { actualSize, canvasDrag, canvasGesture, canvasOnly, canvasPicker, compositor, fit, onFrame, renderFull, renderScaleFor, requestRender, setCompositor, snapLines, view, viewChanged, modifierHeld, releaseOnceModifiers, subscribeModifiers, tapModifier, touchModifiers, type ModifierKey } from './canvasState'
+import { chosenProfile, subscribeProfiles } from '../io/cmyk'
+import { proofing, setProofing, subscribeProofing, actualSize, canvasDrag, canvasGesture, canvasOnly, canvasPicker, compositor, fit, onFrame, renderFull, renderScaleFor, requestRender, setCompositor, snapLines, view, viewChanged, modifierHeld, releaseOnceModifiers, subscribeModifiers, tapModifier, touchModifiers, type ModifierKey } from './canvasState'
 import { useCoarse } from './layout'
 import type { Pointer, ToolHandler } from '../tools/tool'
 import { eyedropper, paint } from '../tools/paint'
@@ -443,6 +444,7 @@ export function Stage() {
       onContextMenu={e => { e.preventDefault(); if (lastPointerType.current !== 'touch' && store.hasDocument && !handler.busy?.() && !brushTools.has(state.tool)) { const box = ref.current!.getBoundingClientRect(); setMenu({ x: e.clientX, y: e.clientY, items: canvasMenu(view.toDocument(e.clientX - box.left, e.clientY - box.top)) }) } }}>
       <canvas ref={canvasRef} />
       <canvas ref={overlayRef} style={{ pointerEvents: 'none' }} />
+      {store.hasDocument && <ProofPills />}
       {store.hasDocument && <div ref={statusRef} className="status">{`${state.doc.width} × ${state.doc.height}  ·  ${Math.round(view.zoom * 100)}%`}</div>}
       {menu && <ContextMenu x={menu.x} y={menu.y} items={menu.items} onClose={closeMenu} />}
       {coarse && store.hasDocument && <ModifierPad />}
@@ -458,6 +460,20 @@ function ModifierPad() {
   return (
     <div className="modifier-pad" onPointerDown={e => e.stopPropagation()} onPointerUp={e => e.stopPropagation()} onPointerMove={e => e.stopPropagation()}>
       {(['shift', 'alt', 'command'] as const).map(key => <button key={key} className={held[key]} title={`${labels[key]}: tap holds it for the next touch, tap again to lock it`} onClick={() => tapModifier(key)}>{labels[key]}</button>)}
+    </div>
+  )
+}
+
+// Pills at the foot of the canvas naming how it's showing the document, each with a button to leave that view (CanvasPillView).
+function ProofPills() {
+  const [, redraw] = useReducer((n: number) => n + 1, 0)
+  useEffect(() => { const a = subscribeProofing(redraw), b = subscribeProfiles(redraw); return () => { a(); b() } }, [])
+  if (!proofing.colors && !proofing.gamut) return null
+  const name = chosenProfile()?.name ?? ''
+  return (
+    <div className="canvas-pills">
+      {proofing.colors && <div className="canvas-pill"><span>🖨</span><strong>CMYK Proof</strong><span className="muted">{name}</span><button type="button" title="Show the document's own colors again" onClick={() => setProofing({ colors: false })}>✕</button></div>}
+      {proofing.gamut && <div className="canvas-pill"><span>⚠</span><strong>CMYK Gamut Warning</strong><span className="muted">{name}</span><button type="button" title="Stop marking colors the profile can't print" onClick={() => setProofing({ gamut: false })}>✕</button></div>}
     </div>
   )
 }

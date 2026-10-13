@@ -4,6 +4,7 @@ import { Compositor } from '../render/compositor'
 import { Viewport } from '../render/viewport'
 import type { LinearImage, Raster } from '../model/raster'
 import type { Doc } from '../model/types'
+import { chosenProfile, pickProfile, proofLookups, subscribeProfiles } from '../io/cmyk'
 
 // What the canvas shares with the tools: the view, the compositor, and when to draw again.
 export const view = new Viewport()
@@ -61,6 +62,27 @@ export function renderLinear(doc: Doc): LinearImage | null {
   }
   return { width: compositor.output!.width, height: compositor.output!.height, data }
 }
+
+// View › CMYK: Proof Colors shows the canvas as the chosen profile will print it, on white paper; Gamut Warning marks gray what it can't
+// print as it is, over the proof or the document's own colors. Turning either on with no profile kept asks for one.
+export const proofing = { colors: false, gamut: false }
+const proofListeners = new Set<() => void>()
+export function subscribeProofing(listener: () => void) { proofListeners.add(listener); return () => { proofListeners.delete(listener) } }
+let proofRequest = 0
+async function updateProof() {
+  const request = ++proofRequest, profile = chosenProfile(), { colors, gamut } = proofing
+  const lookups = (colors || gamut) && profile ? await proofLookups(profile).catch(() => null) : null
+  if (request !== proofRequest) return
+  compositor?.setProof(lookups ? colors ? gamut ? lookups.warning : lookups.proof : lookups.marked : null)
+  requestRender(false)
+}
+export async function setProofing(change: Partial<typeof proofing>) {
+  if ((change.colors || change.gamut) && !chosenProfile() && !(await pickProfile().catch(e => { store.notify((e as Error).message); return null }))) return
+  Object.assign(proofing, change)
+  proofListeners.forEach(l => l())
+  updateProof()
+}
+if (typeof window !== 'undefined') subscribeProfiles(() => { if (proofing.colors || proofing.gamut) updateProof() })
 
 export function zoomBy(factor: number) { view.zoomAt(factor, view.width / 2, view.height / 2); viewChanged(); requestRender(false) }
 export function fit() { view.fit(store.doc.width, store.doc.height); viewChanged(); requestRender(false) }

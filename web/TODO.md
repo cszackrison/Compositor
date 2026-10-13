@@ -138,8 +138,10 @@ new C needs. Hashes are upstream's commits; effort is a guess.
   layer drawn from its own pixels: Exposure works past white and the tonal adjustments divide highlights down and back, so turning
   Exposure down shows them, and Export As offers EXR.
   - [ ] Blend modes other than Normal, and layer effects on an HDR layer, still clip it to white.
-- [ ] **CMYK**: proof and gamut warning on the canvas, JPEG, TIFF and PDF in a profile's inks (59025aa, dac3bc6). Needs ICC
-  color management in the browser.
+- [x] **CMYK** (59025aa, dac3bc6): View › CMYK › Proof Colors and Gamut Warning on the canvas (a 3D lookup in the display shader, with a
+  pill at the canvas's foot), and Export As writes JPEG, TIFF (new, under More) and PDF in a profile's inks with it embedded. Color
+  management is LittleCMS (lcms-wasm). Browsers ship no CMYK profile, so profiles come from Load Profile and are kept in the browser.
+  - [ ] Opening CMYK files with their profile adopted (JPEG and TIFF open converted to RGB by the decoder, not through their profile).
 - [ ] Open a Mac 1.5 project with an HDR layer and compare. The web reads EXR as premultiplied linear light, which upstream's EXR
   round-trip test implies ImageIO writes, but it was only checked against ImageMagick's files.
 

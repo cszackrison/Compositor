@@ -6,6 +6,9 @@ import { canWriteDirectories, download, filesInHandle, imagesIn, readDirectoryHa
 import { readProject, writeProject } from '../io/project'
 import { pdfOfImage } from '../io/pdf'
 import { encodeEXR } from '../io/exr'
+import { encodeTIFF } from '../io/tiff'
+import { encodeCMYKJPEG } from '../io/jpeg'
+import { flatten, fromInks, toInks, type CMYKProfile } from '../io/cmyk'
 import { type LinearImage, Raster, decodeLayerFile, encodePNG, resizeLinear } from '../model/raster'
 import { type Doc, fullTransform, newLayer, uuid, maxSide } from '../model/types'
 import { renderFull } from '../ui/Stage'
@@ -201,7 +204,10 @@ function imageData(pixels: Raster, background?: [number, number, number]) {
 
 // Export As's file and an image to preview it by: the flattened canvas sized at high quality, then PNG keeping transparency, or JPEG
 // or a one-page PDF (at the document's resolution) over `background`.
-export async function encodeExport(pixels: Raster, format: 'JPEG' | 'PNG' | 'PDF' | 'EXR', width: number, height: number, quality: number, background: [number, number, number], resolution: number, linear: LinearImage | null = null): Promise<{ blob: Blob; preview: Blob }> {
+export type ExportOptions = { quality: number; background: [number, number, number]; resolution: number; linear?: LinearImage | null; cmyk?: CMYKProfile | null }
+// The flattened pixels as JPEG, PNG, TIFF, PDF or EXR, resized first. With `cmyk`, JPEG, TIFF and PDF are written in the profile's inks
+// over the background, the profile embedded, and previewed as they'll print.
+export async function encodeExport(pixels: Raster, format: 'JPEG' | 'PNG' | 'TIFF' | 'PDF' | 'EXR', width: number, height: number, { quality, background, resolution, linear = null, cmyk = null }: ExportOptions): Promise<{ blob: Blob; preview: Blob }> {
   let sized = pixels
   if (width !== pixels.width || height !== pixels.height) {
     const source = new OffscreenCanvas(pixels.width, pixels.height), target = new OffscreenCanvas(width, height), context = target.getContext('2d')!
@@ -212,12 +218,25 @@ export async function encodeExport(pixels: Raster, format: 'JPEG' | 'PNG' | 'PDF
     for (let i = 0; i < data.length; i += 4) { const a = data[i + 3]; for (let c = 0; c < 3; c++) data[i + c] = Math.round(data[i + c] * a / 255) }
     sized = new Raster(width, height, 4, data)
   }
-  if (format === 'PNG') { const blob = new Blob([encodePNG(sized) as Uint8Array<ArrayBuffer>], { type: 'image/png' }); return { blob, preview: blob } }
+  const png = (raster: Raster) => new Blob([encodePNG(raster) as Uint8Array<ArrayBuffer>], { type: 'image/png' })
+  if (format === 'PNG') { const blob = png(sized); return { blob, preview: blob } }
   // An EXR from the half-float flattening, previewed as the screen shows it, clipped to white.
   if (format === 'EXR') {
     if (!linear) throw new Error('EXR keeps HDR layers, and this document has none.')
     const exr = resizeLinear(linear, width, height)
-    return { blob: new Blob([encodeEXR(exr.data, width, height, resolution) as Uint8Array<ArrayBuffer>], { type: 'image/x-exr' }), preview: new Blob([encodePNG(sized) as Uint8Array<ArrayBuffer>], { type: 'image/png' }) }
+    return { blob: new Blob([encodeEXR(exr.data, width, height, resolution) as Uint8Array<ArrayBuffer>], { type: 'image/x-exr' }), preview: png(sized) }
+  }
+  if (cmyk) {
+    const inks = await toInks(flatten(sized, background), cmyk), shown = await fromInks(inks, cmyk), preview = new Raster(width, height, 4)
+    for (let i = 0, j = 0; j < shown.length; i += 4, j += 3) { preview.data[i] = shown[j]; preview.data[i + 1] = shown[j + 1]; preview.data[i + 2] = shown[j + 2]; preview.data[i + 3] = 255 }
+    const bytes = format === 'JPEG' ? encodeCMYKJPEG(inks, width, height, quality, cmyk.data) : format === 'TIFF' ? encodeTIFF({ width, height, samples: inks, cmyk: true, icc: cmyk.data, resolution }) : pdfOfImage(inks, width, height, width * 72 / resolution, height * 72 / resolution, cmyk.data)
+    return { blob: new Blob([bytes as Uint8Array<ArrayBuffer>], { type: { JPEG: 'image/jpeg', TIFF: 'image/tiff', PDF: 'application/pdf' }[format] }), preview: png(preview) }
+  }
+  // An RGB TIFF keeps its transparency, as PNG does.
+  if (format === 'TIFF') {
+    const samples = new Uint8Array(sized.data)
+    for (let i = 0; i < samples.length; i += 4) { const a = samples[i + 3]; if (a && a < 255) for (let c = 0; c < 3; c++) samples[i + c] = Math.min(255, Math.round(samples[i + c] * 255 / a)) }
+    return { blob: new Blob([encodeTIFF({ width, height, samples, alpha: true, resolution }) as Uint8Array<ArrayBuffer>], { type: 'image/tiff' }), preview: png(sized) }
   }
   const flat = imageData(sized, background), canvas = new OffscreenCanvas(width, height)
   canvas.getContext('2d')!.putImageData(flat, 0, 0)

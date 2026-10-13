@@ -292,18 +292,23 @@ void main() {
   color = mix(o, a, k);
 }`
 
-// The composite on screen: a checkerboard under the document, then the document, then the pasteboard around it.
+// The composite on screen: a checkerboard under the document, then the document, then the pasteboard around it. Proofing CMYK, the
+// document lies on white paper and goes through the proof's color lookup.
 export const displayFragment = `#version 300 es
 precision highp float;
+precision highp sampler3D;
 in vec2 sourceUV;
 in vec2 docPosition;
 uniform sampler2D image;
 uniform vec2 docSize;
 uniform float zoom;
+uniform int proof;
+uniform sampler3D proofCube;
 out vec4 color;
 void main() {
   vec2 cell = floor(gl_FragCoord.xy / 8.0);
   vec3 checker = mod(cell.x + cell.y, 2.0) < 1.0 ? vec3(1.0) : vec3(0.8);
   vec4 c = texture(image, sourceUV);
+  if (proof == 1) { vec3 paper = clamp(c.rgb + (1.0 - c.a), 0.0, 1.0); color = vec4(texture(proofCube, (paper * 32.0 + 0.5) / 33.0).rgb, 1.0); return; }
   color = vec4(c.rgb + checker * (1.0 - c.a), 1.0);
 }`
