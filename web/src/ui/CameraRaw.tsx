@@ -2,6 +2,7 @@ import { createContext, useContext, useEffect, useMemo, useRef, useState } from 
 import { store } from '../editor/store'
 import { useEditor } from './hooks'
 import { Scrub, CurvesEditor } from './Inspector'
+import { Icon } from './icons'
 import { canvasGesture, canvasPicker, requestRender, view as stage } from './canvasState'
 import { pixelToDocument } from '../render/compositor'
 import { apply, invert } from '../render/gl'
@@ -214,7 +215,7 @@ function MixerControls({ s, set, ui, setUi, view, setView }: { s: CameraRawSetti
     </>}
     {ui.mixerPage === 'Point Color' && <>
       <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
-        <button type="button" className={`icon ${ui.tool === 'point' ? 'on' : ''}`} title="Click the picture to save a color. Up to eight colors." onClick={() => setUi({ tool: ui.tool === 'point' ? null : 'point' })}>⌖</button>
+        <button type="button" className={`icon ${ui.tool === 'point' ? 'on' : ''}`} title="Click the picture to save a color. Up to eight colors." onClick={() => setUi({ tool: ui.tool === 'point' ? null : 'point' })}><Icon name="eyedropper" size={14} /></button>
         {points.map((p, i) => <button key={i} type="button" title="Select this picked color" className={`swatch-dot ${ui.point === i ? 'on' : ''}`} style={{ background: hsb(p.hue, p.saturation, p.luminance) }} onClick={() => setUi({ point: i })} />)}
         {point && <button type="button" title="Remove this picked color" onClick={() => { set(x => ({ ...x, mixer: { ...x.mixer, points: x.mixer.points.filter((_, i) => i !== ui.point) } })); setUi({ point: Math.max(0, ui.point - 1) }); if (view.visualize !== undefined) setView({ ...view, visualize: -1 }) }}>Remove</button>}
       </div>
@@ -417,7 +418,7 @@ export function CameraRawPanel({ params, set, layerId }: { params: CameraRawPara
       </>
       case 'Color': return <>
         <div className="row" title="Auto balances the average color. Custom follows Temperature and Tint."><span className="muted">White Balance</span><select value={s.whiteBalance} onChange={e => setWhiteBalance(e.target.value as 'Custom' | 'Auto')}><option>Custom</option><option>Auto</option></select>
-          <button type="button" className={`icon ${ui.tool === 'white' ? 'on' : ''}`} title="White Balance Selector: click a pixel that should be neutral" onClick={() => pick('white')}>⌖</button></div>
+          <button type="button" className={`icon ${ui.tool === 'white' ? 'on' : ''}`} title="White Balance Selector: click a pixel that should be neutral" onClick={() => pick('white')}><Icon name="eyedropper" size={14} /></button></div>
         {ui.tool === 'white' && <span className="muted">Click the layer where it should be neutral. Click the eyedropper again to stop.</span>}
         {field('Temperature', 'temperature', -100, 100, { track: tracks.temperature, title: 'Shifts the picture from blue to yellow.' })}
         {field('Tint', 'tint', -100, 100, { track: tracks.tint, title: 'Shifts the picture from green to mauve.' })}
@@ -473,7 +474,7 @@ export function CameraRawPanel({ params, set, layerId }: { params: CameraRawPara
         </>}
         <Heading>Manual</Heading>
         {sub('optics', 'Distortion', 'distortion', -100, 100, { title: 'Straightens barrel or pincushion bending.' })}
-        <div className="row" title="Click a purple or green fringe to set its hue range."><span className="muted">Defringe</span><button type="button" className={`icon ${ui.tool === 'defringe' ? 'on' : ''}`} style={{ justifySelf: 'start' }} title="Defringe Selector: click a purple or green fringe" onClick={() => pick('defringe')}>⌖</button><span /></div>
+        <div className="row" title="Click a purple or green fringe to set its hue range."><span className="muted">Defringe</span><button type="button" className={`icon ${ui.tool === 'defringe' ? 'on' : ''}`} style={{ justifySelf: 'start' }} title="Defringe Selector: click a purple or green fringe" onClick={() => pick('defringe')}><Icon name="eyedropper" size={14} /></button><span /></div>
         {ui.tool === 'defringe' && <span className="muted">Click the fringe on the layer. Click the eyedropper again to stop.</span>}
         {sub('optics', 'Purple Amount', 'purpleAmount', 0, 100, { title: 'Weakens purple fringes inside the purple hue range.' })}
         {sub('optics', 'Purple Hue Low', 'purpleHueLow', 0, 360, { reset: 270, title: 'Start of the purple hue range, in degrees.' })}
@@ -526,7 +527,7 @@ export function CameraRawPanel({ params, set, layerId }: { params: CameraRawPara
             return <div key={group} className="raw-section">
               <div className="raw-heading">
                 <button type="button" className="disclosure" onClick={() => setOpen(toggle(open, group))}>{expanded ? '▾' : '▸'} {group}</button>
-                {edited && <button type="button" className="icon" title={shown ? `Hide ${group} in the preview` : `Show ${group} in the preview`} onClick={() => set({ hidden: toggle(params.hidden, group) })}>{shown ? '◉' : '○'}</button>}
+                {edited && <button type="button" className={`icon eye ${shown ? '' : 'off'}`} title={shown ? `Hide ${group} in the preview` : `Show ${group} in the preview`} onClick={() => set({ hidden: toggle(params.hidden, group) })}><Icon name={shown ? 'eye' : 'eyeOff'} size={14} /></button>}
                 {edited && <button type="button" className="icon" title={`Reset ${group} to its defaults`} onClick={() => set({ settings: resetGroup(s, group), hidden: params.hidden.filter(g => g !== group) })}>↺</button>}
               </div>
               {expanded && <div className="raw-controls">{section(group)}</div>}
