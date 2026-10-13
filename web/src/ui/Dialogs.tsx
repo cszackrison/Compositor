@@ -4,13 +4,13 @@ import { answerUnsaved, encodeExport, newCanvas, documentName, placeImages, save
 import { prefs, setPrefs, gridColors } from '../editor/prefs'
 import { chordLabel, chordOf, currentOverrides, definitions, effective, problem, saveOverrides, unassigned, type Chord } from '../editor/shortcuts'
 import { color_range, colorRangeMask } from './colorRange'
-import { canvasPicker, renderFull, renderLinear, requestRender } from './canvasState'
+import { canvasPicker, renderDeep, renderFull, renderLinear, requestRender } from './canvasState'
 import { EffectPanel, Scrub } from './Inspector'
 import { ColorSwatch } from './ColorPicker'
 import { useEditor } from './hooks'
 import type { Raster } from '../model/raster'
 import { type Transform, maxSide } from '../model/types'
-import { isHDR } from '../model/deep'
+import { isDeep, isHDR } from '../model/deep'
 import { chosenProfile, pickProfile, subscribeProfiles } from '../io/cmyk'
 import { outline } from '../model/selection'
 
@@ -178,6 +178,10 @@ let lastExportFormat: ExportFormat = 'PNG'
 function ExportAs({ start }: { start?: ExportFormat }) {
   const pixels = useMemo(() => renderFull(store.state.doc), [])
   const linear = useMemo(() => store.state.doc.layers.some(isHDR) ? renderLinear(store.state.doc) : null, [])
+  // A document with a 16-bit or HDR layer can be written as a 16-bit PNG, from the flattening at full depth: off by default, it's about
+  // twice the size.
+  const deep = useMemo(() => store.state.doc.layers.some(isDeep) ? renderDeep(store.state.doc) : null, [])
+  const [sixteenBit, setSixteenBit] = useState(false)
   const others: ExportFormat[] = linear ? ['TIFF', 'PDF', 'EXR'] : ['TIFF', 'PDF']
   const resolution = store.state.doc.resolution || 72
   const [format, setFormat] = useState<ExportFormat>(() => { const f = start ?? lastExportFormat; return f === 'EXR' && !linear ? 'PNG' : f })
@@ -191,13 +195,14 @@ function ExportAs({ start }: { start?: ExportFormat }) {
   const [error, setError] = useState<string | null>(null)
   const [zoom, setZoom] = useState<'fit' | number>('fit')
   const keepsClear = format === 'PNG' || format === 'EXR' || (format === 'TIFF' && !inks)
-  const key = JSON.stringify([format, width, height, format === 'JPEG' ? quality : 0, keepsClear ? 0 : background, inks ? profile?.name ?? '' : ''])
+  const deepPNG = format === 'PNG' && sixteenBit && !!deep
+  const key = JSON.stringify([format, width, height, format === 'JPEG' ? quality : 0, keepsClear ? 0 : background, inks ? profile?.name ?? '' : '', deepPNG])
   const ready = result?.key === key && !error
   useEffect(() => {
     const timer = setTimeout(async () => {
       try {
         if (inks && !profile) throw new Error('Load a CMYK profile to export in inks.')
-        const encoded = await encodeExport(pixels, format, width, height, { quality, background, resolution, linear, cmyk: inks ? profile : null })
+        const encoded = await encodeExport(pixels, format, width, height, { quality, background, resolution, linear, cmyk: inks ? profile : null, deep: deepPNG ? deep : null })
         if (shownUrl.current) URL.revokeObjectURL(shownUrl.current)
         shownUrl.current = URL.createObjectURL(encoded.preview)
         setResult({ blob: encoded.blob, url: shownUrl.current, key })
@@ -251,12 +256,13 @@ function ExportAs({ start }: { start?: ExportFormat }) {
           <input type="number" min={1} style={{ width: 72 }} value={typed?.side === 'height' ? typed.text : height} title="Height in pixels; the width follows, keeping the proportions" onChange={e => type('height', e.target.value)} onBlur={() => setTyped(null)} /><span className="muted">px</span>
           <select title="Scale the export: the document stays as it is" value="" onChange={e => setScale(+e.target.value / 100)}><option value="" disabled>{percent}%</option>{[25, 50, 75, 100, 200].map(p => <option key={p} value={p}>{p}%</option>)}</select>
         </span>
+        {format === 'PNG' && deep && <><span className="muted">Depth</span><label title="Keep the 16-bit layers’ full precision, in a file about twice the size"><input type="checkbox" checked={sixteenBit} onChange={e => setSixteenBit(e.target.checked)} /> 16 bits per channel</label></>}
         {format === 'JPEG' && <><span className="muted">Quality</span><span style={{ display: 'flex', alignItems: 'center', gap: 8 }}><input type="range" min={0} max={1} step={0.01} value={quality} onChange={e => setQuality(+e.target.value)} style={{ width: 300 }} /><span>{Math.round(quality * 100)}%</span></span></>}
         {format === 'PDF' && <><span className="muted">Page</span><span className="muted">{+(width / resolution).toFixed(2)} × {+(height / resolution).toFixed(2)} in at {Math.round(resolution)} DPI</span></>}
         {!keepsClear && <><span className="muted">Background</span><ColorSwatch title="Export Background" sampling={false} value={background} onChange={setBackground} /></>}
       </div>
       <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-        <span className="muted">{format === 'EXR' ? 'Brighter than white kept · Transparency kept' : inks ? `CMYK – ${profile?.name ?? 'No profile'}` : keepsClear ? 'Transparency kept · sRGB' : 'sRGB'}</span>
+        <span className="muted">{format === 'EXR' ? 'Brighter than white kept · Transparency kept' : deepPNG ? '16 bits per channel · Transparency kept · sRGB' : inks ? `CMYK – ${profile?.name ?? 'No profile'}` : keepsClear ? 'Transparency kept · sRGB' : 'sRGB'}</span>
         {error ? <span style={{ color: 'var(--danger)' }}>{error}</span> : <span className="muted">{ready ? (size > 1e6 ? `${(size / 1e6).toFixed(1)} MB` : `${Math.max(1, Math.round(size / 1e3))} KB`) : 'Updating…'}</span>}
       </div>
     </Modal>

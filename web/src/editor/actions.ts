@@ -1,3 +1,5 @@
+import { encode } from 'fast-png'
+import { floatsToDeep, unpremultiplied16 } from '../model/deep'
 import { commitFloating } from './floating'
 import { Store, activateTab, closeTab, store, tabForOpening, tabs } from './store'
 import { forgetRecent, noteRecent, type Recent } from '../io/recent'
@@ -206,10 +208,11 @@ function imageData(pixels: Raster, background?: [number, number, number]) {
 
 // Export As's file and an image to preview it by: the flattened canvas sized at high quality, then PNG keeping transparency, or JPEG
 // or a one-page PDF (at the document's resolution) over `background`.
-export type ExportOptions = { quality: number; background: [number, number, number]; resolution: number; linear?: LinearImage | null; cmyk?: CMYKProfile | null }
+// `deep`: the flattening at full depth (premultiplied floats in extended sRGB), for a 16-bit PNG.
+export type ExportOptions = { quality: number; background: [number, number, number]; resolution: number; linear?: LinearImage | null; cmyk?: CMYKProfile | null; deep?: Float32Array | null }
 // The flattened pixels as JPEG, PNG, TIFF, PDF or EXR, resized first. With `cmyk`, JPEG, TIFF and PDF are written in the profile's inks
 // over the background, the profile embedded, and previewed as they'll print.
-export async function encodeExport(pixels: Raster, format: 'JPEG' | 'PNG' | 'TIFF' | 'PDF' | 'EXR', width: number, height: number, { quality, background, resolution, linear = null, cmyk = null }: ExportOptions): Promise<{ blob: Blob; preview: Blob }> {
+export async function encodeExport(pixels: Raster, format: 'JPEG' | 'PNG' | 'TIFF' | 'PDF' | 'EXR', width: number, height: number, { quality, background, resolution, linear = null, cmyk = null, deep = null }: ExportOptions): Promise<{ blob: Blob; preview: Blob }> {
   let sized = pixels
   if (width !== pixels.width || height !== pixels.height) {
     const source = new OffscreenCanvas(pixels.width, pixels.height), target = new OffscreenCanvas(width, height), context = target.getContext('2d')!
@@ -221,6 +224,11 @@ export async function encodeExport(pixels: Raster, format: 'JPEG' | 'PNG' | 'TIF
     sized = new Raster(width, height, 4, data)
   }
   const png = (raster: Raster) => new Blob([encodePNG(raster) as Uint8Array<ArrayBuffer>], { type: 'image/png' })
+  if (format === 'PNG' && deep) {
+    const floats = resizeLinear({ width: pixels.width, height: pixels.height, data: deep }, width, height).data
+    const bytes = encode({ width, height, data: unpremultiplied16(floatsToDeep(floats, false)), channels: 4, depth: 16 }, { zlib: { level: 6 } })
+    return { blob: new Blob([bytes as Uint8Array<ArrayBuffer>], { type: 'image/png' }), preview: png(sized) }
+  }
   if (format === 'PNG') { const blob = png(sized); return { blob, preview: blob } }
   // An EXR from the half-float flattening, previewed as the screen shows it, clipped to white.
   if (format === 'EXR') {

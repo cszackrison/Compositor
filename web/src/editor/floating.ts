@@ -1,7 +1,8 @@
 import { Store, store } from './store'
 import { Raster } from '../model/raster'
 import { bounds } from '../model/selection'
-import { newLayer, type Transform } from '../model/types'
+import { type Layer, newLayer, type Transform } from '../model/types'
+import { deepOf, deepToFloats, flattened, floatsToDeep, makeDeep } from '../model/deep'
 import { pixelToDocument } from '../render/compositor'
 import { apply, invert, multiply, type Mat3 } from '../render/gl'
 import { grownTransform, placeOnGrid } from './filters'
@@ -14,9 +15,12 @@ let floating: Floating | null = null
 export const isFloating = () => !!floating
 export const floatingLayerId = () => floating?.floatingId
 
+// Pixels on a grid: a layer's 8-bit ones, or a 16-bit or HDR layer's as floats (white is 1).
+type Grid = { width: number; height: number; data: Uint8Array | Float32Array }
+
 // Draws `source` (through its document transform) over `dest` (in its own grid), bilinear, normal source-over at full opacity.
-function drawOver(dest: Raster, destToDoc: Mat3, source: Raster, sourceToDoc: Mat3) {
-  const toSource = multiply(invert(sourceToDoc), destToDoc)
+function drawOver(dest: Grid, destToDoc: Mat3, source: Grid, sourceToDoc: Mat3) {
+  const toSource = multiply(invert(sourceToDoc), destToDoc), float = dest.data instanceof Float32Array, white = float ? 1 : 255
   for (let y = 0; y < dest.height; y++) for (let x = 0; x < dest.width; x++) {
     const [sx, sy] = apply(toSource, x + 0.5, y + 0.5)
     if (sx < 0 || sy < 0 || sx > source.width || sy > source.height) continue
@@ -28,10 +32,13 @@ function drawOver(dest: Raster, destToDoc: Mat3, source: Raster, sourceToDoc: Ma
       for (let c = 0; c < 4; c++) px[c] += source.data[i + c] * w
     }
     if (px[3] <= 0) continue
-    const d = (y * dest.width + x) * 4, keep = 1 - px[3] / 255
-    for (let c = 0; c < 4; c++) dest.data[d + c] = Math.round(px[c] + dest.data[d + c] * keep)
+    const d = (y * dest.width + x) * 4, keep = 1 - px[3] / white
+    for (let c = 0; c < 4; c++) dest.data[d + c] = float ? px[c] + dest.data[d + c] * keep : Math.round(px[c] + dest.data[d + c] * keep)
   }
 }
+
+// A layer's pixels as floats at full depth, for one that keeps them; null for an 8-bit layer.
+const deepFloats = (layer: Layer) => { const deep = deepOf(layer); return deep ? { hdr: deep.hdr, data: deepToFloats(flattened(deep), deep.hdr) } : null }
 
 export function canTransformSelection() {
   const layer = store.active
@@ -48,9 +55,12 @@ export function beginTransformSelection() {
   const toDoc = pixelToDocument(layer.transform, image.width, image.height)
   const lifted = new Raster(box.w, box.h, 4)
   drawOver(lifted, [1, 0, 0, 0, 1, 0, box.x, box.y, 1], image, toDoc)
+  // A 16-bit or HDR layer's are lifted and cleared at full depth too.
+  const deep = deepFloats(layer), liftedDeep = deep ? new Float32Array(box.w * box.h * 4) : null
+  if (deep && liftedDeep) drawOver({ width: box.w, height: box.h, data: liftedDeep }, [1, 0, 0, 0, 1, 0, box.x, box.y, 1], { width: image.width, height: image.height, data: deep.data }, toDoc)
   for (let y = 0; y < box.h; y++) for (let x = 0; x < box.w; x++) {
     const k = selection.data[(y + box.y) * selection.width + x + box.x] / 255, i = (y * box.w + x) * 4
-    for (let c = 0; c < 4; c++) lifted.data[i + c] = Math.round(lifted.data[i + c] * k)
+    for (let c = 0; c < 4; c++) { lifted.data[i + c] = Math.round(lifted.data[i + c] * k); if (liftedDeep) liftedDeep[i + c] *= k }
   }
   // Clear the hole in the source (on a copy, so the step's starting point keeps the original).
   const cleared = image.clone()
@@ -59,11 +69,13 @@ export function beginTransformSelection() {
     const k = sx >= 0 && sy >= 0 && sx < selection.width && sy < selection.height ? selection.data[sy * selection.width + sx] / 255 : 0
     if (k <= 0) continue
     const i = (y * image.width + x) * 4
-    for (let c = 0; c < 4; c++) cleared.data[i + c] = Math.round(cleared.data[i + c] * (1 - k))
+    for (let c = 0; c < 4; c++) { cleared.data[i + c] = Math.round(cleared.data[i + c] * (1 - k)); if (deep) deep.data[i + c] *= 1 - k }
   }
+  const liftedMade = deep && liftedDeep ? makeDeep(floatsToDeep(liftedDeep, deep.hdr), box.w, box.h, deep.hdr) : null
+  const clearedMade = deep ? makeDeep(floatsToDeep(deep.data, deep.hdr), image.width, image.height, deep.hdr) : null
   const transform: Transform = { origin: [box.x, box.y], size: [box.w, box.h], rotation: 0, flipX: false, flipY: false, sampling: 'High quality' }
-  const temp = newLayer({ name: 'Floating Selection', image: lifted, transform, parentId: layer.parentId, opacity: layer.opacity, blendMode: layer.blendMode })
-  const layers = store.doc.layers.flatMap(l => l.id === layer.id ? [{ ...l, image: cleared, text: undefined, shape: undefined }, temp] : [l])
+  const temp = newLayer({ name: 'Floating Selection', image: liftedMade?.image ?? lifted, deep: liftedMade?.deep, transform, parentId: layer.parentId, opacity: layer.opacity, blendMode: layer.blendMode })
+  const layers = store.doc.layers.flatMap(l => l.id === layer.id ? [{ ...l, image: clearedMade?.image ?? cleared, deep: clearedMade?.deep, text: undefined, shape: undefined }, temp] : [l])
   store.set({ doc: { ...store.doc, layers }, activeId: temp.id, selectedIds: [temp.id] })
   floating = { sourceId: layer.id, floatingId: temp.id, original: transform, selection, region: box }
   if (store.state.tool !== 'move') store.setTool('move')
@@ -96,6 +108,16 @@ export function commitFloating() {
   const grown = x0 || y0 || merged.width !== image.width || merged.height !== image.height
   const transform = grown ? grownTransform(source.transform, toDoc, image.width, image.height, [x0, y0], merged.width, merged.height) : source.transform
   drawOver(merged, pixelToDocument(transform, merged.width, merged.height), temp.image, tempToDoc)
+  // At full depth too, while the layer keeps it; floating pixels that lost theirs are taken at 8 bits.
+  const sourceDeep = deepFloats(source)
+  let made: ReturnType<typeof makeDeep> | null = null
+  if (sourceDeep) {
+    const grid = new Float32Array(merged.width * merged.height * 4), row = image.width * 4
+    for (let y = 0; y < image.height; y++) grid.set(sourceDeep.data.subarray(y * row, (y + 1) * row), ((y - y0) * merged.width - x0) * 4)
+    const floating = deepFloats(temp)?.data ?? Float32Array.from(temp.image.data, v => v / 255)
+    drawOver({ width: merged.width, height: merged.height, data: grid }, pixelToDocument(transform, merged.width, merged.height), { width: temp.image.width, height: temp.image.height, data: floating }, tempToDoc)
+    made = makeDeep(floatsToDeep(grid, sourceDeep.hdr), merged.width, merged.height, sourceDeep.hdr)
+  }
   // An unplaced mask is padded with white (reveal) to the grown grid, so its coverage stays where it was.
   const mask = grown && source.mask && !source.maskPlacement && !source.mask.isUniform() ? padMask(source.mask, image, [x0, y0], merged.width, merged.height, 255) : source.mask
   // The selection follows the pixels.
@@ -105,7 +127,7 @@ export function commitFloating() {
     const [sx, sy] = apply(back, x + 0.5, y + 0.5), ix = Math.floor(sx), iy = Math.floor(sy)
     if (ix >= 0 && iy >= 0 && ix < sel.width && iy < sel.height) moved.data[y * sel.width + x] = sel.data[iy * sel.width + ix]
   }
-  const layers = store.doc.layers.filter(l => l.id !== temp.id).map(l => l.id === source.id ? { ...l, image: merged, transform, mask } : l)
+  const layers = store.doc.layers.filter(l => l.id !== temp.id).map(l => l.id === source.id ? { ...l, image: made?.image ?? merged, deep: made?.deep, transform, mask } : l)
   store.set({ doc: { ...store.doc, layers }, activeId: source.id, selectedIds: [source.id], selection: moved.data.some(v => v) ? moved : null })
   store.endGesture()
   store.pixelsChanged()

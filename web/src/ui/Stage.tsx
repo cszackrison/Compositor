@@ -10,7 +10,7 @@ import { copyMerged } from '../editor/actions'
 import { copyLayersInto, paste } from '../editor/clipboard'
 import { draggedFromOtherProject, takeDraggedLayers } from './Tabs'
 import { chosenProfile, subscribeProfiles } from '../io/cmyk'
-import { proofing, setProofing, subscribeProofing, actualSize, canvasDrag, canvasGesture, canvasOnly, canvasPicker, compositor, fit, onFrame, renderFull, renderScaleFor, requestRender, setCompositor, snapLines, view, viewChanged, modifierHeld, releaseOnceModifiers, subscribeModifiers, tapModifier, touchModifiers, type ModifierKey } from './canvasState'
+import { proofing, setProofing, subscribeProofing, actualSize, canvasDrag, canvasGesture, canvasOnly, canvasPicker, compositor, fit, onFrame, renderFull, renderDeep, renderScaleFor, requestRender, setCompositor, snapLines, view, viewChanged, modifierHeld, releaseOnceModifiers, subscribeModifiers, tapModifier, touchModifiers, type ModifierKey } from './canvasState'
 import { useCoarse } from './layout'
 import type { Pointer, ToolHandler } from '../tools/tool'
 import { eyedropper, paint } from '../tools/paint'
@@ -230,6 +230,7 @@ export function Stage() {
     stageCanvas = canvasRef.current
     overlayCanvas = overlayRef.current
     Store.renderer = renderFull
+    Store.deepRenderer = renderDeep
     onFrame(frame)
     compositor!.onStale = () => requestRender()
     const resize = () => {

@@ -8,6 +8,10 @@ import { newAdjustment } from '../src/model/types'
 import { flattened, fromHalf, makeDeep } from '../src/model/deep'
 import { toHalf } from '../src/io/exr'
 import { identity } from '../src/render/gl'
+import { Store } from '../src/editor/store'
+import { Raster } from '../src/model/raster'
+import { fullTransform, newLayer } from '../src/model/types'
+import { deepOf } from '../src/model/deep'
 
 beforeAll(async () => { await loadKernels(readFileSync(new URL('../public/kernels.wasm', import.meta.url))) })
 
@@ -65,5 +69,43 @@ describe('16-bit and HDR layers through filters (DeepLayerTests.swift)', () => {
     const kept = makeDeep(new Uint16Array([toHalf(3), toHalf(0.5), toHalf(0.5), toHalf(1)]), 1, 1, true).deep
     expect(kept.hdr).toBe(true)
     expect(flattened(kept)).toBe(kept.pixels)
+  })
+})
+
+describe('16-bit layers through the store', () => {
+  function deepDoc() {
+    const store = new Store()
+    const pixels = new Uint16Array(4 * 4 * 4)
+    for (let i = 0; i < 16; i++) pixels.set([10000 + i * 1000, 30000, 50000, 65535], i * 4)
+    const made = makeDeep(pixels, 4, 4, false)
+    const layer = newLayer({ name: 'Deep', transform: fullTransform(4, 4), image: made.image, deep: made.deep })
+    store.open({ id: 'D', width: 4, height: 4, resolution: 72, layers: [layer], guides: [], extra: {} }, layer.id, null)
+    return { store, pixels, deep: () => { const l = store.doc.layers[0]; return deepOf(l) ? flattened(deepOf(l)!) : null } }
+  }
+
+  it('inverts exactly, duplicates and undoes at 16 bits', () => {
+    const { store, pixels, deep } = deepDoc()
+    store.invertPixels()
+    expect(deep()![0]).toBe(65535 - 10000)
+    store.duplicate()
+    expect(flattened(deepOf(store.active!)!)[4]).toBe(65535 - 11000)
+    store.undo(); store.undo()
+    expect([...deep()!]).toEqual([...pixels])
+    store.redo()
+    expect(deep()![0]).toBe(65535 - 10000)
+  })
+
+  it('fills through a soft selection, converts, and resamples at 16 bits', () => {
+    const { store, deep } = deepDoc()
+    store.set({ selection: Raster.filled(4, 4, 1, [128]) })
+    store.fill(null)
+    expect(Math.abs(deep()![3] - 65535 * 127 / 255)).toBeLessThan(2)
+    store.set({ selection: null })
+    store.imageSize(2, 2, 72, 'High quality', true)
+    expect([store.doc.layers[0].image!.width, deep()!.length]).toEqual([2, 16])
+    store.convertDepth()
+    expect([store.doc.layers[0].deep, deep()]).toEqual([undefined, null])
+    store.convertDepth()
+    expect(deep()![3]).toBe(store.doc.layers[0].image!.data[3] * 257)
   })
 })

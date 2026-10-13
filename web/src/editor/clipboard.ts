@@ -4,12 +4,15 @@ import { bounds, offsetSelection } from '../model/selection'
 import { type Layer, fullTransform, newLayer, uuid } from '../model/types'
 import { pixelToDocument } from '../render/compositor'
 import { apply, invert } from '../render/gl'
-import { grownTransform, placeOnGrid } from './filters'
+import { grownTransform } from './filters'
 import { padMask } from './floating'
+import { deepOf, deepToFloats, flattened, floatsToDeep, isDeep, isHDR, makeDeep, rebound } from '../model/deep'
 
 // The app's own clipboard, shared by every tab: copied pixels keep where they came from, copied layers stay whole. A PNG of copied
 // pixels also goes to the system clipboard; a paste that brings back that same PNG uses the richer copy kept here.
-type Clip = { kind: 'pixels'; pixels: Raster; origin: [number, number]; pngSize: number } | { kind: 'layers'; layers: Layer[]; from: Store; ids: string[] }
+// A 16-bit or HDR layer's copied pixels also keep their full depth (`deep`, floats with white at 1).
+type DeepRegion = { hdr: boolean; data: Float32Array }
+type Clip = { kind: 'pixels'; pixels: Raster; deep?: DeepRegion; origin: [number, number]; pngSize: number } | { kind: 'layers'; layers: Layer[]; from: Store; ids: string[] }
 let clip: Clip | null = null
 
 // A layer's own pixels drawn through its transform onto the canvas (no mask, opacity, blend mode or effects), or its mask as gray.
@@ -26,20 +29,31 @@ function layerOnCanvas(layer: Layer, mask: boolean): Raster {
     }
     return out
   }
-  return Store.renderer!({ ...doc, layers: [{ ...layer, parentId: null, clipTo: null, opacity: 1, blendMode: 'Normal', visible: true, effects: null, mask: null }] })
+  return Store.renderer!({ ...doc, layers: [canvasLayer(layer)] })
+}
+const canvasLayer = (layer: Layer): Layer => ({ ...layer, parentId: null, clipTo: null, opacity: 1, blendMode: 'Normal', visible: true, effects: null, mask: null })
+
+// The composite of `layers` (or the whole document) at full depth, when one of them keeps it: floats on the canvas, white at 1.
+function deepOnCanvas(layers: Layer[] | null): DeepRegion | null {
+  const doc = store.doc, all = layers ?? doc.layers
+  if (!all.some(isDeep) || !Store.deepRenderer) return null
+  const data = Store.deepRenderer(layers ? { ...doc, layers } : doc)
+  return data ? { hdr: all.some(isHDR), data } : null
 }
 
-// The selection's region of `pixels` (canvas-sized), faded by its coverage; the whole canvas without a selection.
-function selectedRegion(pixels: Raster): { pixels: Raster; origin: [number, number] } | null {
+// The selection's region of `pixels` (canvas-sized), faded by its coverage; the whole canvas without a selection. `deep`, the same
+// canvas at full depth, is cut the same way.
+function selectedRegion(pixels: Raster, deep: DeepRegion | null = null): { pixels: Raster; deep?: DeepRegion; origin: [number, number] } | null {
   const selection = store.state.selection
   const box = selection ? bounds(selection) : { x: 0, y: 0, w: pixels.width, h: pixels.height }
   if (!box) return null
-  const out = new Raster(box.w, box.h, 4, pixels.read(box.x, box.y, box.w, box.h))
+  const out = new Raster(box.w, box.h, 4, pixels.read(box.x, box.y, box.w, box.h)), values = deep ? new Float32Array(box.w * box.h * 4) : null
+  if (deep && values) for (let y = 0; y < box.h; y++) values.set(deep.data.subarray(((y + box.y) * pixels.width + box.x) * 4, ((y + box.y) * pixels.width + box.x + box.w) * 4), y * box.w * 4)
   if (selection) for (let y = 0; y < box.h; y++) for (let x = 0; x < box.w; x++) {
     const k = selection.data[(y + box.y) * selection.width + x + box.x] / 255, p = (y * box.w + x) * 4
-    for (let c = 0; c < 4; c++) out.data[p + c] = Math.round(out.data[p + c] * k)
+    for (let c = 0; c < 4; c++) { out.data[p + c] = Math.round(out.data[p + c] * k); if (values) values[p + c] *= k }
   }
-  return { pixels: out, origin: [box.x, box.y] }
+  return { pixels: out, ...(deep && values ? { deep: { hdr: deep.hdr, data: values } } : {}), origin: [box.x, box.y] }
 }
 
 async function toSystemClipboard(pixels: Raster) {
@@ -60,7 +74,8 @@ export async function copy(merged = false) {
   }
   const source = merged ? Store.renderer!(store.doc) : layer ? layerOnCanvas(layer, store.state.editingMask) : null
   if (!source) return
-  const region = selectedRegion(source)
+  const deep = store.state.editingMask ? null : deepOnCanvas(merged ? null : layer ? [canvasLayer(layer)] : null)
+  const region = selectedRegion(source, deep)
   if (!region) return
   clip = { kind: 'pixels', ...region, pngSize: 0 }
   clip.pngSize = await toSystemClipboard(region.pixels)
@@ -73,18 +88,22 @@ export async function cut() {
   store.history.renameLast(store.state.editingMask ? 'Fill Mask' : 'Clear')
 }
 
-function pastePixels(pixels: Raster, origin: [number, number] | null, name = 'Paste') {
+function pastePixels(pixels: Raster, origin: [number, number] | null, name = 'Paste', deep?: DeepRegion) {
   const doc = store.doc
   const at = origin ?? [Math.floor((doc.width - pixels.width) / 2), Math.floor((doc.height - pixels.height) / 2)]
   const count = doc.layers.filter(l => /^Layer \d+$/.test(l.name)).length + 1
-  store.addLayer(newLayer({ name: `Layer ${count}`, transform: fullTransform(pixels.width, pixels.height, at[0], at[1]), image: pixels }), name)
+  const made = deep ? makeDeep(floatsToDeep(deep.data, deep.hdr), pixels.width, pixels.height, deep.hdr) : null
+  store.addLayer(newLayer({ name: `Layer ${count}`, transform: fullTransform(pixels.width, pixels.height, at[0], at[1]), image: made?.image ?? pixels, deep: made?.deep }), name)
   store.set({ selection: null })
 }
+
+// A layer's pixels copied, at their full depth if it keeps it.
+const copiedPixels = (l: Layer) => { const image = l.image?.clone() ?? null, deep = deepOf(l); return { image, deep: deep && image ? rebound(deep, image) : undefined } }
 
 // Copies of `layers` (with their folders' contents) under fresh IDs, clips that lost their base released.
 export function cloneLayers(layers: Layer[]): Layer[] {
   const ids = new Map(layers.map(l => [l.id, uuid()]))
-  return layers.map(l => ({ ...l, id: ids.get(l.id)!, parentId: l.parentId && ids.has(l.parentId) ? ids.get(l.parentId)! : null, clipTo: l.clipTo && ids.has(l.clipTo) ? ids.get(l.clipTo)! : null, image: l.image?.clone() ?? null, mask: l.mask?.clone() ?? null, adjustment: l.adjustment ? structuredClone(l.adjustment) : null, effects: l.effects ? structuredClone(l.effects) : null }))
+  return layers.map(l => ({ ...l, id: ids.get(l.id)!, parentId: l.parentId && ids.has(l.parentId) ? ids.get(l.parentId)! : null, clipTo: l.clipTo && ids.has(l.clipTo) ? ids.get(l.clipTo)! : null, ...copiedPixels(l), mask: l.mask?.clone() ?? null, adjustment: l.adjustment ? structuredClone(l.adjustment) : null, effects: l.effects ? structuredClone(l.effects) : null }))
 }
 
 // Layers from another project, centered on this canvas (or on `at`), on top of the stack, as one undo step.
@@ -114,7 +133,7 @@ export async function paste(event?: ClipboardEvent) {
     return
   }
   if (!store.hasDocument) return
-  if (clip.kind === 'pixels') { pastePixels(clip.pixels.clone(), clip.origin); return }
+  if (clip.kind === 'pixels') { pastePixels(clip.pixels.clone(), clip.origin, 'Paste', clip.deep); return }
   if (clip.from === store && clip.ids.every(id => store.layer(id))) {
     const originals = clip.ids.flatMap(id => [store.layer(id)!, ...store.descendants(id)])
     const copies = cloneLayers(originals)
@@ -133,9 +152,9 @@ export async function paste(event?: ClipboardEvent) {
 export function layerViaCopy() {
   const layer = store.active
   if (!layer || !store.state.selection || layer.isGroup) { store.duplicate(); return }
-  const region = selectedRegion(layerOnCanvas(layer, store.state.editingMask))
+  const region = selectedRegion(layerOnCanvas(layer, store.state.editingMask), store.state.editingMask ? null : deepOnCanvas([canvasLayer(layer)]))
   if (!region) return
-  pastePixels(region.pixels, region.origin, 'Layer via Copy')
+  pastePixels(region.pixels, region.origin, 'Layer via Copy', region.deep)
 }
 
 // ⌘-drag with a selection tool: the selected pixels of the active layer, lifted and moved by a whole number of document pixels.
@@ -153,36 +172,54 @@ export function beginPixelMove(duplicate: boolean) {
   }
   const [ox, oy] = apply(toPixel, 0, 0)
   let last: [number, number] = [0, 0]
-  const preview = (dx: number, dy: number) => {
-    last = [dx, dy]
-    const [px, py] = apply(toPixel, dx, dy), lx = px - ox, ly = py - oy
-    // Grow the grid to hold the moved pixels.
+  // The layer's pixels with the selected ones moved by (lx, ly) of its own pixels, on a grid grown to hold them: 8-bit ones, or a 16-bit
+  // or HDR layer's as floats (white at 1).
+  const moved = (data: Uint8Array | Float32Array, lx: number, ly: number) => {
+    const float = data instanceof Float32Array, white = float ? 1 : 255, put = (v: number) => float ? v : Math.round(v)
     const x0 = Math.min(0, Math.floor(lx)), y0 = Math.min(0, Math.floor(ly)), x1 = Math.max(image.width, Math.ceil(image.width + lx)), y1 = Math.max(image.height, Math.ceil(image.height + ly))
-    const out = placeOnGrid(image, [x0, y0], x1 - x0, y1 - y0)
+    const width = x1 - x0, height = y1 - y0, out = float ? new Float32Array(width * height * 4) : new Uint8Array(width * height * 4)
+    for (let y = 0; y < image.height; y++) out.set(data.subarray(y * image.width * 4, (y + 1) * image.width * 4), ((y - y0) * width - x0) * 4)
     if (!duplicate) for (let y = 0; y < image.height; y++) for (let x = 0; x < image.width; x++) {
-      const k = 1 - coverage[y * image.width + x], p = ((y - y0) * out.width + x - x0) * 4
-      if (k < 1) for (let c = 0; c < 4; c++) out.data[p + c] = Math.round(out.data[p + c] * k)
+      const k = 1 - coverage[y * image.width + x], p = ((y - y0) * width + x - x0) * 4
+      if (k < 1) for (let c = 0; c < 4; c++) out[p + c] = put(out[p + c] * k)
     }
     const integer = Math.abs(lx - Math.round(lx)) < 1e-6 && Math.abs(ly - Math.round(ly)) < 1e-6
-    for (let y = 0; y < out.height; y++) for (let x = 0; x < out.width; x++) {
+    for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
       const sx = x + x0 - lx, sy = y + y0 - ly
       let r = 0, g = 0, b = 0, a = 0
       const take = (ix: number, iy: number, w: number) => {
         if (ix < 0 || iy < 0 || ix >= image.width || iy >= image.height || w <= 0) return
         const k = coverage[iy * image.width + ix] * w, p = (iy * image.width + ix) * 4
-        r += image.data[p] * k; g += image.data[p + 1] * k; b += image.data[p + 2] * k; a += image.data[p + 3] * k
+        r += data[p] * k; g += data[p + 1] * k; b += data[p + 2] * k; a += data[p + 3] * k
       }
       if (integer) take(Math.round(sx), Math.round(sy), 1)
       else { const fx = Math.floor(sx - 0.5), fy = Math.floor(sy - 0.5), tx = sx - 0.5 - fx, ty = sy - 0.5 - fy; take(fx, fy, (1 - tx) * (1 - ty)); take(fx + 1, fy, tx * (1 - ty)); take(fx, fy + 1, (1 - tx) * ty); take(fx + 1, fy + 1, tx * ty) }
       if (a <= 0) continue
-      const p = (y * out.width + x) * 4, keep = 1 - a / 255
-      out.data[p] = Math.round(r + out.data[p] * keep); out.data[p + 1] = Math.round(g + out.data[p + 1] * keep); out.data[p + 2] = Math.round(b + out.data[p + 2] * keep); out.data[p + 3] = Math.round(a + out.data[p + 3] * keep)
+      const p = (y * width + x) * 4, keep = 1 - a / white
+      out[p] = put(r + out[p] * keep); out[p + 1] = put(g + out[p + 1] * keep); out[p + 2] = put(b + out[p + 2] * keep); out[p + 3] = put(a + out[p + 3] * keep)
     }
-    const transform = x0 || y0 || out.width !== image.width || out.height !== image.height ? grownTransform(layer.transform, toDoc, image.width, image.height, [x0, y0], out.width, out.height) : layer.transform
-    const keepMask = layer.mask && !layer.maskPlacement && transform !== layer.transform && !layer.mask.isUniform() ? { mask: padMask(layer.mask, image, [x0, y0], out.width, out.height, 255) } : {}
-    store.updateLayerLive(layer.id, { image: out, transform, text: undefined, shape: undefined, ...keepMask })
+    return { data: out, width, height, x0, y0 }
+  }
+  const place = (dx: number, dy: number) => { const [px, py] = apply(toPixel, dx, dy); return [px - ox, py - oy] as const }
+  const update = (out: { width: number; height: number; x0: number; y0: number }, changes: Partial<Layer>) => {
+    const transform = out.x0 || out.y0 || out.width !== image.width || out.height !== image.height ? grownTransform(layer.transform, toDoc, image.width, image.height, [out.x0, out.y0], out.width, out.height) : layer.transform
+    const keepMask = layer.mask && !layer.maskPlacement && transform !== layer.transform && !layer.mask.isUniform() ? { mask: padMask(layer.mask, image, [out.x0, out.y0], out.width, out.height, 255) } : {}
+    store.updateLayerLive(layer.id, { ...changes, transform, text: undefined, shape: undefined, ...keepMask })
+  }
+  const deep = deepOf(layer)
+  const preview = (dx: number, dy: number) => {
+    last = [dx, dy]
+    const out = moved(image.data, ...place(dx, dy))
+    update(out, { image: new Raster(out.width, out.height, 4, out.data as Uint8Array), deep: undefined })
     store.set({ selection: offsetSelection(selection, dx, dy) })
     store.pixelsChanged()
   }
-  return { preview, finish: () => { if (last[0] || last[1]) store.endGesture(); else store.cancelGesture() }, cancel: () => store.cancelGesture() }
+  // A 16-bit or HDR layer's pixels are moved again at their full depth when the move is kept.
+  const keepDepth = () => {
+    if (!deep || (!last[0] && !last[1])) return
+    const out = moved(deepToFloats(flattened(deep), deep.hdr), ...place(...last)), made = makeDeep(floatsToDeep(out.data, deep.hdr), out.width, out.height, deep.hdr)
+    update(out, { image: made.image, deep: made.deep })
+    store.pixelsChanged()
+  }
+  return { preview, finish: () => { keepDepth(); if (last[0] || last[1]) store.endGesture(); else store.cancelGesture() }, cancel: () => store.cancelGesture() }
 }

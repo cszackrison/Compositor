@@ -84,6 +84,22 @@ export function halfPeak(pixels: Uint16Array, width: number, height: number) {
   return withBuffers([{ data: pixels }], ([p]) => call('deep_half_peak', p, width * 8, width, height)) as number
 }
 
+// Deep pixels as floats (white is 1), and back: 16-bit ones clipped to white and to their alpha, as premultiplied colors must be.
+export function deepToFloats(pixels: Uint16Array, hdr: boolean) {
+  const out = new Float32Array(pixels.length)
+  for (let i = 0; i < out.length; i++) out[i] = hdr ? halves[pixels[i]] : pixels[i] / 65535
+  return out
+}
+export function floatsToDeep(data: ArrayLike<number>, hdr: boolean) {
+  const out = new Uint16Array(data.length)
+  for (let i = 0; i < out.length; i += 4) {
+    const a = Math.min(1, Math.max(0, data[i + 3]))
+    out[i + 3] = hdr ? toHalf(a) : Math.round(a * 65535)
+    for (let c = 0; c < 3; c++) { const v = Math.max(0, data[i + c]); out[i + c] = hdr ? toHalf(v) : Math.round(Math.min(a, v) * 65535) }
+  }
+  return out
+}
+
 // MARK: Making deep layers
 
 // A layer's 8-bit copy of deep pixels: rounded with a fine noise rather than straight down, so gradients don't step.

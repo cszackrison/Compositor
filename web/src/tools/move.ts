@@ -4,6 +4,7 @@ import { apply } from '../render/gl'
 import { drawOrder, effectivelyVisible, following, transformCorners, unitToDocument } from '../render/compositor'
 import { Raster } from '../model/raster'
 import { type Layer, type Transform } from '../model/types'
+import { deepOf, deepToFloats, flattened, floatsToDeep, makeDeep } from '../model/deep'
 import { call, withBuffers } from '../kernels'
 import { requestOverlay, requestRender, view, hitSlop } from '../ui/canvasState'
 import { redrawShape } from './shape'
@@ -150,6 +151,12 @@ const inTriangle = (p: [number, number], t: [number, number][]) => {
 // its rows, as transformCorners lists them). A convex shape is a true homography; a folded one is two affine triangles split on
 // the first diagonal (Distort.swift). `outside` fills a mask past the shape.
 function warp(image: Raster, corners: [number, number][], outside = 0): { raster: Raster; origin: [number, number] } {
+  const out = warpValues(image, corners, outside)
+  return { raster: new Raster(out.width, out.height, image.channels, out.data as Uint8Array), origin: out.origin }
+}
+
+// The warp of pixels as they are: a layer's bytes, or a 16-bit or HDR layer's floats, nothing rounded.
+function warpValues(image: { width: number; height: number; channels: number; data: Uint8Array | Float32Array }, corners: [number, number][], outside = 0) {
   const x0 = Math.floor(Math.min(...corners.map(c => c[0]))), y0 = Math.floor(Math.min(...corners.map(c => c[1])))
   const x1 = Math.ceil(Math.max(...corners.map(c => c[0]))), y1 = Math.ceil(Math.max(...corners.map(c => c[1])))
   const width = Math.max(1, x1 - x0), height = Math.max(1, y1 - y0)
@@ -161,7 +168,7 @@ function warp(image: Raster, corners: [number, number][], outside = 0): { raster
     const ma = triangleMap(a, [unit[0], unit[1], unit[2]]), mb = triangleMap(b, [unit[0], unit[2], unit[3]])
     toUnit = (x, y) => inTriangle([x, y], a) ? ma(x, y) : inTriangle([x, y], b) ? mb(x, y) : null
   }
-  const out = new Raster(width, height, image.channels)
+  const float = image.data instanceof Float32Array, out = { data: float ? new Float32Array(width * height * image.channels) : new Uint8Array(width * height * image.channels) }
   const c = image.channels
   if (outside) out.data.fill(outside)
   for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
@@ -173,10 +180,11 @@ function warp(image: Raster, corners: [number, number][], outside = 0): { raster
     const ix = Math.floor(sx), iy = Math.floor(sy), fx = sx - ix, fy = sy - iy
     for (let ch = 0; ch < c; ch++) {
       const at = (px: number, py: number) => image.data[(Math.min(image.height - 1, Math.max(0, py)) * image.width + Math.min(image.width - 1, Math.max(0, px))) * c + ch]
-      out.data[(y * width + x) * c + ch] = Math.round((at(ix, iy) * (1 - fx) + at(ix + 1, iy) * fx) * (1 - fy) + (at(ix, iy + 1) * (1 - fx) + at(ix + 1, iy + 1) * fx) * fy)
+      const v = (at(ix, iy) * (1 - fx) + at(ix + 1, iy) * fx) * (1 - fy) + (at(ix, iy + 1) * (1 - fx) + at(ix + 1, iy + 1) * fx) * fy
+      out.data[(y * width + x) * c + ch] = float ? v : Math.round(v)
     }
   }
-  return { raster: out, origin: [x0, y0] }
+  return { data: out.data, width, height, origin: [x0, y0] as [number, number] }
 }
 
 // Where a point inside the original box lands once the box's corners have moved: its place in the box's unit square, through
@@ -219,7 +227,17 @@ export function applyDistort() {
     if (!layer?.image) continue
     const corners = transformCorners(layer.transform).map(c => moved(c as [number, number]))
     const { raster, origin } = warp(layer.image, corners)
-    const { crop, image, transform } = trimmed(raster, origin, layer.transform.sampling)
+    let { crop, image, transform } = trimmed(raster, origin, layer.transform.sampling)
+    // A 16-bit or HDR layer is warped again at its full depth, cut the same way.
+    const deep = deepOf(layer)
+    let depth: Pick<Layer, 'deep'> = {}
+    if (deep) {
+      const values = warpValues({ width: deep.width, height: deep.height, channels: 4, data: deepToFloats(flattened(deep), deep.hdr) }, corners).data as Float32Array, cut = new Float32Array(crop.w * crop.h * 4)
+      for (let y = 0; y < crop.h; y++) cut.set(values.subarray(((y + crop.y) * raster.width + crop.x) * 4, ((y + crop.y) * raster.width + crop.x + crop.w) * 4), y * crop.w * 4)
+      const made = makeDeep(floatsToDeep(cut, deep.hdr), crop.w, crop.h, deep.hdr)
+      image = made.image
+      depth = { deep: made.deep }
+    }
     let mask = layer.mask, maskPlacement = layer.maskPlacement
     if (mask && layer.maskLinked && !layer.maskPlacement && !(mask.width === 1 && mask.height === 1)) {
       const warped = warp(mask, corners).raster
@@ -231,7 +249,7 @@ export function applyDistort() {
       mask = warped.raster
       maskPlacement = { origin: warped.origin, size: [warped.raster.width, warped.raster.height], rotation: 0, flipX: false, flipY: false, sampling: layer.maskPlacement.sampling }
     }
-    changes.set(id, { image, transform, mask, maskPlacement, text: undefined, shape: undefined })
+    changes.set(id, { image, ...depth, transform, mask, maskPlacement, text: undefined, shape: undefined })
   }
   const layers = store.doc.layers.map(l => changes.has(l.id) ? { ...l, ...changes.get(l.id) } : l)
   // Inside a floating Transform Selection the warp is part of that one step.

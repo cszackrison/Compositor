@@ -1,4 +1,5 @@
-import { deepOf, dithered, flattened, hdrTo16, makeDeep, rebound, widened } from '../model/deep'
+import { type Deep, bound, deepOf, deepToFloats, dithered, flattened, floatsToDeep, hdrTo16, isDeep, makeDeep, rebound, widened } from '../model/deep'
+import { normalizing } from './deepFilters'
 import { History, type PixelPatch } from '../model/history'
 import { Raster } from '../model/raster'
 import { type Adjustment, type AdjustmentKind, type BlendMode, type Doc, type EffectKind, effectNames, type Layer, type LayerEffects, type Transform, fullTransform, newAdjustment, newLayer, uuid } from '../model/types'
@@ -74,6 +75,8 @@ export class Store {
   untitled: string | null = null
   history = new History<Snapshot>()
   static renderer: Renderer | null = null
+  // The composite at full depth, for merging 16-bit and HDR layers (canvasState.renderDeep).
+  static deepRenderer: ((doc: Doc) => Float32Array | null) | null = null
   // Where this project's view was, restored when its tab comes back.
   view: { zoom: number; offsetX: number; offsetY: number } | null = null
   private listeners = new Set<() => void>()
@@ -468,19 +471,20 @@ export class Store {
   deleteMask(id: string, applyIt = false) {
     const layer = this.layer(id)
     if (!layer?.mask) return
-    let image = layer.image
+    let image = layer.image, deep = deepOf(layer)
     if (applyIt && image) {
       image = image.clone()
-      const mask = layer.mask
+      const mask = layer.mask, values = deep ? deepToFloats(flattened(deep), deep.hdr) : null
       // A mask with a placement of its own is read where it sits on the canvas; one on the layer's grid pixel for pixel.
       const placed = layer.maskPlacement && !layer.isGroup && !layer.adjustment ? maskOnGrid(mask, layer.maskPlacement, layer.transform, image.width, image.height) : null
       for (let y = 0; y < image.height; y++) for (let x = 0; x < image.width; x++) {
         const m = placed ? placed[y * image.width + x] : mask.data[Math.min(mask.height - 1, Math.floor((y + 0.5) * mask.height / image.height)) * mask.width + Math.min(mask.width - 1, Math.floor((x + 0.5) * mask.width / image.width))] / 255
         const p = (y * image.width + x) * 4
-        for (let c = 0; c < 4; c++) image.data[p + c] = Math.round(image.data[p + c] * m)
+        for (let c = 0; c < 4; c++) { image.data[p + c] = Math.round(image.data[p + c] * m); if (values) values[p + c] *= m }
       }
+      if (deep && values) { const made = makeDeep(floatsToDeep(values, deep.hdr), image.width, image.height, deep.hdr); image = made.image; deep = made.deep }
     }
-    this.commit(applyIt ? 'Apply Layer Mask' : 'Delete Layer Mask', { doc: this.replaceLayers(this.doc.layers.map(l => l.id === id ? { ...l, image, mask: null, maskPlacement: null, text: applyIt ? undefined : l.text, shape: applyIt ? undefined : l.shape } : l)), editingMask: false })
+    this.commit(applyIt ? 'Apply Layer Mask' : 'Delete Layer Mask', { doc: this.replaceLayers(this.doc.layers.map(l => l.id === id ? { ...l, image, deep: deep ?? undefined, mask: null, maskPlacement: null, text: applyIt ? undefined : l.text, shape: applyIt ? undefined : l.shape } : l)), editingMask: false })
   }
 
   // The layer raster a pixel tool works on (its image or its mask), made full-size first if it's a 1×1 placeholder mask.
@@ -552,6 +556,8 @@ export class Store {
     const before = raster.data.slice()
     const selection = this.state.selection
     const gray = Math.round(color ? 0.299 * color[0] + 0.587 * color[1] + 0.114 * color[2] : 0)
+    // A 16-bit or HDR layer is filled again at its full depth, so a soft-edged selection's blend is smooth.
+    const deep = isMask ? null : deepOf(layer), values = deep ? deepToFloats(flattened(deep), deep.hdr) : null
     for (let y = 0; y < raster.height; y++) for (let x = 0; x < raster.width; x++) {
       let a = 1
       if (selection) {
@@ -563,11 +569,15 @@ export class Store {
       const i = y * raster.width + x
       if (isMask) { raster.data[i] = Math.round(gray * a + raster.data[i] * (1 - a)); continue }
       const p = i * 4
-      for (let c = 0; c < 4; c++) raster.data[p + c] = Math.round((color ? (c === 3 ? 255 : color[c]) : 0) * a + raster.data[p + c] * (1 - a))
+      for (let c = 0; c < 4; c++) {
+        raster.data[p + c] = Math.round((color ? (c === 3 ? 255 : color[c]) : 0) * a + raster.data[p + c] * (1 - a))
+        if (values) values[p + c] = (color ? (c === 3 ? 255 : color[c]) : 0) / 255 * a + values[p + c] * (1 - a)
+      }
     }
     raster.touch()
     const patch: PixelPatch = { raster, x: 0, y: 0, w: raster.width, h: raster.height, before, after: raster.data.slice() }
-    this.commit(isMask ? 'Fill Mask' : color ? 'Fill' : 'Clear', { doc: this.replaceLayers(this.doc.layers.map(l => l.id === layer.id ? { ...l, text: isMask ? l.text : undefined, shape: isMask ? l.shape : undefined } : l)) }, { patches: [patch] })
+    const filled = deep && values ? { deep: bound(raster, floatsToDeep(values, deep.hdr), deep.hdr) } : {}
+    this.commit(isMask ? 'Fill Mask' : color ? 'Fill' : 'Clear', { doc: this.replaceLayers(this.doc.layers.map(l => l.id === layer.id ? { ...l, ...filled, text: isMask ? l.text : undefined, shape: isMask ? l.shape : undefined } : l)) }, { patches: [patch] })
     this.pixelsChanged()
   }
 
@@ -575,11 +585,13 @@ export class Store {
     const target = this.editTarget()
     if (!target) return
     const { raster, layer, isMask } = target
-    const before = raster.data.slice()
+    const before = raster.data.slice(), deep = isMask ? null : deepOf(layer), original = deep ? flattened(deep) : null
     if (isMask) for (let i = 0; i < raster.data.length; i++) raster.data[i] = 255 - raster.data[i]
     else for (let i = 0; i < raster.data.length; i += 4) { const a = raster.data[i + 3]; raster.data[i] = a - raster.data[i]; raster.data[i + 1] = a - raster.data[i + 1]; raster.data[i + 2] = a - raster.data[i + 2] }
     raster.touch()
-    this.commit(isMask ? 'Invert Mask' : 'Invert', { doc: this.replaceLayers(this.doc.layers.map(l => l.id === layer.id ? { ...l, text: isMask ? l.text : undefined, shape: isMask ? l.shape : undefined } : l)) }, { patches: [{ raster, x: 0, y: 0, w: raster.width, h: raster.height, before, after: raster.data.slice() }] })
+    // A 16-bit layer inverts exactly at 16 bits; an HDR layer's highlights are divided down to within white for it and multiplied back.
+    const inverted = deep ? { deep: bound(raster, normalizing({ pixels: original!, width: deep.width, height: deep.height, hdr: deep.hdr }, sixteen => { const out = sixteen.slice(); for (let i = 0; i < out.length; i += 4) for (let c = 0; c < 3; c++) out[i + c] = out[i + 3] - out[i + c]; return out }), deep.hdr) } : {}
+    this.commit(isMask ? 'Invert Mask' : 'Invert', { doc: this.replaceLayers(this.doc.layers.map(l => l.id === layer.id ? { ...l, ...inverted, text: isMask ? l.text : undefined, shape: isMask ? l.shape : undefined } : l)) }, { patches: [{ raster, x: 0, y: 0, w: raster.width, h: raster.height, before, after: raster.data.slice() }] })
     this.pixelsChanged()
   }
 
@@ -589,10 +601,13 @@ export class Store {
     const members = new Set(ids)
     for (const id of ids) for (const d of this.descendants(id)) members.add(d.id)
     const layers = this.doc.layers.filter(l => members.has(l.id)).map(l => ({ ...l, parentId: l.parentId && members.has(l.parentId) ? l.parentId : null, clipTo: l.clipTo && members.has(l.clipTo) ? l.clipTo : null }))
-    const image = Store.renderer({ ...this.doc, layers })
+    // With a 16-bit or HDR layer among them, the merged layer keeps that depth (HDR while it still goes past white).
+    const flat = { ...this.doc, layers }, deep = layers.some(isDeep) ? Store.deepRenderer?.(flat) : null
+    const hdr = layers.some(l => isDeep(l) && deepOf(l)!.hdr), made = deep ? makeDeep(floatsToDeep(deep, hdr), this.doc.width, this.doc.height, hdr) : null
+    const image = made?.image ?? Store.renderer(flat)
     const top = this.doc.layers.filter(l => ids.includes(l.id)).at(-1)!
     const bottom = this.doc.layers.filter(l => ids.includes(l.id))[0]
-    const merged = newLayer({ name: top.isGroup ? top.name : bottom.name, transform: fullTransform(this.doc.width, this.doc.height), image, parentId: bottom.parentId })
+    const merged = newLayer({ name: top.isGroup ? top.name : bottom.name, transform: fullTransform(this.doc.width, this.doc.height), image, deep: made?.deep, parentId: bottom.parentId })
     const remaining = this.doc.layers.flatMap(l => l.id === bottom.id ? [merged] : members.has(l.id) ? [] : [l])
     this.commit(name, { doc: this.replaceLayers(this.releaseBrokenClips(remaining)), activeId: merged.id, selectedIds: [merged.id], editingMask: false })
   }
@@ -689,30 +704,37 @@ export class Store {
     const doc = this.doc
     if (!resample || (width === doc.width && height === doc.height)) { this.commit('Image Size', { doc: { ...doc, resolution } }); return }
     const sx = width / doc.width, sy = height / doc.height
-    const bake = (raster: Raster, t: Transform) => {
+    // A 16-bit or HDR layer is resampled at its full depth too, from the same pixels the same way.
+    const bakeDeep = (deep: Deep, t: Transform) => {
+      const values = deepToFloats(flattened(deep), deep.hdr), scratch = new Raster(deep.width, deep.height, 4)
+      const baked = bake(scratch, t, values)
+      return { pixels: floatsToDeep(baked.values!, deep.hdr), width: baked.raster.width, height: baked.raster.height, transform: baked.transform }
+    }
+    const bake = (raster: Raster, t: Transform, values?: Float32Array) => {
       const corners = [[0, 0], [1, 0], [1, 1], [0, 1]].map(([u, v]) => apply(pixelToDocument(t, 1, 1), u, v)).map(([x, y]) => [x * sx, y * sy])
       const left = Math.floor(Math.min(...corners.map(c => c[0]))), top = Math.floor(Math.min(...corners.map(c => c[1])))
       const w = Math.max(1, Math.ceil(Math.max(...corners.map(c => c[0]))) - left), h = Math.max(1, Math.ceil(Math.max(...corners.map(c => c[1]))) - top)
       const toSource = invert(pixelToDocument(t, raster.width, raster.height))
-      const out = new Raster(w, h, raster.channels), c = raster.channels
+      const out = new Raster(w, h, raster.channels), c = raster.channels, source: ArrayLike<number> = values ?? raster.data, made = values ? new Float32Array(w * h * c) : null
+      const target: { [i: number]: number } = made ?? out.data, round = (v: number) => made ? v : Math.round(v)
       const nearest = sampling === 'Nearest'
       for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
         const [qx, qy] = apply(toSource, (x + left + 0.5) / sx, (y + top + 0.5) / sy)
         if (qx < 0 || qy < 0 || qx >= raster.width || qy >= raster.height) continue
         const i = (y * w + x) * c
-        if (nearest) { const s = (Math.floor(qy) * raster.width + Math.floor(qx)) * c; for (let k = 0; k < c; k++) out.data[i + k] = raster.data[s + k]; continue }
+        if (nearest) { const s = (Math.floor(qy) * raster.width + Math.floor(qx)) * c; for (let k = 0; k < c; k++) target[i + k] = source[s + k]; continue }
         // A box filter over the source pixels each new pixel covers when shrinking; the nearest one when enlarging.
         const rx = Math.max(0.5, 0.5 * raster.width / t.size[0] / sx), ry = Math.max(0.5, 0.5 * raster.height / t.size[1] / sy)
         const sum = [0, 0, 0, 0]
         let n = 0
         for (let yy = Math.floor(qy - ry + 0.5); yy <= Math.floor(qy + ry - 0.5); yy++) for (let xx = Math.floor(qx - rx + 0.5); xx <= Math.floor(qx + rx - 0.5); xx++) {
           const px = Math.min(raster.width - 1, Math.max(0, xx)), py = Math.min(raster.height - 1, Math.max(0, yy)), s = (py * raster.width + px) * c
-          for (let k = 0; k < c; k++) sum[k] += raster.data[s + k]
+          for (let k = 0; k < c; k++) sum[k] += source[s + k]
           n++
         }
-        for (let k = 0; k < c; k++) out.data[i + k] = Math.round(sum[k] / n)
+        for (let k = 0; k < c; k++) target[i + k] = round(sum[k] / n)
       }
-      return { raster: out, transform: { origin: [left, top], size: [w, h], rotation: 0, flipX: false, flipY: false, sampling } as Transform }
+      return { raster: out, values: made, transform: { origin: [left, top], size: [w, h], rotation: 0, flipX: false, flipY: false, sampling } as Transform }
     }
     const scaleEffects = (effects: Layer['effects']) => {
       if (!effects) return effects
@@ -726,10 +748,11 @@ export class Store {
         return { ...l, transform, mask: l.mask && !l.mask.isUniform() ? bake(l.mask, l.transform).raster : l.mask }
       }
       if (!l.image) return { ...l, transform: { ...l.transform, origin: [l.transform.origin[0] * sx, l.transform.origin[1] * sy] as [number, number], size: [l.transform.size[0] * sx, l.transform.size[1] * sy] as [number, number] } }
-      const baked = bake(l.image, l.transform)
+      const deep = deepOf(l), resampled = deep ? bakeDeep(deep, l.transform) : null, made = resampled ? makeDeep(resampled.pixels, resampled.width, resampled.height, deep!.hdr) : null
+      const baked = made ? { raster: made.image, transform: resampled!.transform } : bake(l.image, l.transform)
       const mask = l.mask && !l.maskPlacement && !l.mask.isUniform() ? bake(l.mask, l.transform).raster : l.mask
       const maskPlacement = l.maskPlacement ? { ...l.maskPlacement, origin: [l.maskPlacement.origin[0] * sx, l.maskPlacement.origin[1] * sy] as [number, number], size: [l.maskPlacement.size[0] * sx, l.maskPlacement.size[1] * sy] as [number, number] } : null
-      return { ...l, image: baked.raster, transform: baked.transform, mask, maskPlacement, effects: scaleEffects(l.effects), text: undefined, shape: undefined }
+      return { ...l, image: baked.raster, deep: made?.deep, transform: baked.transform, mask, maskPlacement, effects: scaleEffects(l.effects), text: undefined, shape: undefined }
     })
     const guides = doc.guides.map(g => ({ ...g, position: g.position * (g.axis === 'vertical' ? sx : sy) }))
     this.commit('Image Size', { doc: { ...doc, width, height, resolution, layers, guides }, selection: null })

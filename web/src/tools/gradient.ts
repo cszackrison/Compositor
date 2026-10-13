@@ -6,12 +6,14 @@ import { growMaskToCanvas } from './paint'
 import { apply, invert } from '../render/gl'
 import { requestOverlay, requestRender, view, hitSlop } from '../ui/canvasState'
 import { Raster } from '../model/raster'
+import { deepOf, deepToFloats, flattened, floatsToDeep, makeDeep } from '../model/deep'
 import { call, withBuffers } from '../kernels'
 import type { ToolHandler } from './tool'
 
 // A gradient waiting to be applied (Gradient.swift): its line can be dragged by either end until Return, another tool or another
 // layer applies it. It draws straight onto the active layer or its mask, never a new layer.
-type Pending = { layerId: string; isMask: boolean; start: [number, number]; end: [number, number]; original: Raster; transform: import('../model/types').Transform; grown: boolean }
+// `deep`: a 16-bit or HDR layer's pixels as floats on the grown grid, for the gradient to be drawn again at full depth when applied.
+type Pending = { layerId: string; isMask: boolean; start: [number, number]; end: [number, number]; original: Raster; transform: import('../model/types').Transform; grown: boolean; deep: { hdr: boolean; data: Float32Array } | null }
 let pending: Pending | null = null
 let dragging: 'start' | 'end' | null = null
 
@@ -29,8 +31,18 @@ function colors(): [number, number, number, number][] {
 // Redraws the pending gradient over the original pixels: through the canvas and the selection, at the gradient's opacity.
 function render() {
   const p = pending!
-  const layer = store.layer(p.layerId)!
   const raster = p.original.clone()
+  draw(raster.data, raster.width, raster.height)
+  store.updateLayerLive(p.layerId, p.isMask ? { mask: raster } : { image: raster })
+  requestRender()
+}
+
+// Draws the pending gradient over `out`, a layer's bytes (or a mask's), or a 16-bit or HDR layer's floats with white at 1.
+function draw(out: Uint8Array | Float32Array, rasterWidth: number, rasterHeight: number) {
+  const p = pending!
+  const layer = store.layer(p.layerId)!
+  const raster = { width: rasterWidth, height: rasterHeight, channels: p.original.channels }
+  const float = out instanceof Float32Array, white = float ? 1 : 255, put = (v: number) => float ? v : Math.round(v)
   const placement = p.isMask ? (layer.maskPlacement && !layer.isGroup && !layer.adjustment ? layer.maskPlacement : layer.transform) : layer.transform
   const toDoc = pixelToDocument(placement, raster.width, raster.height)
   const { shape, opacity } = store.state.gradient
@@ -38,7 +50,7 @@ function render() {
   const [sx, sy] = p.start, dx = p.end[0] - sx, dy = p.end[1] - sy, length2 = dx * dx + dy * dy, radius = Math.sqrt(length2)
   const selection = store.state.selection, { width, height } = store.doc
   const [m0, m1, , m3, m4, , m6, m7] = toDoc, radial = shape === 'Radial', divisor = radial ? Math.max(1e-6, radius) : Math.max(1e-6, length2)
-  const out = raster.data, mask = raster.channels === 1, sel = selection?.data, selWidth = selection?.width ?? 0
+  const mask = raster.channels === 1, sel = selection?.data, selWidth = selection?.width ?? 0
   for (let y = 0; y < raster.height; y++) {
     for (let x = 0, i = y * raster.width; x < raster.width; x++, i++) {
       const qx = m0 * (x + 0.5) + m3 * (y + 0.5) + m6, qy = m1 * (x + 0.5) + m4 * (y + 0.5) + m7
@@ -54,12 +66,10 @@ function render() {
       if (mask) { out[i] = Math.round((c0[0] + (c1[0] - c0[0]) * t) * a + out[i] * (1 - a)); continue }
       // Colors blend in straight sRGB, weighted by each end's alpha, as Core Graphics gradients do.
       const keep = 1 - a, w0 = c0[3] * (1 - t), w1 = c1[3] * t, total = w0 + w1, j = i * 4
-      for (let c = 0; c < 3; c++) out[j + c] = Math.round((total > 0 ? (c0[c] * w0 + c1[c] * w1) / total : c0[c]) * a + out[j + c] * keep)
-      out[j + 3] = Math.round(255 * a + out[j + 3] * keep)
+      for (let c = 0; c < 3; c++) out[j + c] = put((total > 0 ? (c0[c] * w0 + c1[c] * w1) / total : c0[c]) * white / 255 * a + out[j + c] * keep)
+      out[j + 3] = put(white * a + out[j + 3] * keep)
     }
   }
-  store.updateLayerLive(p.layerId, p.isMask ? { mask: raster } : { image: raster })
-  requestRender()
 }
 
 function begin(point: [number, number]): boolean {
@@ -68,6 +78,7 @@ function begin(point: [number, number]): boolean {
   if (!target) { store.cancelGesture(); store.notify('Choose a layer or mask for the gradient.'); return false }
   let layer = store.layer(target.layer.id)!
   let grown = false
+  const deepPixels = target.isMask ? null : deepOf(layer), deep = deepPixels ? { hdr: deepPixels.hdr, data: deepToFloats(flattened(deepPixels), deepPixels.hdr) } : null
   if (!target.isMask) {
     // Grow the layer to the canvas so the gradient fills it; it's cropped to what was drawn when applied.
     const image = layer.image!, toPixel = invert(pixelToDocument(layer.transform, image.width, image.height))
@@ -76,13 +87,14 @@ function begin(point: [number, number]): boolean {
     const x1 = Math.max(image.width, Math.ceil(Math.max(...corners.map(c => c[0])))), y1 = Math.max(image.height, Math.ceil(Math.max(...corners.map(c => c[1]))))
     if ((x0 || y0 || x1 !== image.width || y1 !== image.height) && (x1 - x0) * (y1 - y0) < 120_000_000) {
       const bigger = placeOnGrid(image, [x0, y0], x1 - x0, y1 - y0)
+      if (deep) { const placed = new Float32Array(bigger.width * bigger.height * 4), row = image.width * 4; for (let y = 0; y < image.height; y++) placed.set(deep.data.subarray(y * row, (y + 1) * row), ((y - y0) * bigger.width - x0) * 4); deep.data = placed }
       store.updateLayerLive(layer.id, { image: bigger, transform: grownTransform(layer.transform, pixelToDocument(layer.transform, image.width, image.height), image.width, image.height, [x0, y0], bigger.width, bigger.height), mask: layer.mask && !layer.maskPlacement && !layer.mask.isUniform() ? padMask(layer.mask, image, [x0, y0], bigger.width, bigger.height, 255) : layer.mask })
       layer = store.layer(layer.id)!
       grown = true
     }
   }
   if (target.isMask) growMaskToCanvas(layer.id)
-  pending = { layerId: layer.id, isMask: target.isMask, start: point, end: point, original: target.isMask ? store.layer(layer.id)!.mask! : layer.image!, transform: layer.transform, grown }
+  pending = { layerId: layer.id, isMask: target.isMask, start: point, end: point, original: target.isMask ? store.layer(layer.id)!.mask! : layer.image!, transform: layer.transform, grown, deep }
   return true
 }
 
@@ -93,6 +105,14 @@ export function applyGradient() {
   dragging = null
   if (Math.hypot(p.end[0] - p.start[0], p.end[1] - p.start[1]) < 0.5) { store.cancelGesture(); requestRender(); return }
   if (!p.isMask) {
+    // A 16-bit or HDR layer's gradient is drawn again at its full depth, so a gentle one is smooth rather than a few 8-bit levels.
+    if (p.deep) {
+      pending = p
+      draw(p.deep.data, p.original.width, p.original.height)
+      pending = null
+      const made = makeDeep(floatsToDeep(p.deep.data, p.deep.hdr), p.original.width, p.original.height, p.deep.hdr)
+      store.updateLayerLive(p.layerId, { image: made.image, deep: made.deep })
+    }
     const layer = store.layer(p.layerId)!, image = layer.image!
     const box = new Uint32Array(4)
     withBuffers([{ data: image.data }, { data: box, out: true }], ([px, b]) => call('brush_alpha_bounds', px, image.width, image.height, image.width * 4, b))

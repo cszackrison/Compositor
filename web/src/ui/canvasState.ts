@@ -46,6 +46,17 @@ export function renderFull(doc: Doc): Raster {
   return pixels
 }
 
+// The composite at full depth, for merging 16-bit and HDR layers: premultiplied floats in extended sRGB, top row first. Null for a
+// document without such a layer, or a GPU that can't render floats.
+export function renderDeep(doc: Doc): Float32Array | null {
+  if (!compositor) throw new Error('The canvas is not ready')
+  if (Math.max(doc.width, doc.height) > compositor.maxSize) throw new Error(`This canvas is larger than this GPU can render in one piece (${compositor.maxSize} px).`)
+  compositor.render(doc, 1)
+  const data = compositor.hdr ? compositor.readFloat() : null
+  requestRender()
+  return data
+}
+
 // The composite in linear light with what's brighter than white kept, for an EXR export: premultiplied floats, top row first. Null
 // for a document without an HDR layer, or a GPU that can't render floats.
 export function renderLinear(doc: Doc): LinearImage | null {

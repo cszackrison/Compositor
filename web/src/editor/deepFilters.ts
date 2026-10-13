@@ -69,7 +69,7 @@ export function runDeep(name: string, run: (input: FilterInput) => FilterOutput,
 }
 
 // `body` on 16-bit pixels: an HDR layer's with each highlight divided down to within white, its result multiplied back.
-function normalizing(source: DeepPixels, body: (sixteen: Uint16Array) => Uint16Array): Uint16Array {
+export function normalizing(source: DeepPixels, body: (sixteen: Uint16Array) => Uint16Array): Uint16Array {
   if (!source.hdr) return body(source.pixels)
   const { width, height } = source, normal = new Uint16Array(source.pixels.length), scales = new Float32Array(width * height)
   withBuffers([{ data: source.pixels }, { data: normal, out: true }, { data: scales, out: true }], ([h, n, s]) => call('deep_hdr_normalize', h, stride(width), n, stride(width), s, width, height))
