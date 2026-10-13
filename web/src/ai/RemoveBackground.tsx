@@ -27,6 +27,15 @@ export async function selectSubject() {
 
 let remembered: BackgroundSettings = defaultBackground
 
+function refineInWorker(found: Float32Array, image: Raster, settings: BackgroundSettings): Promise<Float32Array> {
+  const worker = new Worker(new URL('./matteWorker.ts', import.meta.url), { type: 'module' })
+  return new Promise((resolve, reject) => {
+    worker.onmessage = (event: MessageEvent<Float32Array>) => { worker.terminate(); resolve(event.data) }
+    worker.onerror = () => { worker.terminate(); reject(new Error('Refining the mask stopped unexpectedly.')) }
+    worker.postMessage({ found, rgba: image.data, width: image.width, height: image.height, settings })
+  })
+}
+
 // Filter › Remove Background: hides the background behind a layer mask, keeping the foreground (SubjectRemoval and
 // commitBackgroundMask). The preview is the mask itself on the layer; an existing mask on the layer's grid stays, multiplied,
 // and with a selection only the selected part changes.
@@ -38,9 +47,9 @@ export function RemoveBackgroundDialog() {
   const frame = useRef(0)
 
   // The mask the layer gets: the subject, refined, under the existing mask, through the selection.
-  const maskFor = (s: BackgroundSettings, limit: number) => {
+  const maskFor = (s: BackgroundSettings, limit: number, done?: Float32Array) => {
     const { image, base, transform, found } = session.current!
-    const { width, height } = image, subject = bytes(refined(found!, image.data, width, height, s, limit))
+    const { width, height } = image, subject = bytes(done ?? refined(found!, image.data, width, height, s, limit))
     if (base) for (let i = 0; i < subject.length; i++) subject[i] = Math.round(subject[i] * base.data[i] / 255)
     const selection = store.state.selection
     if (selection) {
@@ -54,9 +63,9 @@ export function RemoveBackgroundDialog() {
     }
     return new Raster(width, height, 1, subject)
   }
-  const show = (s: BackgroundSettings, limit: number) => {
+  const show = (s: BackgroundSettings, limit: number, done?: Float32Array) => {
     if (!session.current?.found) return
-    store.updateLayerLive(session.current.layerId, { mask: maskFor(s, limit), maskEnabled: true, maskPlacement: null })
+    store.updateLayerLive(session.current.layerId, { mask: maskFor(s, limit, done), maskEnabled: true, maskPlacement: null })
     store.pixelsChanged()
   }
 
@@ -86,12 +95,16 @@ export function RemoveBackgroundDialog() {
     cancelAnimationFrame(frame.current)
     frame.current = requestAnimationFrame(() => show(next, 1400))
   }
-  const finish = (ok: boolean) => {
+  const finish = async (ok: boolean) => {
     const s = session.current
     cancelAnimationFrame(frame.current)
     if (s && ok && s.found && !error) {
-      // The preview refines on a copy at most 1400 px across; what's kept is refined at full size.
-      if (settings.quality === 'Advanced') show(settings, Infinity)
+      // The preview refines on a copy at most 1400 px across; what's kept is refined at full size, in a worker.
+      if (settings.quality === 'Advanced') {
+        setStatus('Refining…')
+        try { show(settings, Infinity, await refineInWorker(s.found, s.image, settings)) } catch (e) { setError((e as Error).message); setStatus(null); return }
+        if (session.current !== s) return
+      }
       store.set({ editingMask: true })
       store.endGesture()
       store.history.renameLast('Remove Background')

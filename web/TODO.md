@@ -41,7 +41,7 @@ existing features were.
   downloaded from Hugging Face on first use (88 MB on WebGPU, 44 MB on the CPU) and cached. Results differ from the Mac's.
 - [ ] **Object selection (Magic tool)**: a click-to-select model (MobileSAM or SlimSAM) on the same runtime.
 - [ ] Try Select Subject and Remove Background on phones (WebGPU in Chrome on Android and Safari on iOS 26).
-- [ ] Remove Background's full-size refine (Advanced) runs on the main thread; a large layer pauses for a moment on OK.
+- [x] Remove Background's full-size refine (Advanced) runs in a worker (`ai/matteWorker.ts`), so OK doesn't pause the page.
 - [ ] **Live reload when the project changes on disk** (an AI agent or script writing the `.comp`). Browsers can't watch folders,
   so this would mean polling the directory handle in Chrome and Edge.
 
