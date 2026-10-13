@@ -1,4 +1,5 @@
 import { decode, encode } from 'fast-png'
+import { call, withBuffers } from '../kernels'
 
 let nextVersion = 1
 
@@ -78,9 +79,31 @@ function expandPalette(png: ReturnType<typeof decode>) {
   return out
 }
 
-// Any 8-bit-or-less PNG to premultiplied RGBA, or to one-channel coverage for masks (gray, or the first channel).
+// Premultiplied 16-bit RGBA rounded to 8 bits with a fine noise (dither_quantize16), as the Mac makes a 16-bit layer's 8-bit copy, so
+// gradients don't band.
+export function quantize16(wide: Uint16Array, width: number, height: number) {
+  const out = new Raster(width, height, 4)
+  withBuffers([{ data: wide }, { data: out.data, out: true }], ([w, o]) => call('dither_quantize16', w, o, width, height, width * 4))
+  return out
+}
+
+function decodePNG16(png: ReturnType<typeof decode>) {
+  const count = png.width * png.height, source = png.data, n = png.channels, wide = new Uint16Array(count * 4)
+  for (let i = 0; i < count; i++) {
+    const s = i * n, d = i * 4, gray = n < 3, a = n === 4 || n === 2 ? source[s + n - 1] : 65535
+    wide[d + 3] = a
+    for (let c = 0; c < 3; c++) wide[d + c] = Math.round(source[s + (gray ? 0 : c)] * a / 65535)
+  }
+  return quantize16(wide, png.width, png.height)
+}
+
+// The bit depth in a PNG's header, without decoding it.
+export const pngDepth = (bytes: Uint8Array) => bytes.length > 24 ? bytes[24] : 8
+
+// Any PNG to premultiplied RGBA, or to one-channel coverage for masks (gray, or the first channel). 16-bit color is dithered to 8.
 export function decodePNG(bytes: Uint8Array, channels: 1 | 4): Raster {
   const png = decode(bytes)
+  if (channels === 4 && png.depth === 16 && !png.palette) return decodePNG16(png)
   const source = png.palette ? expandPalette(png) : to8Bit(png.data, png.depth)
   const sourceChannels = png.palette ? 4 : png.channels
   const count = png.width * png.height
@@ -95,6 +118,23 @@ export function decodePNG(bytes: Uint8Array, channels: 1 | 4): Raster {
     else { out[d] = out[d + 1] = out[d + 2] = source[s]; out[d + 3] = sourceChannels === 2 ? source[s + 1] : 255 }
   }
   return new Raster(png.width, png.height, 4, premultiply(out))
+}
+
+// An HDR layer's OpenEXR (half floats, premultiplied, linear light as EXR keeps it) as the Mac shows it: clipped to white, in sRGB, rounded
+// to 8 bits with a fine noise.
+export async function decodeEXR(bytes: Uint8Array): Promise<Raster> {
+  const { EXRLoader } = await import('three/examples/jsm/loaders/EXRLoader.js')
+  const { FloatType } = await import('three')
+  const exr = new EXRLoader().setDataType(FloatType).parse(bytes.slice().buffer) as unknown as { width: number; height: number; data: Float32Array }
+  const { width, height, data } = exr, wide = new Uint16Array(width * height * 4)
+  const toSRGB = (v: number) => v <= 0 ? 0 : v >= 1 ? 1 : v <= 0.0031308 ? v * 12.92 : 1.055 * Math.pow(v, 1 / 2.4) - 0.055
+  // The loader flips rows for WebGL; layers keep the top row first.
+  for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
+    const s = ((height - 1 - y) * width + x) * 4, d = (y * width + x) * 4, a = Math.min(1, Math.max(0, data[s + 3]))
+    wide[d + 3] = Math.round(a * 65535)
+    if (a > 0) for (let c = 0; c < 3; c++) wide[d + c] = Math.round(toSRGB(data[s + c] / a) * a * 65535)
+  }
+  return quantize16(wide, width, height)
 }
 
 export function encodePNG(raster: Raster) {

@@ -14,6 +14,7 @@
     "@types/node": "^26.6.4",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
+    "@types/three": "^0.180.0",
     "@yowasp/clang": "^22.0.0-git20542-10",
     "typescript": "^7.0.2",
     "vite": "^7.3.6",
@@ -24,6 +25,7 @@
     "fflate": "^0.8.3",
     "onnxruntime-web": "^1.30.0",
     "react": "^19.3.0",
-    "react-dom": "^19.3.0"
+    "react-dom": "^19.3.0",
+    "three": "^0.180.0"
   }
 }

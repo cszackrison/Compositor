@@ -1,6 +1,6 @@
 import type { Raster } from './raster'
 
-export const formatVersion = 11
+export const formatVersion = 13
 export const maxSide = 30_000
 
 export type Sampling = 'Nearest' | 'Smooth' | 'High quality'
@@ -75,6 +75,9 @@ export type Layer = {
   text: unknown
   shape: unknown
   extra: Record<string, unknown>
+  // A 16-bit PNG or HDR OpenEXR layer image as it was loaded. `image` is its dithered 8-bit copy; while that's still at `version`, a save
+  // writes these bytes back instead, so the layer keeps its depth. Once edited, it saves as an 8-bit PNG.
+  wide?: { file: 'png' | 'exr'; bytes: Uint8Array; version: number }
 }
 
 export type Guide = { id: string; axis: 'horizontal' | 'vertical'; position: number }

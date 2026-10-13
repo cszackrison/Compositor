@@ -53,7 +53,7 @@ export function addNoise(input: FilterInput, amount: number, gaussian: boolean, 
 }
 
 // Takes the selection as an argument (not from the store) so it can run in the filter worker.
-export function contentAwareFill(input: FilterInput, selection: { width: number; height: number; data: Uint8Array } | null): FilterOutput {
+export function contentAwareFill(input: FilterInput, selection: { width: number; height: number; data: Uint8Array } | null, seed: number): FilterOutput {
   if (!selection) throw new Error('Make a selection to fill.')
   // Grow to cover the selection's bounds on the canvas, then fill whatever the selection touches.
   const toPixel = invert(input.toDocument)
@@ -72,9 +72,9 @@ export function contentAwareFill(input: FilterInput, selection: { width: number;
     const sx = Math.floor(dx), sy = Math.floor(dy)
     if (sx >= 0 && sy >= 0 && sx < selection.width && sy < selection.height) mask[y * width + x] = selection.data[sy * selection.width + sx]
   }
-  const status = withBuffers([{ data: pixels.data, out: true }, { data: mask }], ([p, m]) => call('content_fill', p, width * 4, m, width, width, height))
+  const status = withBuffers([{ data: pixels.data, out: true }, { data: mask }], ([p, m]) => call('patch_fill', p, width * 4, m, width, width, height, seed >>> 0))
   if (status === 0) throw new Error('Not enough unselected, opaque image pixels to synthesize a fill. Use a smaller selection with some surrounding image.')
-  if (status < 0) throw new Error('Out of memory while filling.')
+  if (status !== 1) throw new Error('Out of memory while filling.')
   return { pixels, origin: [x0, y0] }
 }
 
@@ -120,16 +120,16 @@ export function tonalContrast(input: FilterInput, amount: number, shadows: numbe
   return pixels
 }
 
-export const ditherStyles = ['Atkinson (Classic Mac)', 'Floyd–Steinberg', 'Bayer 2 × 2', 'Bayer 4 × 4', 'Bayer 8 × 8', 'Halftone Dots', 'Halftone Lines', 'Halftone Diamonds', 'Mac Patterns', 'ASCII', 'Scanlines (CRT)'] as const
-export const ditherGroups = [[0, 1], [2, 3, 4], [5, 6, 7], [8, 9, 10]]
+export const ditherStyles = ['Atkinson (Classic Mac)', 'Floyd–Steinberg', 'Bayer 2 × 2', 'Bayer 4 × 4', 'Bayer 8 × 8', 'Halftone Dots', 'Halftone Lines', 'Halftone Diamonds', 'Mac Patterns', 'ASCII'] as const
+export const ditherGroups = [[0, 1], [2, 3, 4], [5, 6, 7], [8, 9]]
 export type DitherSettings = {
   style: number; pixelSize: number; pixelShape: 'Square' | 'Dot'; cellSize: number; angle: number; textSize: number; characters: string
-  lineSpacing: number; glow: number; dots: number; wobble: number; levels: number; diffusion: number; density: number; contrast: number
+  levels: number; diffusion: number; density: number; contrast: number
   colors: 'Black & White' | 'Two Colors' | 'Original'; dark: [number, number, number]; light: [number, number, number]; lightOnDark: boolean
 }
-export const defaultDither: DitherSettings = { style: 0, pixelSize: 2, pixelShape: 'Square', cellSize: 8, angle: 45, textSize: 14, characters: ' .:-=+*#%@', lineSpacing: 4, glow: 35, dots: 0, wobble: 0, levels: 2, diffusion: 100, density: 0, contrast: 0, colors: 'Black & White', dark: [0, 0, 0], light: [255, 255, 255], lightOnDark: true }
+export const defaultDither: DitherSettings = { style: 0, pixelSize: 2, pixelShape: 'Square', cellSize: 8, angle: 45, textSize: 14, characters: ' .:-=+*#%@', levels: 2, diffusion: 100, density: 0, contrast: 0, colors: 'Black & White', dark: [0, 0, 0], light: [255, 255, 255], lightOnDark: true }
 export const ditherUses = (s: DitherSettings) => ({
-  pixelSize: s.style !== 9 && s.style !== 10, halftone: s.style >= 5 && s.style <= 7, ascii: s.style === 9, scanlines: s.style === 10,
+  pixelSize: s.style !== 9, halftone: s.style >= 5 && s.style <= 7, ascii: s.style === 9,
   tones: s.style <= 4, diffuses: s.style <= 1, marks: (s.style >= 5 && s.style <= 9),
 })
 
@@ -182,34 +182,50 @@ export function dither(input: FilterInput, s: DitherSettings): FilterOutput {
   const two = s.colors === 'Two Colors'
   const dark = two ? s.dark : [0, 0, 0], light = two ? s.light : [255, 255, 255]
   // DitherParams, laid out as the C struct (4-byte fields, then the two color byte triples, then pointers).
-  const params = new ArrayBuffer(100), view = new DataView(params)
+  const params = new ArrayBuffer(64), view = new DataView(params)
   const ints = [s.style, Math.round(s.levels)]
   view.setInt32(0, ints[0], true); view.setInt32(4, ints[1], true)
   view.setFloat32(8, s.diffusion / 100, true); view.setFloat32(12, s.density / 100, true); view.setFloat32(16, s.contrast / 100, true)
-  view.setInt32(20, uses.scanlines ? Math.round(s.lineSpacing) : Math.round(s.cellSize), true)
+  view.setInt32(20, Math.round(s.cellSize), true)
   view.setFloat32(24, s.angle * Math.PI / 180, true)
   view.setInt32(28, s.lightOnDark ? 1 : 0, true); view.setInt32(32, s.colors === 'Original' ? 1 : 0, true)
   dark.forEach((v, i) => view.setUint8(36 + i, v)); light.forEach((v, i) => view.setUint8(39 + i, v))
   view.setInt32(44, glyph.width, true); view.setInt32(48, glyph.height, true)
   view.setInt32(60, glyph.count, true)
-  view.setFloat32(64, s.dots / 100, true); view.setFloat32(68, s.wobble, true)
   const ok = withBuffers([{ data: work.data, out: true }, { data: glyph.glyphs }, { data: glyph.coverage }, { data: new Uint8Array(params) }], ([pixels, glyphs, coverage, p], k) => {
     const memory = new DataView(k.memory.buffer)
     memory.setUint32(p + 52, glyphs, true); memory.setUint32(p + 56, coverage, true)
     return call('dither_apply', pixels, work.width, work.height, work.width * 4, p)
   })
   if (!ok) throw new Error('Dither ran out of memory.')
-  if (uses.scanlines && s.glow > 0) {
-    const sigma = s.lineSpacing * 3 + 3
-    const blurred = blurRaster(work, sigma, true)
-    withBuffers([{ data: work.data, out: true }, { data: blurred.data }], ([p, b]) => call('dither_glow', p, b, work.width, work.height, work.width * 4, s.glow / 100 * 2.5))
-    return work
-  }
   if (block <= 1) return work
   const out = new Raster(full.width, full.height, 4)
   for (let y = 0; y < full.height; y++) for (let x = 0; x < full.width; x++) out.data.set(work.data.subarray(((Math.floor(y / block)) * work.width + Math.floor(x / block)) * 4, ((Math.floor(y / block)) * work.width + Math.floor(x / block)) * 4 + 4), (y * full.width + x) * 4)
   if (s.pixelShape === 'Dot') withBuffers([{ data: out.data, out: true }, { data: new Uint8Array(two ? dark : [0, 0, 0]) }], ([p, g]) => call('dither_dots', p, full.width, full.height, full.width * 4, block, g))
   return out
+}
+
+export type ScanlinesSettings = {
+  lineSpacing: number; thickness: number; glow: number; dots: number; displace: number; smoothness: number; threshold: number; wobble: number; split: number
+  density: number; contrast: number; blackLevel: number; colors: DitherSettings['colors']; dark: [number, number, number]; light: [number, number, number]
+}
+export const defaultScanlines: ScanlinesSettings = { lineSpacing: 4, thickness: 70, glow: 0, dots: 0, displace: 0, smoothness: 50, threshold: 0, wobble: 0, split: 0, density: 0, contrast: 0, blackLevel: 0, colors: 'Black & White', dark: [0, 0, 0], light: [255, 255, 255] }
+
+// Filter › Scanlines (Scanlines.swift): scanlines_apply, then the lines' light blurred across a few spacings and added back as glow.
+export function scanlines(input: FilterInput, s: ScanlinesSettings): FilterOutput {
+  const pixels = input.pixels, two = s.colors === 'Two Colors'
+  // ScanlinesParams, laid out as the C struct (an int, ten floats, an int, then the two color byte triples).
+  const params = new ArrayBuffer(56), view = new DataView(params)
+  view.setInt32(0, Math.round(s.lineSpacing), true)
+  ;[s.thickness / 100, s.dots / 100, s.wobble, s.displace, s.threshold / 100, Math.round(s.split), s.density / 100, s.contrast / 100, s.blackLevel / 100, s.smoothness / 100].forEach((v, i) => view.setFloat32(4 + i * 4, v, true))
+  view.setInt32(44, s.colors === 'Original' ? 1 : 0, true)
+  ;(two ? s.dark : [0, 0, 0]).forEach((v, i) => view.setUint8(48 + i, v)); (two ? s.light : [255, 255, 255]).forEach((v, i) => view.setUint8(51 + i, v))
+  const ok = withBuffers([{ data: pixels.data, out: true }, { data: new Uint8Array(params) }], ([p, q]) => call('scanlines_apply', p, pixels.width, pixels.height, pixels.width * 4, q))
+  if (!ok) throw new Error('Scanlines ran out of memory.')
+  if (s.glow <= 0) return pixels
+  const blurred = blurRaster(pixels, Math.round(s.lineSpacing) * 3 + 3, true)
+  withBuffers([{ data: pixels.data, out: true }, { data: blurred.data }], ([p, b]) => call('dither_glow', p, b, pixels.width, pixels.height, pixels.width * 4, s.glow / 100 * 2.5))
+  return pixels
 }
 
 export { floats }

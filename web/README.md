@@ -24,7 +24,9 @@ npm run build    # static site in dist/, deployable anywhere
 - **Firefox and Safari**: open a project folder or a zipped `.comp`; *Save* downloads a zip.
 - Dropping a `.comp` folder, a zip or images onto the window opens or places them.
 
-Fields the web app doesn't edit (text and shape metadata, unknown keys from newer builds) are kept on save. Text and shape metadata are dropped once their pixels change, as the Mac app does.
+Fields the web app doesn't edit (text and shape metadata, unknown keys from newer builds) are kept on save. 16-bit and HDR (OpenEXR)
+layers from the Mac open as an 8-bit copy dithered as the Mac shows them, and save back at full depth until they're edited; an
+edited one saves as 8-bit. Text and shape metadata are dropped once their pixels change, as the Mac app does.
 
 ## What's here
 
@@ -48,7 +50,7 @@ Fields the web app doesn't edit (text and shape metadata, unknown keys from newe
   - Move the outline, or ⌘-drag to move the selected pixels (⌘⌥-drag duplicates them).
 - **Painting and retouching:** Brush and Eraser, Spot Healing, Clone Stamp, Smear (Liquify, Blur and Smudge), Gradient, and Shape layers that redraw when scaled. Plus right-drag to resize the tip, `[` `]` `{` `}`, and digit keys for opacity.
 - **Image menu:** Curves, Levels, Hue/Saturation, Black & White, Color Balance, Exposure, Gradient Map, Grain and Invert, applied to a layer's pixels. Also Canvas Size, Image Size, Trim, Crop to Selection and Flip Canvas.
-- **Filter menu:** Gaussian Blur, Motion Blur, Add Noise, Vignette, Bloom / Glow, Dither (all eleven styles), Tonal Contrast and Lens Correction. Edit › Content-Aware Fill (⇧⌫). Each previews live and is limited to the selection.
+- **Filter menu:** Gaussian Blur, Motion Blur, Add Noise, Vignette, Bloom / Glow, Dither (all ten styles), Scanlines, Tonal Contrast and Lens Correction. Edit › Content-Aware Fill (⇧⌫). Each previews live and is limited to the selection.
 - **Canvas aids:** the Crop tool (ratios, ⌥ for symmetric cropping), rulers, guides dragged from them, a layout grid, and a pixel grid at 800% and above.
 - **Editing:**
   - Cut, Copy, Copy Merged and Paste (images from other apps too).

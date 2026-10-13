@@ -3,7 +3,7 @@ import { store } from '../editor/store'
 import { FilterDialog } from './FilterDialog'
 import { Slider, AdjustmentEditor } from './Inspector'
 import { useEditor } from './hooks'
-import { defaultDither, ditherGroups, ditherStyles, ditherUses, type DitherSettings, type VignetteSettings } from '../editor/filterKinds'
+import { defaultDither, defaultScanlines, ditherGroups, ditherStyles, ditherUses, type DitherSettings, type VignetteSettings } from '../editor/filterKinds'
 import { job } from '../editor/filters'
 import { RemoveBackgroundDialog } from '../ai/RemoveBackground'
 import { type Adjustment, type AdjustmentKind, type LevelRange, newAdjustment, identityRange } from '../model/types'
@@ -83,7 +83,8 @@ function LensDialog() {
 }
 
 function ContentAwareDialog() {
-  return <FilterDialog title="Content-Aware Fill" initial={{}} onClose={close} run={() => job('contentAwareFill', store.state.selection)}>{() => <>
+  const fillSeed = useMemo(seed, [])
+  return <FilterDialog title="Content-Aware Fill" initial={{}} onClose={close} run={() => job('contentAwareFill', store.state.selection, fillSeed)}>{() => <>
     <span>Fill the selection using surrounding pixels from this layer.</span>
     <span className="muted">Limited to the selection.</span>
   </>}</FilterDialog>
@@ -99,12 +100,6 @@ function DitherDialog() {
       {uses.pixelSize && p.pixelSize > 1 && <div className="row"><span className="muted">Pixel Shape</span><select value={p.pixelShape} onChange={e => set({ pixelShape: e.target.value as DitherSettings['pixelShape'] })}><option>Square</option><option>Dot</option></select><span /></div>}
       {uses.halftone && <><Slider label="Cell Size" value={p.cellSize} min={4} max={64} onChange={cellSize => set({ cellSize })} /><Slider label="Angle" value={p.angle} min={-90} max={90} onChange={angle => set({ angle })} /></>}
       {uses.ascii && <><Slider label="Text Size" value={p.textSize} min={6} max={64} onChange={textSize => set({ textSize })} /><div className="row"><span className="muted">Characters</span><input type="text" style={{ fontFamily: 'ui-monospace, monospace' }} value={p.characters} maxLength={64} onChange={e => set({ characters: e.target.value.replace(/\n/g, '') })} /><span /></div></>}
-      {uses.scanlines && <>
-        <Slider label="Line Spacing" value={p.lineSpacing} min={2} max={32} onChange={lineSpacing => set({ lineSpacing })} />
-        <Slider label="Glow" value={p.glow} min={0} max={100} onChange={glow => set({ glow })} />
-        <Slider label="Dots" value={p.dots} min={0} max={100} onChange={dots => set({ dots })} />
-        <Slider label="Wobble" value={p.wobble} min={0} max={64} onChange={wobble => set({ wobble })} />
-      </>}
       {uses.tones && <Slider label="Tones" value={p.levels} min={2} max={8} onChange={levels => set({ levels })} />}
       {uses.diffuses && <Slider label="Diffusion" value={p.diffusion} min={0} max={100} onChange={diffusion => set({ diffusion })} />}
       <Slider label="Density" value={p.density} min={-100} max={100} onChange={density => set({ density })} />
@@ -114,6 +109,25 @@ function DitherDialog() {
       {uses.marks && <label><input type="checkbox" checked={p.lightOnDark} onChange={e => set({ lightOnDark: e.target.checked })} /> Light on Dark</label>}
     </>
   }}</Simple>
+}
+
+function ScanlinesDialog() {
+  return <Simple name="Scanlines" initial={defaultScanlines} run={p => job('scanlines', p)}>{(p, set) => <>
+    <Slider label="Line Spacing" value={p.lineSpacing} min={2} max={32} onChange={lineSpacing => set({ lineSpacing })} />
+    <Slider label="Thickness" value={p.thickness} min={5} max={100} onChange={thickness => set({ thickness })} />
+    <Slider label="Glow" value={p.glow} min={0} max={100} onChange={glow => set({ glow })} />
+    <Slider label="Dots" value={p.dots} min={0} max={100} onChange={dots => set({ dots })} />
+    <Slider label="Displace" value={p.displace} min={-100} max={100} onChange={displace => set({ displace })} />
+    <Slider label="Smoothness" value={p.smoothness} min={0} max={100} onChange={smoothness => set({ smoothness })} />
+    <Slider label="Threshold" value={p.threshold} min={0} max={100} onChange={threshold => set({ threshold })} />
+    <Slider label="Wobble" value={p.wobble} min={0} max={64} onChange={wobble => set({ wobble })} />
+    <Slider label="Color Split" value={p.split} min={0} max={16} onChange={split => set({ split })} />
+    <Slider label="Density" value={p.density} min={-100} max={100} onChange={density => set({ density })} />
+    <Slider label="Contrast" value={p.contrast} min={-100} max={100} onChange={contrast => set({ contrast })} />
+    <Slider label="Black Level" value={p.blackLevel} min={0} max={100} onChange={blackLevel => set({ blackLevel })} />
+    <div className="row"><span className="muted">Colors</span><select value={p.colors} onChange={e => set({ colors: e.target.value as DitherSettings['colors'] })}><option>Black & White</option><option>Two Colors</option><option>Original</option></select><span /></div>
+    {p.colors === 'Two Colors' && <div className="row"><span className="muted">Dark · Light</span><span style={{ display: 'flex', gap: 6 }}><ColorSwatch title="Scanlines Screen Color" value={p.dark} onChange={dark => set({ dark })} /><ColorSwatch title="Scanlines Line Color" value={p.light} onChange={light => set({ light })} /></span><span /></div>}
+  </>}</Simple>
 }
 
 // Image > Curves…, Levels… and the other adjustments, run on the layer's pixels with the adjustment layers' editors.
@@ -252,7 +266,7 @@ export function LevelsTools({ source, toSource, adjustment, onChange }: { source
 
 export const filterPanels: Record<string, () => React.ReactNode> = {
   'Gaussian Blur': () => <GaussianBlurDialog />, 'Motion Blur': () => <MotionBlurDialog />, 'Add Noise': () => <AddNoiseDialog />, Vignette: () => <VignetteDialog />,
-  'Bloom / Glow': () => <BloomDialog />, Dither: () => <DitherDialog />, 'Tonal Contrast': () => <TonalContrastDialog />, 'Lens Correction': () => <LensDialog />,
+  'Bloom / Glow': () => <BloomDialog />, Dither: () => <DitherDialog />, Scanlines: () => <ScanlinesDialog />, 'Tonal Contrast': () => <TonalContrastDialog />, 'Lens Correction': () => <LensDialog />,
   'Content-Aware Fill': () => <ContentAwareDialog />, 'Remove Background': () => <RemoveBackgroundDialog />,
   ...Object.fromEntries((['Curves', 'Levels', 'Hue/Saturation', 'Black & White', 'Color Balance', 'Exposure', 'Gradient Map', 'Grain'] as AdjustmentKind[]).map(kind => [kind, () => <AdjustmentFilterDialog kind={kind} />])),
 }

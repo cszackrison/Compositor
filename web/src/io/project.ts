@@ -1,4 +1,4 @@
-import { decodePNG, encodePNG } from '../model/raster'
+import { decodeEXR, decodePNG, encodePNG, pngDepth } from '../model/raster'
 import { type Adjustment, type BlendMode, type ColorRange, type Doc, type Layer, type Transform, blendModes, formatVersion, maxSide, adjustmentKinds, uuid } from '../model/types'
 import type { PackageFiles } from './files'
 
@@ -57,16 +57,20 @@ export async function readProject(files: PackageFiles): Promise<{ doc: Doc; acti
     if (record.imageFile && !image) fail(`the image for "${record.name}" is missing`)
     const mask = record.maskFile ? files.get(`images/${record.maskFile}`) : undefined
     if (record.maskFile && !mask) fail(`the mask for "${record.name}" is missing`)
+    const exr = !!image && String(record.imageFile).endsWith('.exr'), deep = !!image && (exr || pngDepth(image) === 16)
+    if (exr && manifest.version < 13) fail(`the image for "${record.name}" is OpenEXR, which needs format version 13`)
+    const pixels = image ? exr ? await decodeEXR(image) : decodePNG(image, 4) : null
     const blendMode = (record.blendMode ?? 'Normal') as BlendMode
     if (!blendModes.includes(blendMode)) fail(`unknown blend mode "${record.blendMode}"`)
     const extra = Object.fromEntries(Object.entries(record).filter(([key]) => !known.has(key)))
     layers.push({
       id, name: String(record.name), visible: record.isVisible !== false, isGroup: record.isGroup === true, parentId: record.parentID ? String(record.parentID).toUpperCase() : null,
       transform: record.transform, opacity: record.opacity ?? 1, blendMode,
-      image: image ? decodePNG(image, 4) : null, mask: mask ? decodePNG(mask, 1) : null, maskEnabled: record.maskEnabled !== false, maskLinked: record.maskLinked !== false,
+      image: pixels, mask: mask ? decodePNG(mask, 1) : null, maskEnabled: record.maskEnabled !== false, maskLinked: record.maskLinked !== false,
       maskPlacement: record.maskPlacement && validTransform(record.maskPlacement) ? record.maskPlacement : null,
       clipTo: record.maskSourceID ? String(record.maskSourceID).toUpperCase() : null,
       adjustment: record.adjustment ? readAdjustment(record.adjustment) : null, effects: record.effects ?? null, text: record.text, shape: record.shape, extra,
+      ...(deep && pixels ? { wide: { file: exr ? 'exr' as const : 'png' as const, bytes: image!, version: pixels.version } } : {}),
     })
     await Promise.resolve()
   }
@@ -94,8 +98,9 @@ export function writeProject(doc: Doc, activeId: string | null): PackageFiles {
     const record: any = { ...layer.extra, id: layer.id, name: layer.name.trim() || 'Layer', isVisible: layer.visible, transform: layer.transform, isGroup: layer.isGroup, opacity: layer.opacity, blendMode: layer.isGroup ? 'Normal' : layer.blendMode }
     if (layer.parentId) record.parentID = layer.parentId
     if (layer.image && !layer.isGroup && !layer.adjustment) {
-      record.imageFile = `${layer.id}.png`
-      files.set(`images/${record.imageFile}`, encodePNG(layer.image))
+      const wide = layer.wide?.version === layer.image.version ? layer.wide : null
+      record.imageFile = `${layer.id}.${wide?.file ?? 'png'}`
+      files.set(`images/${record.imageFile}`, wide?.bytes ?? encodePNG(layer.image))
     }
     if (layer.mask) {
       record.maskFile = `${layer.id}.mask.png`

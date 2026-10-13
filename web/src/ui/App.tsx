@@ -226,7 +226,7 @@ export function App() {
     ] },
     { title: 'Filter', items: ['Gaussian Blur', 'Motion Blur', 'Add Noise'].map(filter).concat([
       { label: 'Vignette…', action: open('Vignette'), disabled: !doc || !active || active.isGroup || !!active.adjustment || state.editingMask },
-      ...['Bloom / Glow', 'Dither', 'Tonal Contrast', 'Lens Correction', 'Remove Background'].map(filter),
+      ...['Bloom / Glow', 'Dither', 'Scanlines', 'Tonal Contrast', 'Lens Correction', 'Remove Background'].map(filter),
     ]) },
     { title: 'Layer', items: [
       { label: 'New Adjustment Layer', disabled: !doc, submenu: adjustmentKinds.map(kind => ({ label: kind === 'Invert' ? kind : `${kind}…`, action: () => store.addAdjustment(kind) })) },
