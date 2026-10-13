@@ -13,7 +13,7 @@ const sources = readdirSync(kernels).filter(name => /\.[ch]$/.test(name))
 const newest = Math.max(...[...sources.map(name => join(kernels, name)), join(web, 'wasm/runtime.c'), join(web, 'wasm/include/dispatch/dispatch.h'), import.meta.filename].map(path => statSync(path).mtimeMs))
 if (existsSync(output) && statSync(output).mtimeMs > newest) process.exit(0)
 
-const exports = readdirSync(kernels).filter(name => name.endsWith('.h')).flatMap(name => [...readFileSync(join(kernels, name), 'utf8').matchAll(/^\s*(?:void|int|long|size_t)\s+\**(\w+)\s*\(/gm)].map(match => match[1]))
+const exports = readdirSync(kernels).filter(name => name.endsWith('.h')).flatMap(name => [...readFileSync(join(kernels, name), 'utf8').matchAll(/^\s*(?:void|int|long|size_t|float|double|uint32_t|uint8_t)\s+\**(\w+)\s*\(/gm)].map(match => match[1]))
 const files = { 'runtime.c': readFileSync(join(web, 'wasm/runtime.c')), include: { dispatch: { 'dispatch.h': readFileSync(join(web, 'wasm/include/dispatch/dispatch.h')) } } }
 for (const name of sources) files[name] = readFileSync(join(kernels, name))
 const cFiles = sources.filter(name => name.endsWith('.c'))

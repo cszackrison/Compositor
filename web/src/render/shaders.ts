@@ -142,6 +142,20 @@ void main() {
   color = c;
 }`
 
+// A 16-bit or HDR layer at its full depth for the canvas: its deep pixels, with paint taken from its 8-bit copy wherever that differs
+// from the copy as made (`deep_take_painted`), texel for texel.
+export const deepFlattenFragment = `#version 300 es
+precision highp float;
+uniform sampler2D deep;
+uniform sampler2D painted;
+uniform sampler2D base;
+out vec4 color;
+void main() {
+  ivec2 p = ivec2(gl_FragCoord.xy);
+  vec4 now = texelFetch(painted, p, 0);
+  color = any(notEqual(now, texelFetch(base, p, 0))) ? now : texelFetch(deep, p, 0);
+}`
+
 // A folder mask stretched over the folder's own rectangle; zero outside it. Multiplied into the clip by the blend state.
 export const clipFragment = `#version 300 es
 precision highp float;
@@ -304,11 +318,15 @@ uniform vec2 docSize;
 uniform float zoom;
 uniform int proof;
 uniform sampler3D proofCube;
+uniform int dither;
 out vec4 color;
 void main() {
   vec2 cell = floor(gl_FragCoord.xy / 8.0);
   vec3 checker = mod(cell.x + cell.y, 2.0) < 1.0 ? vec3(1.0) : vec3(0.8);
   vec4 c = texture(image, sourceUV);
+  // A frame with tones between 8-bit levels (a 16-bit or HDR layer's) is rounded to the screen with under half a level of noise, fixed
+  // in place, so gentle gradients don't band and tones already on a level stay exactly as they are.
+  if (dither == 1) { vec3 n = fract(sin(vec3(dot(gl_FragCoord.xy, vec2(12.9898, 78.233)), dot(gl_FragCoord.xy, vec2(39.3468, 11.135)), dot(gl_FragCoord.xy, vec2(73.156, 52.235)))) * 43758.5453); c.rgb += c.a * (n - 0.5) * (0.999 / 255.0); }
   if (proof == 1) { vec3 paper = clamp(c.rgb + (1.0 - c.a), 0.0, 1.0); color = vec4(texture(proofCube, (paper * 32.0 + 0.5) / 33.0).rgb, 1.0); return; }
   color = vec4(c.rgb + checker * (1.0 - c.a), 1.0);
 }`

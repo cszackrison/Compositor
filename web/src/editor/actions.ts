@@ -95,15 +95,15 @@ export const openZip = guard(async () => {
 // Opens an image as a new document when nothing is open, or places it as a layer.
 export const placeImages = guard(async (files: File[]) => {
   for (const file of files) {
-    const { image, wide, profile } = await decodeLayerFile(file, store.hasDocument ? store.state.doc : undefined)
+    const { image, deep, profile } = await decodeLayerFile(file, store.hasDocument ? store.state.doc : undefined)
     const name = file.name.replace(/\.[^.]+$/, '')
     if (!store.hasDocument) {
       // A CMYK file starting a project: its profile is kept and chosen, so proofing and CMYK export go back to the inks it was made for.
       if (profile) await (await import('../io/cmyk')).adoptProfile(profile)
-      const layer = newLayer({ name, transform: fullTransform(image.width, image.height), image, wide })
+      const layer = newLayer({ name, transform: fullTransform(image.width, image.height), image, deep })
       store.open({ id: uuid(), width: image.width, height: image.height, resolution: 72, layers: [layer], guides: [], extra: {} }, layer.id, null)
       store.set({ target: { kind: 'download', name } })
-    } else store.addImageLayer(image, name, wide)
+    } else store.addImageLayer(image, name, deep)
   }
 })
 

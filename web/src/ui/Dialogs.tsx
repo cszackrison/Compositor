@@ -9,7 +9,8 @@ import { EffectPanel, Scrub } from './Inspector'
 import { ColorSwatch } from './ColorPicker'
 import { useEditor } from './hooks'
 import type { Raster } from '../model/raster'
-import { type Transform, isHDRLayer, maxSide } from '../model/types'
+import { type Transform, maxSide } from '../model/types'
+import { isHDR } from '../model/deep'
 import { chosenProfile, pickProfile, subscribeProfiles } from '../io/cmyk'
 import { outline } from '../model/selection'
 
@@ -176,7 +177,7 @@ type ExportFormat = 'JPEG' | 'PNG' | 'TIFF' | 'PDF' | 'EXR'
 let lastExportFormat: ExportFormat = 'PNG'
 function ExportAs({ start }: { start?: ExportFormat }) {
   const pixels = useMemo(() => renderFull(store.state.doc), [])
-  const linear = useMemo(() => store.state.doc.layers.some(isHDRLayer) ? renderLinear(store.state.doc) : null, [])
+  const linear = useMemo(() => store.state.doc.layers.some(isHDR) ? renderLinear(store.state.doc) : null, [])
   const others: ExportFormat[] = linear ? ['TIFF', 'PDF', 'EXR'] : ['TIFF', 'PDF']
   const resolution = store.state.doc.resolution || 72
   const [format, setFormat] = useState<ExportFormat>(() => { const f = start ?? lastExportFormat; return f === 'EXR' && !linear ? 'PNG' : f })

@@ -1,7 +1,7 @@
 import { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { store } from '../editor/store'
 import { useEditor } from './hooks'
-import { Scrub, CurvesEditor } from './Inspector'
+import { Scrub, CurvesEditor, NumberField } from './Inspector'
 import { Icon } from './icons'
 import { canvasGesture, canvasPicker, requestRender, view as stage } from './canvasState'
 import { pixelToDocument } from '../render/compositor'
@@ -42,7 +42,7 @@ function RawSlider({ label, value, min, max, reset = 0, digits = 0, track, title
     <div className="row" title={title} style={disabled ? { opacity: 0.45, pointerEvents: 'none' } : undefined}>
       <span onDoubleClick={() => onChange(reset)}><Scrub label={label} value={value} min={min} max={max} step={step} sensitivity={(max - min) / 300} onChange={v => onChange(round(v))} /></span>
       <input type="range" className={track ? 'track' : ''} style={track ? { '--track': `linear-gradient(to right, ${track.join(', ')})` } as React.CSSProperties : undefined} min={min} max={max} step={step} value={value} onChange={e => onChange(round(+e.target.value))} onDoubleClick={() => onChange(reset)} />
-      <input type="number" min={min} max={max} step={step} value={+value.toFixed(digits)} onChange={e => Number.isFinite(+e.target.value) && onChange(round(+e.target.value))} />
+      <NumberField min={min} max={max} step={step} digits={digits} value={value} onChange={v => onChange(round(v))} />
     </div>
   )
 }

@@ -4,7 +4,7 @@ import { store } from '../editor/store'
 import { type Layer, adjustmentKinds, blendModeGroups, effectKinds, effectNames, type BlendMode, type EffectKind } from '../model/types'
 import { subscribeThumbnails, thumbnail, thumbnailsVersion } from './thumbnails'
 import { Icon } from './icons'
-import { defaultEffect } from './Inspector'
+import { NumberField, defaultEffect } from './Inspector'
 import { ContextMenu, type MenuItem } from './Menu'
 import { isMac } from '../editor/shortcuts'
 import { setDraggedLayers } from './Tabs'
@@ -48,7 +48,7 @@ function Appearance() {
       {layer.isGroup ? <select disabled value="Pass Through"><option>Pass Through</option></select> : <BlendSelect value={layer.blendMode} onChange={mode => store.setBlend(layer.id, mode)} />}
       <span className="muted">Opacity</span>
       <input type="range" min={0} max={100} value={opacity} onChange={e => store.updateLayer(layer.id, { opacity: +e.target.value / 100 }, 'Opacity', 'opacity')} />
-      <input type="number" min={0} max={100} value={opacity} style={{ width: 52 }} onChange={e => store.updateLayer(layer.id, { opacity: Math.min(100, Math.max(0, +e.target.value)) / 100 }, 'Opacity', 'opacity')} />
+      <NumberField min={0} max={100} value={opacity} style={{ width: 52 }} onChange={v => store.updateLayer(layer.id, { opacity: v / 100 }, 'Opacity', 'opacity')} />
     </section>
   )
 }

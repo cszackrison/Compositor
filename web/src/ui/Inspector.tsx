@@ -30,6 +30,14 @@ export function Scrub({ label, value, min, max, step = 0, sensitivity = 1, onCha
   )
 }
 
+// A number field that can be typed through values outside its range ("5" on the way to "56"): each keystroke in range applies at
+// once, and leaving the field or Return brings anything else within range.
+export function NumberField({ value, min, max, step, digits = 0, onChange, ...rest }: { value: number; min: number; max: number; step?: number; digits?: number; onChange: (value: number) => void } & Omit<React.InputHTMLAttributes<HTMLInputElement>, 'value' | 'onChange' | 'min' | 'max' | 'step'>) {
+  const [text, setText] = useState<string | null>(null)
+  const finish = () => { if (text !== null && text.trim() !== '' && Number.isFinite(+text)) onChange(+Math.min(max, Math.max(min, +text)).toFixed(digits)); setText(null) }
+  return <input type="number" min={min} max={max} step={step} {...rest} value={text ?? +value.toFixed(digits)} onChange={e => { setText(e.target.value); const v = +e.target.value; if (e.target.value.trim() !== '' && Number.isFinite(v) && v >= min && v <= max) onChange(+v.toFixed(digits)) }} onBlur={finish} onKeyDown={e => { if (e.key === 'Enter') finish(); rest.onKeyDown?.(e) }} />
+}
+
 export function Slider({ label, value, min, max, step, onChange, digits = 0, log = false, sensitivity, fieldMax, suffix }: { label: string; value: number; min: number; max: number; step?: number; digits?: number; log?: boolean; sensitivity?: number; fieldMax?: number; suffix?: string; onChange: (value: number) => void }) {
   step ??= Math.pow(10, -digits)
   // The slider covers the usual range; the number field (and scrubbing) may go further, up to `fieldMax`.
@@ -42,7 +50,7 @@ export function Slider({ label, value, min, max, step, onChange, digits = 0, log
       {log
         ? <input type="range" min={Math.log(min)} max={Math.log(max)} step={0.001} value={Math.log(Math.max(min, value))} onChange={e => onChange(round(Math.exp(+e.target.value)))} />
         : <input type="range" min={min} max={max} step={step} value={value} onChange={e => onChange(+e.target.value)} onDoubleClick={() => onChange(clamp(0))} />}
-      <input type="number" min={min} max={limit} step={step} value={+value.toFixed(digits)} title={suffix} onChange={e => Number.isFinite(+e.target.value) && onChange(clamp(+e.target.value))} />
+      <NumberField min={min} max={limit} step={step} digits={digits} value={value} title={suffix} onChange={onChange} />
     </div>
   )
 }

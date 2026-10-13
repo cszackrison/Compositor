@@ -1,3 +1,4 @@
+import type { Deep } from './deep'
 import type { Raster } from './raster'
 
 export const formatVersion = 13
@@ -75,13 +76,9 @@ export type Layer = {
   text: unknown
   shape: unknown
   extra: Record<string, unknown>
-  // A 16-bit PNG or HDR OpenEXR layer image as it was loaded. `image` is its dithered 8-bit copy; while that's still at `version`, a save
-  // writes these bytes back instead, so the layer keeps its depth. Once edited, it saves as an 8-bit PNG.
-  wide?: { file: 'png' | 'exr'; bytes: Uint8Array; version: number }
+  // A 16-bit or HDR layer's pixels at their full depth, `image` being their 8-bit copy (model/deep.ts).
+  deep?: Deep
 }
-
-// An HDR layer as imported, its OpenEXR still its pixels; an edit leaves the 8-bit copy, as the web can't edit in HDR.
-export const isHDRLayer = (layer: Layer) => layer.wide?.file === 'exr' && !!layer.image && layer.wide.version === layer.image.version
 
 export type Guide = { id: string; axis: 'horizontal' | 'vertical'; position: number }
 

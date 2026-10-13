@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { canvasPicker, renderFull } from './canvasState'
 import { store } from '../editor/store'
-import { Scrub } from './Inspector'
+import { NumberField, Scrub } from './Inspector'
 
 export type RGB255 = [number, number, number]
 type Request = { title: string; initial: RGB255; onChange?: (c: RGB255) => void; onCommit: (c: RGB255) => void; onCancel?: () => void; sampling?: boolean }
@@ -91,7 +91,7 @@ function Picker({ request: r }: { request: Request }) {
             <div style={{ width: 64, height: 64, borderRadius: 5, background: `rgb(${color.join(',')})`, border: '1px solid var(--line)' }} />
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}><button className="primary" style={{ width: 90 }} onClick={() => finish(true)}>OK</button><button style={{ width: 90 }} onClick={() => finish(false)}>Cancel</button></div>
           </div>
-          {(['R', 'G', 'B'] as const).map((label, i) => <label key={label}><Scrub label={label} value={color[i]} min={0} max={255} onChange={v => setChannel(i, v)} /><input type="number" min={0} max={255} style={{ width: 52 }} value={color[i]} onChange={e => setChannel(i, +e.target.value)} /></label>)}
+          {(['R', 'G', 'B'] as const).map((label, i) => <label key={label}><Scrub label={label} value={color[i]} min={0} max={255} onChange={v => setChannel(i, v)} /><NumberField min={0} max={255} style={{ width: 52 }} value={color[i]} onChange={v => setChannel(i, v)} /></label>)}
           <label><span className="muted">#</span><input type="text" style={{ width: 84, fontFamily: 'ui-monospace, monospace' }} value={hexText} onChange={e => setHexText(e.target.value)}
             onBlur={() => commitHex()} onKeyDown={e => { if (e.key === 'Enter') { commitHex(); e.preventDefault() } e.stopPropagation() }} /></label>
           {r.sampling !== false && <span className="muted">Click the canvas to sample</span>}

@@ -1,6 +1,6 @@
 import { describe, expect, it, beforeAll } from 'vitest'
 import { readFileSync } from 'node:fs'
-import { encode } from 'fast-png'
+import { decode, encode } from 'fast-png'
 import { loadKernels, withBuffers, call, floats } from '../src/kernels'
 import { Raster, decodeHDR, decodeLayerFile, decodePNG, encodePNG, pngDepth, readEXR, resizeLinear, decodeTIFF } from '../src/model/raster'
 import { encodeEXR, toHalf } from '../src/io/exr'
@@ -80,54 +80,60 @@ describe('project format', () => {
     return { files, name: `images/${record.imageFile}` }
   }
 
-  it('dithers a 16-bit layer to 8 bits and saves its 16-bit PNG back until it is edited', async () => {
+  it('keeps a 16-bit layer at 16 bits, its file saved back until it is painted, paint taken at 8 bits', async () => {
     const wide = new Uint16Array(64 * 4)
     for (let i = 0; i < 64; i++) wide.set([i * 1000 + 300, 40000, 65535 - i * 1000, 65535], i * 4)
     const bytes = encode({ width: 64, height: 1, data: wide, channels: 4, depth: 16 })
     const { files, name } = withLayerImage(bytes, 'png')
     const { doc } = await readProject(files)
     const layer = doc.layers[1]
-    expect(layer.wide?.file).toBe('png')
+    expect([layer.deep?.hdr, layer.deep?.file?.kind]).toEqual([false, 'png'])
     for (let i = 0; i < 64; i++) expect(Math.abs(layer.image!.data[i * 4] - (i * 1000 + 300) / 257)).toBeLessThan(1.5)
     expect(writeProject(doc, null).get(name)).toBe(bytes)
-    layer.image!.touch()
-    const edited = writeProject(doc, null).get(name)!
-    expect(pngDepth(edited)).toBe(8)
+    layer.image!.write(3, 0, 1, 1, new Uint8Array([10, 20, 30, 255]))
+    const painted = decode(writeProject(doc, null).get(name)!)
+    expect(painted.depth).toBe(16)
+    expect([...painted.data.subarray(12, 16)]).toEqual([2570, 5140, 7710, 65535])
+    expect([...painted.data.subarray(16, 20)]).toEqual([4300, 40000, 61535, 65535])
+    const replaced = { ...layer, image: layer.image!.clone() }
+    expect(pngDepth(writeProject({ ...doc, layers: [doc.layers[0], replaced, ...doc.layers.slice(2)] }, null).get(name)!)).toBe(8)
   })
 
-  it('reads an HDR layer from a PIZ OpenEXR top row first, and saves it back as EXR', async () => {
+  it('reads an OpenEXR within white as a 16-bit layer, top row first', async () => {
     const bytes = new Uint8Array(readFileSync(new URL('./fixtures/quad-piz.exr', import.meta.url)))
     await expect(readProject(withLayerImage(bytes, 'exr', 12).files)).rejects.toThrow(/version 13/)
-    const { files, name } = withLayerImage(bytes, 'exr')
-    const { doc } = await readProject(files)
+    const { doc } = await readProject(withLayerImage(bytes, 'exr').files)
     const expected = [255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255]
     ;[...doc.layers[1].image!.data].forEach((v, i) => expect(Math.abs(v - expected[i])).toBeLessThanOrEqual(1))
-    expect(doc.layers[1].wide?.file).toBe('exr')
-    expect(writeProject(doc, null).get(name)).toBe(bytes)
+    expect(doc.layers[1].deep?.hdr).toBe(false)
+    expect(pngDepth(writeProject(doc, null).get(`images/${doc.layers[1].id}.png`)!)).toBe(16)
   })
 
-  it('shows an HDR layer\'s linear light in sRGB, clipped to white', async () => {
+  it('shows an HDR layer\'s linear light in sRGB, clipped to white, and saves its OpenEXR back', async () => {
     // Linear light, as ImageIO writes EXR: 0.2158 (sRGB mid-gray) and four times white, ZIP-compressed half floats.
     const bytes = new Uint8Array(readFileSync(new URL('./fixtures/linear-zip.exr', import.meta.url)))
-    const { doc } = await readProject(withLayerImage(bytes, 'exr').files)
+    const { files, name } = withLayerImage(bytes, 'exr')
+    const { doc } = await readProject(files)
     const expected = [128, 128, 128, 255, 255, 255, 255, 255]
     ;[...doc.layers[1].image!.data].forEach((v, i) => expect(Math.abs(v - expected[i])).toBeLessThanOrEqual(1))
+    expect(doc.layers[1].deep?.hdr).toBe(true)
+    expect(writeProject(doc, null).get(name)).toBe(bytes)
+    doc.layers[1].image!.write(0, 0, 1, 1, new Uint8Array([255, 0, 0, 255]))
+    const read = await readEXR(writeProject(doc, null).get(name)!)
+    expect([...read.data].map(v => Math.round(v * 100) / 100)).toEqual([1, 0, 0, 1, 4, 4, 4, 1])
   })
 
-  it('imports Radiance HDR top row first, and keeps an imported HDR image or 16-bit PNG as the layer\'s file', async () => {
+  it('imports Radiance HDR top row first, and 16-bit PNGs and HDR images at their full depth', async () => {
     const hdr = await decodeHDR(new Uint8Array(readFileSync(new URL('./fixtures/quad.hdr', import.meta.url))))
     const expected = [255, 0, 0, 255, 255, 0, 0, 255, 0, 255, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 0, 0, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255]
     expect([hdr.width, hdr.height]).toEqual([4, 2])
     ;[...hdr.data].forEach((v, i) => expect(Math.abs(v - expected[i])).toBeLessThanOrEqual(1))
     const radiance = await decodeLayerFile(new File([readFileSync(new URL('./fixtures/quad.hdr', import.meta.url))], 'Sky.hdr'))
-    expect(radiance.wide?.file).toBe('exr')
-    const kept = await readEXR(radiance.wide!.bytes)
-    expect([kept.width, kept.height, ...[...kept.data.subarray(0, 4)].map(v => Math.round(v * 100) / 100)]).toEqual([4, 2, 1, 0, 0, 1])
-    const exr = new File([readFileSync(new URL('./fixtures/quad-piz.exr', import.meta.url))], 'Render.exr')
-    const placed = await decodeLayerFile(exr)
-    expect([placed.wide?.file, placed.wide?.version]).toEqual(['exr', placed.image.version])
+    expect([radiance.deep?.width, radiance.deep?.hdr]).toEqual([4, true])
+    const placed = await decodeLayerFile(new File([readFileSync(new URL('./fixtures/linear-zip.exr', import.meta.url))], 'Render.exr'))
+    expect([placed.deep?.hdr, placed.deep?.raster]).toEqual([true, placed.image])
     const png = await decodeLayerFile(new File([encodePNG(Raster.filled(2, 2, 4, [1, 2, 3, 255])) as Uint8Array<ArrayBuffer>], 'Flat.png', { type: 'image/png' }))
-    expect(png.wide).toBeUndefined()
+    expect(png.deep).toBeUndefined()
   })
 
   it('writes OpenEXR that reads back, highlights and transparency kept', async () => {

@@ -1,3 +1,4 @@
+import { deepOf, rebound } from '../model/deep'
 import { History, type PixelPatch } from '../model/history'
 import { Raster } from '../model/raster'
 import { type Adjustment, type AdjustmentKind, type BlendMode, type Doc, type EffectKind, effectNames, type Layer, type LayerEffects, type Transform, fullTransform, newAdjustment, newLayer, uuid } from '../model/types'
@@ -233,11 +234,11 @@ export class Store {
     this.addLayer(newLayer({ name: `Layer ${count + 1}`, transform: fullTransform(this.doc.width, this.doc.height), image: new Raster(this.doc.width, this.doc.height, 4) }), 'New Layer')
   }
 
-  addImageLayer(image: Raster, name: string, wide?: Layer['wide']) {
+  addImageLayer(image: Raster, name: string, deep?: Layer['deep']) {
     const { width, height } = this.doc
     const fit = Math.min(1, width / image.width, height / image.height)
     const w = image.width * fit, h = image.height * fit
-    this.addLayer(newLayer({ name, transform: fullTransform(w, h, Math.round((width - w) / 2), Math.round((height - h) / 2)), image, wide }), 'Place Image')
+    this.addLayer(newLayer({ name, transform: fullTransform(w, h, Math.round((width - w) / 2), Math.round((height - h) / 2)), image, deep }), 'Place Image')
   }
 
   addAdjustment(kind: AdjustmentKind) {
@@ -288,7 +289,8 @@ export class Store {
   }
 
   private cloneLayer(layer: Layer, ids: Map<string, string>): Layer {
-    return { ...layer, id: ids.get(layer.id)!, parentId: layer.parentId && ids.has(layer.parentId) ? ids.get(layer.parentId)! : layer.parentId, clipTo: layer.clipTo && ids.has(layer.clipTo) ? ids.get(layer.clipTo)! : layer.clipTo, image: layer.image?.clone() ?? null, mask: layer.mask?.clone() ?? null, adjustment: layer.adjustment ? structuredClone(layer.adjustment) : null, effects: layer.effects ? structuredClone(layer.effects) : null }
+    const image = layer.image?.clone() ?? null, deep = deepOf(layer)
+    return { ...layer, id: ids.get(layer.id)!, parentId: layer.parentId && ids.has(layer.parentId) ? ids.get(layer.parentId)! : layer.parentId, clipTo: layer.clipTo && ids.has(layer.clipTo) ? ids.get(layer.clipTo)! : layer.clipTo, image, deep: deep && image ? rebound(deep, image) : undefined, mask: layer.mask?.clone() ?? null, adjustment: layer.adjustment ? structuredClone(layer.adjustment) : null, effects: layer.effects ? structuredClone(layer.effects) : null }
   }
 
   // ⌘J and Option-drag (SelectionClipboard.duplicateLayers): every selected layer, folders with their contents, copied under fresh

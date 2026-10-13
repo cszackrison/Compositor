@@ -1,9 +1,10 @@
 import { type Mat3, type Program, Target, TargetPool, chain, compile, invert, multiply, rotate, scale, setSampling, translate, use, apply, identity } from './gl'
-import { adjustFragment, adjustMixFragment, blurFragment, clipFragment, copyFragment, displayFragment, layerFragment, passVertex } from './shaders'
+import { adjustFragment, adjustMixFragment, blurFragment, clipFragment, copyFragment, deepFlattenFragment, displayFragment, layerFragment, passVertex } from './shaders'
 import { renderEffects, hasVisibleEffects } from './effects'
 import { channelTables, hueSaturationCube, kernelCube, cubeSize } from '../model/adjustments'
-import { type Adjustment, type Doc, type Layer, type Transform, blendModes, isHDRLayer } from '../model/types'
-import { Raster, readEXRNow } from '../model/raster'
+import { type Adjustment, type Doc, type Layer, type Transform, blendModes } from '../model/types'
+import { type Deep, deepOf, isDeep, sixteenToHalf } from '../model/deep'
+import { Raster } from '../model/raster'
 import { layerToMask, maskOnGrid } from '../model/masks'
 
 // Layer unit square (0…1 on both axes, row 0 at the top) to document pixels: about the center, clockwise rotation, flips inside the box.
@@ -77,6 +78,7 @@ export class Compositor {
   private textures = new WeakMap<Raster, TextureRecord>()
   // Rasters dropped by the document (undo history aged out, previews replaced) give their GPU textures back once collected.
   private released = new FinalizationRegistry<WebGLTexture>(texture => this.gl.deleteTexture(texture))
+  private releasedTargets = new FinalizationRegistry<Target>(target => target.dispose())
   private luts = new WeakMap<Adjustment, { kind: 'table' | 'cube'; texture: WebGLTexture } | null>()
   // `made` orders results by when they were started, so a worker result never replaces one made after it.
   // `made` orders results by when they were started, so a worker result never replaces one made after it; `from` is the image's
@@ -105,11 +107,13 @@ export class Compositor {
   private nextId = 1
   private width = 0
   private height = 0
-  // Half-float targets, for a document with an HDR layer: its light brighter than white carries through the layers and adjustments
-  // above it (Exposure turned down brings highlights into view) and out to an EXR export; the screen shows it clipped to white.
+  // Half-float targets, for a document with a 16-bit or HDR layer: its tones between 8-bit levels, and an HDR layer's light brighter
+  // than white, carry through the layers and adjustments above it (Exposure turned down brings highlights into view) and out to an
+  // EXR export; the screen shows it clipped to white, dithered.
   hdr = false
   private floatTargets: boolean
-  private hdrTextures = new WeakMap<object, WebGLTexture>()
+  private deepTextures = new WeakMap<Deep, { deep: WebGLTexture; base: WebGLTexture; flat: Target; version: number }>()
+  private flattenProgram: Program
 
   constructor(readonly canvas: HTMLCanvasElement | OffscreenCanvas) {
     // `desynchronized` lets Chrome show frames without waiting on the page's compositor, cutting the delay between a finger and the
@@ -134,6 +138,7 @@ export class Compositor {
     this.adjustProgram = compile(gl, adjustFragment, passVertex)
     this.blurProgram = compile(gl, blurFragment, passVertex)
     this.mixProgram = compile(gl, adjustMixFragment, passVertex)
+    this.flattenProgram = compile(gl, deepFlattenFragment, passVertex)
     this.pool = new TargetPool(gl, 'rgba8')
     this.white = gl.createTexture()!
     gl.bindTexture(gl.TEXTURE_2D, this.white)
@@ -175,31 +180,36 @@ export class Compositor {
     return record.texture
   }
 
-  // An HDR layer's pixels as a half-float texture with mipmaps, in extended sRGB like the rest of the canvas: made once from its
-  // OpenEXR. Null until three's EXR reader has loaded (it has by the time an EXR is opened or imported).
-  private hdrTexture(layer: Layer): WebGLTexture | null {
-    const wide = layer.wide!, found = this.hdrTextures.get(wide)
-    if (found) return found
-    const exr = readEXRNow(wide.bytes)
-    if (!exr || exr.width !== layer.image!.width || exr.height !== layer.image!.height) return null
-    const encode = (v: number) => v <= 0.0031308 ? v * 12.92 : 1.055 * Math.pow(v, 1 / 2.4) - 0.055
-    const data = exr.data
-    for (let i = 0; i < data.length; i += 4) {
-      const a = Math.min(1, Math.max(0, data[i + 3]))
-      data[i + 3] = a
-      for (let c = 0; c < 3; c++) { const v = a > 0 ? data[i + c] / a : 0; data[i + c] = (v < 0 ? -encode(-v) : encode(v)) * a }
+  // A 16-bit or HDR layer's pixels as a half-float texture with mipmaps: its deep pixels, uploaded once, with its paint laid over them
+  // on the GPU whenever its 8-bit copy changes, so strokes show as they're made.
+  private deepTexture(layer: Layer, deep: Deep): WebGLTexture {
+    const gl = this.gl, image = layer.image!
+    let record = this.deepTextures.get(deep)
+    if (!record) {
+      const upload = (format: number, type: number, data: ArrayBufferView) => {
+        const texture = gl.createTexture()!
+        gl.bindTexture(gl.TEXTURE_2D, texture)
+        gl.texStorage2D(gl.TEXTURE_2D, 1, format, deep.width, deep.height)
+        setSampling(gl, gl.NEAREST)
+        gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1)
+        gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, deep.width, deep.height, gl.RGBA, type, data)
+        return texture
+      }
+      const halves = deep.hdr ? deep.pixels : new Uint16Array(deep.pixels.length)
+      if (!deep.hdr) for (let i = 0; i < halves.length; i++) halves[i] = sixteenToHalf[deep.pixels[i]]
+      record = { deep: upload(gl.RGBA16F, gl.HALF_FLOAT, halves), base: upload(gl.RGBA8, gl.UNSIGNED_BYTE, deep.base), flat: new Target(gl, deep.width, deep.height, 'rgba16f', true), version: -1 }
+      this.deepTextures.set(deep, record)
+      const made = record
+      this.released.register(deep, made.deep); this.released.register(deep, made.base); this.releasedTargets.register(deep, made.flat)
     }
-    const gl = this.gl, texture = gl.createTexture()!
-    gl.bindTexture(gl.TEXTURE_2D, texture)
-    const levels = Math.floor(Math.log2(Math.max(exr.width, exr.height))) + 1
-    gl.texStorage2D(gl.TEXTURE_2D, levels, gl.RGBA16F, exr.width, exr.height)
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAX_LEVEL, levels - 1)
-    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1)
-    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, exr.width, exr.height, gl.RGBA, gl.FLOAT, data)
-    gl.generateMipmap(gl.TEXTURE_2D)
-    this.hdrTextures.set(wide, texture)
-    this.released.register(wide, texture)
-    return texture
+    if (record.version !== image.version) {
+      gl.disable(gl.SCISSOR_TEST)
+      this.pass(record.flat, this.flattenProgram, { deep: { texture: record.deep, unit: 0 }, painted: { texture: this.texture(image), unit: 1 }, base: { texture: record.base, unit: 2 } })
+      gl.bindTexture(gl.TEXTURE_2D, record.flat.texture)
+      gl.generateMipmap(gl.TEXTURE_2D)
+      record.version = image.version
+    }
+    return record.flat.texture
   }
 
   // A raster whose texture the GPU has just drawn into (Smudge and Liquify, see gpuWarp.ts), with its bytes brought back to match:
@@ -501,8 +511,8 @@ export class Compositor {
       return
     }
     const t = layer.transform
-    const hdr = this.hdr && isHDRLayer(layer) ? this.hdrTexture(layer) : null
-    if (hdr) { this.draw(target, { texture: hdr, mipmapped: true, width: layer.image.width, height: layer.image.height, unitToDoc: unitToDocument(t), sampling: t.sampling, rotation: t.rotation }, { opacity, blendMode, mask: this.layerMask(layer), clip: options.clip, coverage: options.coverage }); return }
+    const deep = this.hdr ? deepOf(layer) : null
+    if (deep) { this.draw(target, { texture: this.deepTexture(layer, deep), mipmapped: true, width: layer.image.width, height: layer.image.height, unitToDoc: unitToDocument(t), sampling: t.sampling, rotation: t.rotation }, { opacity, blendMode, mask: this.layerMask(layer), clip: options.clip, coverage: options.coverage }); return }
     this.draw(target, { texture: this.texture(layer.image), raster: layer.image, width: layer.image.width, height: layer.image.height, unitToDoc: unitToDocument(t), sampling: t.sampling, rotation: t.rotation }, { opacity, blendMode, mask: this.layerMask(layer), clip: options.clip, coverage: options.coverage })
   }
 
@@ -649,7 +659,7 @@ export class Compositor {
     const gl = this.gl
     this.renderScale = renderScale
     const width = Math.max(1, Math.round(doc.width * renderScale)), height = Math.max(1, Math.round(doc.height * renderScale))
-    const hdr = this.floatTargets && doc.layers.some(isHDRLayer)
+    const hdr = this.floatTargets && doc.layers.some(isDeep)
     if (hdr !== this.hdr) {
       this.hdr = hdr
       this.pool.trim(-1, -1)
@@ -794,7 +804,7 @@ export class Compositor {
     gl.bindTexture(gl.TEXTURE_2D, this.output.texture)
     setSampling(gl, zoom >= 1 ? gl.NEAREST : gl.LINEAR_MIPMAP_LINEAR)
     const toClip = chain(translate(-1, 1), scale(2 / screenWidth, -2 / screenHeight), documentToScreen, scale(docWidth, docHeight))
-    use(gl, this.displayProgram, { toClip, toSource: identity(), image: { texture: this.output.texture, unit: 0 }, docSize: [docWidth, docHeight], zoom, proof: this.proofCube ? 1 : 0, proofCube: { texture: this.proofCube ?? undefined, unit: 1, target: gl.TEXTURE_3D } })
+    use(gl, this.displayProgram, { toClip, toSource: identity(), image: { texture: this.output.texture, unit: 0 }, docSize: [docWidth, docHeight], zoom, proof: this.proofCube ? 1 : 0, dither: this.hdr ? 1 : 0, proofCube: { texture: this.proofCube ?? undefined, unit: 1, target: gl.TEXTURE_3D } })
     this.bindQuad()
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4)
   }

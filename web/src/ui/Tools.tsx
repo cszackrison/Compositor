@@ -3,7 +3,7 @@ import { useEditor } from './hooks'
 import { openColorPicker } from './ColorPicker'
 import { store, type HealMode, type ShapeKind, type SmearMode, type Tool } from '../editor/store'
 import { Icon } from './icons'
-import { Scrub } from './Inspector'
+import { NumberField, Scrub } from './Inspector'
 import { isMac, shortcutText } from '../editor/shortcuts'
 import { applyGradient, cancelGradient, refreshGradient } from '../tools/gradient'
 import { applyCrop, cancelCrop, cropRatios, setCropRatio } from '../tools/crop'
@@ -69,7 +69,7 @@ export function ToolRail() {
 
 function Range({ label, value, min, max, step = 1, suffix = '', sensitivity = 1, onChange }: { label: string; value: number; min: number; max: number; step?: number; suffix?: string; sensitivity?: number; onChange: (v: number) => void }) {
   const clamp = (v: number) => Math.min(max, Math.max(min, v))
-  return <label><Scrub label={label} value={value} min={min} max={max} step={step} sensitivity={sensitivity} onChange={v => onChange(clamp(v))} /><input type="range" min={min} max={max} step={step} value={value} onChange={e => onChange(+e.target.value)} /><input type="number" min={min} max={max} step={step} value={value} onChange={e => onChange(clamp(+e.target.value))} />{suffix}</label>
+  return <label><Scrub label={label} value={value} min={min} max={max} step={step} sensitivity={sensitivity} onChange={v => onChange(clamp(v))} /><input type="range" min={min} max={max} step={step} value={value} onChange={e => onChange(+e.target.value)} /><NumberField min={min} max={max} step={step} digits={step < 1 ? String(step).split('.')[1]?.length ?? 0 : 0} value={value} onChange={onChange} />{suffix}</label>
 }
 
 function Choice<T extends string>({ value, options, onChange }: { value: T; options: readonly T[]; onChange: (v: T) => void }) {

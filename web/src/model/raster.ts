@@ -1,7 +1,7 @@
 import type { CMYKProfile } from '../io/cmyk'
+import { type Deep, from16BitPNG, linearToHDR, makeDeep } from './deep'
 import { decode, encode } from 'fast-png'
 import { call, withBuffers } from '../kernels'
-import { encodeEXR } from '../io/exr'
 import { maxSide } from './types'
 
 let nextVersion = 1
@@ -183,12 +183,6 @@ export function resizeLinear(image: LinearImage, width: number, height: number):
   return { width, height, data: pass(across, image.height, height, width, false) }
 }
 
-// An HDR layer's OpenEXR (half floats, premultiplied, linear light as EXR keeps it).
-export async function decodeEXR(bytes: Uint8Array): Promise<Raster> {
-  const exr = await readEXR(bytes)
-  return fromLinear(exr.data, exr.width, exr.height)
-}
-
 // A Radiance HDR image (linear light, opaque).
 export async function readHDR(bytes: Uint8Array): Promise<LinearImage> {
   const { RGBELoader } = await import('three/examples/jsm/loaders/RGBELoader.js')
@@ -201,21 +195,26 @@ export async function decodeHDR(bytes: Uint8Array): Promise<Raster> {
   return fromLinear(hdr.data, hdr.width, hdr.height)
 }
 
-// An image file placed as a layer: its pixels, and for a 16-bit PNG or an HDR image the file the project keeps as the layer's image
-// until it's edited, as the Mac keeps 16-bit and HDR layers. Radiance HDR is kept as an OpenEXR, the format projects hold HDR in.
-export async function decodeLayerFile(file: File, fitting?: { width: number; height: number }): Promise<{ image: Raster; wide?: { file: 'png' | 'exr'; bytes: Uint8Array; version: number }; profile?: CMYKProfile }> {
+// A project's layer image at its full depth: a 16-bit PNG or an OpenEXR becomes a 16-bit or HDR layer (model/deep.ts), any other PNG an
+// 8-bit one.
+export async function decodeLayerImage(bytes: Uint8Array, exr: boolean): Promise<{ image: Raster; deep?: Deep }> {
+  if (exr) { const read = await readEXR(bytes); return makeDeep(linearToHDR(read.data), read.width, read.height, true, { kind: 'exr', bytes }) }
+  if (pngDepth(bytes) === 16) {
+    const png = decode(bytes)
+    if (!png.palette) return makeDeep(from16BitPNG(png.data, png.channels, png.width, png.height), png.width, png.height, false, { kind: 'png', bytes })
+  }
+  return { image: decodePNG(bytes, 4) }
+}
+
+// An image file placed as a layer: 16-bit PNGs, OpenEXR and Radiance HDR at their full depth, CMYK through its profile (`profile`, to
+// adopt when it starts a project), SVG drawn to fit `fitting`.
+export async function decodeLayerFile(file: File, fitting?: { width: number; height: number }): Promise<{ image: Raster; deep?: Deep; profile?: CMYKProfile }> {
   const name = file.name.toLowerCase()
   if (file.type === 'image/svg+xml' || name.endsWith('.svg')) return { image: await decodeSVG(file, fitting) }
   if (/\.(jpe?g|tiff?)$/.test(name) || /^image\/(jpeg|tiff)$/.test(file.type)) { const cmyk = await (await import('../io/cmyk')).openCMYK(file); if (cmyk) return cmyk }
-  if (!name.endsWith('.exr') && !name.endsWith('.hdr') && !(file.type === 'image/png' || name.endsWith('.png'))) return { image: await decodeImageFile(file) }
-  const bytes = new Uint8Array(await file.arrayBuffer())
-  if (name.endsWith('.hdr')) {
-    const hdr = await readHDR(bytes), image = fromLinear(hdr.data, hdr.width, hdr.height)
-    await loadEXRReader()
-    return { image, wide: { file: 'exr', bytes: encodeEXR(hdr.data, hdr.width, hdr.height), version: image.version } }
-  }
-  const exr = name.endsWith('.exr'), image = exr ? await decodeEXR(bytes) : decodePNG(bytes, 4)
-  return exr || pngDepth(bytes) === 16 ? { image, wide: { file: exr ? 'exr' : 'png', bytes, version: image.version } } : { image }
+  if (name.endsWith('.hdr')) { const hdr = await readHDR(new Uint8Array(await file.arrayBuffer())); await loadEXRReader(); return makeDeep(linearToHDR(hdr.data), hdr.width, hdr.height, true) }
+  if (name.endsWith('.exr') || file.type === 'image/png' || name.endsWith('.png')) return decodeLayerImage(new Uint8Array(await file.arrayBuffer()), name.endsWith('.exr'))
+  return { image: await decodeImageFile(file) }
 }
 
 export function encodePNG(raster: Raster) {
