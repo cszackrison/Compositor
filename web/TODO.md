@@ -69,7 +69,8 @@ existing features were.
   - [ ] `CIBloom` (Bloom / Glow)
 - [x] Filter previews run on a copy at most 2048 px on its longest side, as the Mac's do, except Add Noise, Grain, Dither, Scanlines
   and Content-Aware Fill, which preview at full size; OK runs at full size.
-- [ ] Spot Healing and the Blur smear mode still paint on the CPU (Brush, Eraser, Clone Stamp, Smudge and Liquify run on the GPU).
+- [x] Spot Healing and the Blur smear run on the GPU like the other brushes: Spot Healing's wash is GPU paint, its coverage read
+  back for the heal; Blur's blurred copy is made a tile at a time on the CPU as the stroke reaches it and handed to the GPU.
 - [ ] The low-latency canvas and pointer prediction were only checked in desktop Chrome; try them on a phone.
 
 ## Smaller differences

@@ -10,7 +10,8 @@ import type { Raster } from '../model/raster'
 // opacity, through the selection. The pixels come back to the raster when the stroke ends, or when something needs them before
 // then (the effects worker, see Compositor.readBack).
 
-export type GPUSource = { kind: 'layer'; shift: [number, number] } | { kind: 'composite'; image: Raster; offset: [number, number] }
+// `blurred`: the Blur tool's blurred copy on the layer's grid, handed over a tile at a time as the stroke reaches it.
+export type GPUSource = { kind: 'layer'; shift: [number, number] } | { kind: 'composite'; image: Raster; offset: [number, number] } | { kind: 'blurred'; prepare: (x0: number, y0: number, x1: number, y1: number, use: (x: number, y: number, w: number, h: number, bytes: Uint8Array) => void) => void }
 
 const dabFragment = `#version 300 es
 precision highp float;
@@ -84,7 +85,7 @@ void main() {
   }
   if (a <= 0.0) { result = o / 255.0; return; }
   if (mode >= 2) {
-    vec4 sampled = mode == 2 ? bilinear(original, size, centre + shift) : bilinear(source, sourceSize, doc + shift);
+    vec4 sampled = mode == 2 ? bilinear(original, size, centre + shift) : mode == 4 ? bilinear(source, size, centre) : bilinear(source, sourceSize, doc + shift);
     if (channels == 1) { result = rounded(vec4(sampled.r * a + o.r * (1.0 - a))); return; }
     result = rounded(sampled * a + o * (1.0 - sampled.a / 255.0 * a));
     return;
@@ -152,6 +153,7 @@ export class GPUBrush {
     }
     if (options.selection) this.selectionTexture = upload(options.selection)
     if (options.source?.kind === 'composite') this.sourceTexture = upload(options.source.image)
+    if (options.source?.kind === 'blurred') this.sourceTexture = this.texture(width, height, format)
     this.done()
     compositor.readBack.set(raster, () => { if (this.written) this.read(this.written) })
   }
@@ -254,13 +256,18 @@ export class GPUBrush {
   composite(rect: Rect) {
     const gl = this.gl, { raster, options } = this, source = options.source
     const [r, g, b] = options.color
+    if (source?.kind === 'blurred') {
+      gl.bindTexture(gl.TEXTURE_2D, this.sourceTexture)
+      gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1)
+      source.prepare(rect.x0, rect.y0, rect.x1, rect.y1, (x, y, w, h, bytes) => gl.texSubImage2D(gl.TEXTURE_2D, 0, x, y, w, h, raster.channels === 4 ? gl.RGBA : gl.RED, gl.UNSIGNED_BYTE, bytes))
+    }
     gl.bindFramebuffer(gl.FRAMEBUFFER, this.layerFramebuffer)
     gl.viewport(rect.x0, rect.y0, rect.x1 - rect.x0, rect.y1 - rect.y0)
     const units: [string, WebGLTexture][] = [['original', this.original], ['coverage', this.coverage], ['selection', this.selectionTexture ?? this.original], ['source', this.sourceTexture ?? this.original]]
     units.forEach(([, texture], i) => { gl.activeTexture(gl.TEXTURE0 + i); gl.bindTexture(gl.TEXTURE_2D, texture) })
     const shift = source?.kind === 'layer' ? source.shift : source?.kind === 'composite' ? source.offset : [0, 0]
     this.uniforms(this.programs.composite, {
-      original: 0, coverage: 1, selection: 2, source: 3, channels: raster.channels, mode: source ? (source.kind === 'layer' ? 2 : 3) : options.erasing ? 1 : 0,
+      original: 0, coverage: 1, selection: 2, source: 3, channels: raster.channels, mode: source ? (source.kind === 'layer' ? 2 : source.kind === 'composite' ? 3 : 4) : options.erasing ? 1 : 0,
       hasSelection: this.selectionTexture ? 1 : 0, opacity: options.opacity, color: [r, g, b], gray: Math.round(0.299 * r + 0.587 * g + 0.114 * b),
       toDoc: options.toDocument, size: [raster.width, raster.height], selectionSize: options.selection ? [options.selection.width, options.selection.height] : [0, 0],
       sourceSize: source?.kind === 'composite' ? [source.image.width, source.image.height] : [0, 0], shift,
@@ -292,6 +299,20 @@ export class GPUBrush {
     }
     // The texture already counts as current (composite marked it); the bytes now match it.
     this.done()
+  }
+
+  // The stroke's coverage in `rect`, copied into `into` (one float a pixel, the layer's width a row), for what reads it on the CPU (Spot
+  // Healing's heal, a 16-bit layer's Blur).
+  readCoverage(rect: Rect, into: Float32Array) {
+    const gl = this.gl, { width, height } = this.raster
+    const x0 = Math.max(0, rect.x0), y0 = Math.max(0, rect.y0), x1 = Math.min(width, rect.x1), y1 = Math.min(height, rect.y1), w = x1 - x0, h = y1 - y0
+    if (w <= 0 || h <= 0) return
+    const rgba = new Float32Array(w * h * 4)
+    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, this.coverageFramebuffer)
+    gl.readBuffer(gl.COLOR_ATTACHMENT0)
+    gl.readPixels(x0, y0, w, h, gl.RGBA, gl.FLOAT, rgba)
+    this.done()
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) into[(y + y0) * width + x + x0] = rgba[(y * w + x) * 4]
   }
 
   dispose() {

@@ -114,6 +114,9 @@ function cloneOffset(point: [number, number]): [number, number] | null {
   return (clone.aligned ? clone.offset : null) ?? [Math.round(clone.source[0] - point[0]), Math.round(clone.source[1] - point[1])]
 }
 
+// Spot Healing's wash while the area is painted (BrushStroke's 0.12 gray at 45%).
+const washGray = Math.round(0.12 * 255)
+
 // The Blur tool's radius in the layer's own pixels.
 function blurSigma(raster: Raster, toDoc: Mat3) {
   const perPixel = Math.sqrt(Math.abs(toDoc[0] * toDoc[4] - toDoc[1] * toDoc[3]))
@@ -125,7 +128,7 @@ function strokeMode(tool: string, raster: Raster, toDoc: Mat3, isMask: boolean, 
   if (tool === 'smear') {
     // The Smear tool's Blur: a Gaussian of the layer as the stroke found it, painted back through the tip.
     const blurred = lazyBlur(new Raster(raster.width, raster.height, raster.channels, original), blurSigma(raster, toDoc), isMask)
-    return { kind: 'source', sample: raster.channels === 1 ? (x, y, out) => { blurred(x, y, out); out[3] = 255 } : blurred }
+    return { kind: 'source', sample: raster.channels === 1 ? (x, y, out) => { blurred(x, y, out); out[3] = 255 } : blurred, gpu: { kind: 'blurred', prepare: blurred.tiles } }
   }
   if (tool === 'clone') {
     const offset = cloneOffset(point)!
@@ -150,6 +153,7 @@ function finishHeal(s: Stroke) {
   const x0 = Math.max(0, Math.floor(painted.x - reach)), y0 = Math.max(0, Math.floor(painted.y - reach))
   const x1 = Math.min(raster.width, Math.ceil(painted.x + painted.w + reach)), y1 = Math.min(raster.height, Math.ceil(painted.y + painted.h + reach))
   const w = x1 - x0, h = y1 - y0
+  stroke.leaveGPU()
   const original = stroke.originalPixels, coverage = stroke.coverageBytes()
   const pixels = new Uint8Array(w * h * 4), gray = new Uint8Array(w * h)
   for (let y = 0; y < h; y++) {
@@ -186,8 +190,10 @@ export const paint: ToolHandler = {
     const settings = { ...store.state.brush, erasing: tool === 'eraser', smoothing: tool === 'brush' || tool === 'eraser' ? store.state.brush.smoothing : 0 }
     const color = store.paletteColor('foreground')
     const stroke = new BrushStroke(raster, toDoc, settings, color, store.state.selection, mode)
-    // Brush, Eraser and Clone Stamp run on the GPU where they can; Spot Healing and the Blur smear need their pixels on the CPU.
-    if (mode.kind === 'paint' || (mode.kind === 'source' && mode.gpu)) {
+    // Every stroke runs on the GPU where it can: Spot Healing's wash is paint in a dark gray (its heal is done on the CPU when it
+    // ends), and Blur reads its blurred copy a tile at a time as the stroke reaches it.
+    if (mode.kind === 'wash') stroke.gpu = GPUBrush.create(compositor, raster, { erasing: false, color: [washGray, washGray, washGray], opacity: 0.45, toDocument: toDoc, selection: store.state.selection })
+    else if (mode.kind === 'paint' || (mode.kind === 'source' && mode.gpu)) {
       stroke.gpu = GPUBrush.create(compositor, raster, { erasing: settings.erasing, color, opacity: settings.opacity, toDocument: toDoc, selection: store.state.selection, source: mode.kind === 'source' ? mode.gpu : undefined })
     }
     stroke.stringLength = settings.smoothing / Math.max(0.01, view.zoom)

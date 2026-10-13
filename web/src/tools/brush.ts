@@ -264,6 +264,14 @@ export class BrushStroke {
 
   // The raster as the stroke found it, and its coverage as bytes (for Spot Healing).
   get originalPixels() { return this.original }
+  // Ends the GPU's part early, leaving its texture to be drawn again from the bytes (Spot Healing writes its result itself), its
+  // coverage brought back first.
+  leaveGPU() {
+    const t = this.touched
+    if (!this.gpu) return
+    if (t) this.gpu.readCoverage(t, this.coverage)
+    this.gpu.dispose(); this.gpu = null
+  }
   coverageBytes() {
     const out = new Uint8Array(this.coverage.length)
     for (let i = 0; i < out.length; i++) out[i] = Math.round(Math.min(1, this.coverage[i]) * 255)
@@ -301,7 +309,7 @@ export class BrushStroke {
     if (this.samples.length > 1 || this.tail) this.settle()
     if (this.mode.kind !== 'wash') this.render()
     const t = this.touched
-    if (this.gpu) { if (t) this.gpu.read(t); this.gpu.dispose(); this.gpu = null }
+    if (this.gpu) { if (t) { this.gpu.read(t); this.gpu.readCoverage(t, this.coverage) } this.gpu.dispose(); this.gpu = null }
     if (!t) return null
     const { raster, original } = this
     const x = t.x0, y = t.y0, w = t.x1 - t.x0, h = t.y1 - t.y0, c = raster.channels

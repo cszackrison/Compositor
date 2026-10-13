@@ -72,12 +72,26 @@ export function lazyBlur(raster: Raster, sigma: number, clamp = false) {
   }
   // Fills `out` with the blurred pixel at (x, y), rounded like blurRaster. Strokes read neighbors, so the last tile is kept at hand.
   let last = -1, current: { data: Float32Array; x0: number; y0: number; w: number } | undefined
-  return (x: number, y: number, out: ArrayLike<number> & { [i: number]: number }) => {
+  const sample = (x: number, y: number, out: ArrayLike<number> & { [i: number]: number }) => {
     const tx = (x / tile) | 0, ty = (y / tile) | 0, key = ty * across + tx
     if (key !== last) { current = tiles.get(key) ?? blurTile(tx, ty); last = key }
     const t = current!, i = ((y - t.y0) * t.w + x - t.x0) * channels
     for (let c = 0; c < channels; c++) out[c] = Math.round(t.data[i + c])
   }
+  // Hands each tile over the rectangle [x0, x1) × [y0, y1) to `use` once, rounded, for the GPU's copy of the blur.
+  const handed = new Set<number>()
+  const handOver = (x0: number, y0: number, x1: number, y1: number, use: (x: number, y: number, w: number, h: number, bytes: Uint8Array) => void) => {
+    for (let ty = Math.max(0, (y0 / tile) | 0); ty * tile < Math.min(height, y1); ty++) for (let tx = Math.max(0, (x0 / tile) | 0); tx * tile < Math.min(width, x1); tx++) {
+      const key = ty * across + tx
+      if (handed.has(key)) continue
+      handed.add(key)
+      const t = tiles.get(key) ?? blurTile(tx, ty), cx = tx * tile, cy = ty * tile, w = Math.min(width, cx + tile) - cx, h = Math.min(height, cy + tile) - cy
+      const bytes = new Uint8Array(w * h * channels)
+      for (let y = 0; y < h; y++) for (let i = 0; i < w * channels; i++) bytes[y * w * channels + i] = Math.round(t.data[((y + cy - t.y0) * t.w + cx - t.x0) * channels + i])
+      use(cx, cy, w, h, bytes)
+    }
+  }
+  return Object.assign(sample, { tiles: handOver })
 }
 
 // Runs a C kernel that works in place on premultiplied RGBA (`rgba, width, height, stride, ...rest`).
