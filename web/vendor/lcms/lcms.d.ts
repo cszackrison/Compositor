@@ -11,4 +11,4 @@ export type Lcms = {
   cmsDoTransform(transform: number, input: ArrayLike<number>, size: number): Uint8Array
 }
 export function instantiate(options?: { locateFile?: (name: string) => string }): Promise<Lcms>
-export const TYPE_RGB_8: number, TYPE_CMYK_8: number, INTENT_RELATIVE_COLORIMETRIC: number, cmsFLAGS_BLACKPOINTCOMPENSATION: number, cmsSigCmykData: number, cmsInfoDescription: number
+export const TYPE_RGB_8: number, TYPE_RGB_16: number, TYPE_CMYK_8: number, INTENT_RELATIVE_COLORIMETRIC: number, cmsFLAGS_BLACKPOINTCOMPENSATION: number, cmsSigCmykData: number, cmsInfoDescription: number

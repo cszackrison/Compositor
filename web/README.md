@@ -67,6 +67,8 @@ edited one saves as 8-bit. Text and shape metadata are dropped once their pixels
   - Optional pen pressure for brush size (off by default, as the Mac app has none).
   - Add to Home Screen for a full-screen app. Without folder access, Save keeps projects in the browser.
 
+- **HEIC and HEIF** (iPhone photos, cameras' .hif) are read with [libheif](https://github.com/strukturag/libheif) compiled to WebAssembly ([libheif-js](https://github.com/catdad-experiments/libheif-js), LGPL-3.0), loaded the first time one is opened, as browsers other than Safari can't read them. They come in as sRGB through their embedded profile or color description, and 10-bit ones as 16-bit layers.
+- **CMYK** proofing, export and opening CMYK files use [LittleCMS](https://www.littlecms.com) (MIT), from lcms-wasm, vendored in `vendor/lcms`.
 - **Select Subject and Remove Background** use [ormbg](https://huggingface.co/onnx-community/ormbg-ONNX) (Apache-2.0) through ONNX Runtime Web instead of Apple's Vision framework. The model downloads from Hugging Face the first time either is used (88 MB with WebGPU, 44 MB without) and is cached by the browser; images never leave the device. The masks differ from the Mac app's, since it's a different model; Remove Background's Refine, Contrast and Shift Edge follow the Mac's arithmetic.
 
 ## Deploying
@@ -76,10 +78,7 @@ serves it as static files over HTTPS (needed for WebGPU, folder access and the c
 
 ## Not yet ported
 
-- **Type tool:** text layers render from their saved PNG, but can't be edited.
-- **Camera Raw:** its C kernels are already in `kernels.wasm`; only the panel is missing.
-- **Import:** PSD/PSB and camera RAW.
-- **Object selection (the Magic tool):** the Mac uses Apple's Vision framework; the web would need a click-to-select model such as MobileSAM.
+See [TODO.md](TODO.md) for what's left, largest first.
 
 ## Differences from the Mac app
 

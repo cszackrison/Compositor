@@ -30,7 +30,8 @@ existing features were.
 - [ ] **Camera RAW import** and its develop step. Needs a wasm decoder (LibRaw or similar).
 - [x] **TIFF and SVG import.** TIFF is read here (UTIF, lazily loaded) where the browser can't, including 16-bit and CMYK; SVG is
   drawn by the browser, fitted to the canvas as the Mac does.
-- [ ] **HEIC import** only works where the browser decodes it (Safari). A wasm decoder (libheif) would cover the rest.
+- [x] **HEIC import** everywhere: libheif in WebAssembly (`io/heif.ts`, libheif-js, LGPL, loaded on first use), converted to sRGB
+  through the file's profile or color description; 10-bit HEIF comes in as a 16-bit layer.
 - [x] **Select Subject and Remove Background**, with the ormbg model (Apache-2.0) in the browser instead of Apple's Vision:
   downloaded from Hugging Face on first use (88 MB on WebGPU, 44 MB on the CPU) and cached. Results differ from the Mac's.
 - [ ] **Object selection (Magic tool)**: a click-to-select model (MobileSAM or SlimSAM) on the same runtime.
@@ -109,8 +110,8 @@ new C needs. Hashes are upstream's commits; effort is a guess.
 - [x] **A layer dragged into a new project sizes the canvas to it** (e580107), not to the document it came from. Small.
 - [x] **Keyboard Shortcuts: clear a shortcut** to None (87e2283), and load saved shortcuts one at a time, so one bad entry doesn't
   throw them all away (`load()` in `editor/shortcuts.ts`). Small.
-- [x] **HEIF from cameras** (.hif, .heif, 70b3e14): accept them by extension, as `file.type` is often empty. Decoding still needs
-  Safari, or a wasm decoder. Small.
+- [x] **HEIF from cameras** (.hif, .heif, 70b3e14): accept them by extension, as `file.type` is often empty. Decoded by libheif
+  everywhere now (see HEIC import). Small.
 - [x] Untitled projects numbered with the lowest free number (d0ec2f3), rather than all "Untitled". Small.
 - [x] Save, Don't Save and Cancel on closing an unsaved project, instead of `window.confirm`, with Save the one colored button
   (283d360, 4e035bf). Small.

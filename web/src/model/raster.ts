@@ -212,6 +212,7 @@ export async function decodeLayerFile(file: File, fitting?: { width: number; hei
   const name = file.name.toLowerCase()
   if (file.type === 'image/svg+xml' || name.endsWith('.svg')) return { image: await decodeSVG(file, fitting) }
   if (/\.(jpe?g|tiff?)$/.test(name) || /^image\/(jpeg|tiff)$/.test(file.type)) { const cmyk = await (await import('../io/cmyk')).openCMYK(file); if (cmyk) return cmyk }
+  if (/\.(heic|heif|hif)$/.test(name) || /^image\/hei[cf]/.test(file.type)) return (await import('../io/heif')).decodeHEIF(new Uint8Array(await file.arrayBuffer()))
   if (name.endsWith('.hdr')) { const hdr = await readHDR(new Uint8Array(await file.arrayBuffer())); await loadEXRReader(); return makeDeep(linearToHDR(hdr.data), hdr.width, hdr.height, true) }
   if (name.endsWith('.exr') || file.type === 'image/png' || name.endsWith('.png')) return decodeLayerImage(new Uint8Array(await file.arrayBuffer()), name.endsWith('.exr'))
   return { image: await decodeImageFile(file) }
