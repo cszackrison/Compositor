@@ -43,9 +43,10 @@ export type ShortcutGroup = 'Menus' | 'Canvas & Layers'
 export type ShortcutDefinition = { id: string; group: ShortcutGroup; title: string; chord: Chord }
 
 // The Mac app's list, in its order, limited to what the web edition has. Browsers keep ⌘N, ⌘W and ⌘T (and their Shift forms)
-// for themselves, so New Canvas, Close Project, New Blank Layer and Transform add Option here.
+// for themselves, so New Canvas, Close Project, New Blank Layer and Transform add Option here. ⌘O is Open…, which takes any file the
+// app reads (a project folder can't be picked with files), so Open Project Folder adds Option.
 export const definitions: ShortcutDefinition[] = ([
-  ['Menus', 'Undo', c('z', 1)], ['Menus', 'Redo', c('z', 9)], ['Menus', 'New Canvas', c('n', 3)], ['Menus', 'Open Project', c('o', 1)],
+  ['Menus', 'Undo', c('z', 1)], ['Menus', 'Redo', c('z', 9)], ['Menus', 'New Canvas', c('n', 3)], ['Menus', 'Open', c('o', 1)], ['Menus', 'Open Project', c('o', 3)],
   ['Menus', 'Save', c('s', 1)], ['Menus', 'Save As', c('s', 9)], ['Menus', 'Export PNG', c('e', 9)], ['Menus', 'Export JPEG', c('s', 11)], ['Menus', 'Export As', c('w', 11)],
   ['Menus', 'Close Project', c('w', 3)], ['Menus', 'Fit Canvas', c('0', 1)], ['Menus', 'Search Commands', c('f', 1)], ['Menus', 'Actual Pixels', c('1', 1)], ['Menus', 'Zoom In', c('=', 1)],
   ['Menus', 'Zoom Out', c('-', 1)], ['Menus', 'Show Transform Controls', c('h', 1)], ['Menus', 'Cut', c('x', 1)], ['Menus', 'Copy', c('c', 1)],

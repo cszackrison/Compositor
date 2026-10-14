@@ -48,6 +48,7 @@ const commands: Record<string, { run: () => void; enabled?: () => boolean }> = {
   Undo: { run: () => store.undo(), enabled: () => store.history.canUndo && !busy() },
   Redo: { run: () => store.redo(), enabled: () => store.history.canRedo && !busy() },
   'New Canvas': { run: open('New Canvas') },
+  'Open': { run: openAnything },
   'Open Project': { run: openProject },
   Save: { run: () => save(), enabled: has },
   'Save As': { run: () => save(true), enabled: has },
@@ -183,14 +184,14 @@ export function App() {
   const menus: { title: string; items: MenuItem[] }[] = [
     { title: 'File', items: [
       item('New Canvas…', 'New Canvas'),
-      item(canWriteDirectories ? 'Open Project…' : 'Open Project Folder (read only)…', 'Open Project'),
+      item('Open…', 'Open'),
+      item(canWriteDirectories ? 'Open Project Folder…' : 'Open Project Folder (read only)…', 'Open Project'),
       { label: 'Open Recent', disabled: !canWriteDirectories, submenu: [
         ...recent.map(r => ({ label: r.name, action: () => openRecent(r) })),
         ...(recent.length ? ['divider' as const] : []),
         { label: 'Clear Menu', action: clearRecent, disabled: !recent.length },
       ] },
       ...(!canWriteDirectories ? [{ label: 'Open Saved in Browser', disabled: !saved.length, submenu: saved.map(p => ({ label: p.name, action: () => openBrowserProject(p) })) }] : []),
-      { label: 'Open…', action: openAnything },
       { label: 'Import Images…', action: importImage },
       { label: 'Import Folder…', action: importFolder },
       { label: 'Open Sample Project', action: openSample },

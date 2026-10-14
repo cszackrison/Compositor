@@ -82,7 +82,7 @@ existing features were.
 
 ## Smaller differences
 
-- [ ] Shortcuts that browsers reserve moved to ⌥ variants: New Canvas ⌥⌘N, Close Project ⌥⌘W, Transform ⌥⌘T, New Blank Layer ⌥⇧⌘N.
+- [ ] Shortcuts that browsers reserve moved to ⌥ variants: New Canvas ⌥⌘N, Close Project ⌥⌘W, Transform ⌥⌘T, New Blank Layer ⌥⇧⌘N. ⌘O is Open… (any file), so Open Project Folder… is ⌥⌘O.
 - [ ] Tabs have a right-click menu the Mac doesn't.
 - [x] Each change in the effect editor is its own undo step, as on the Mac; a drag of one setting stays one step.
 - [ ] Ctrl+R (Show Rulers) on Windows and Linux: the page takes the key and stops the reload (checked with a synthetic key event);

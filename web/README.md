@@ -86,7 +86,7 @@ See [TODO.md](TODO.md) for what's left, largest first.
 
 ## Differences from the Mac app
 
-- **Shortcuts:** browsers keep ⌘N, ⌘W and ⌘T for themselves. New Canvas is ⌥⌘N, Close Project ⌥⌘W, Transform ⌥⌘T and New Blank Layer ⌥⇧⌘N. Everything can be remapped.
+- **Shortcuts:** browsers keep ⌘N, ⌘W and ⌘T for themselves. New Canvas is ⌥⌘N, Close Project ⌥⌘W, Transform ⌥⌘T and New Blank Layer ⌥⇧⌘N. ⌘O is Open…, which takes any file the app reads (images, Photoshop and RAW files, zipped projects); a project folder can't be picked with files, so Open Project Folder… is ⌥⌘O. Everything can be remapped.
 - **Size changes keep layer effects:** Crop, Canvas Size, Image Size and Trim keep them (the Mac app drops them). Image Size scales their sizes.
 - **Approximations:**
   - Bloom / Glow stands in for Core Image's `CIBloom`.
