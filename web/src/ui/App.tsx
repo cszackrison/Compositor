@@ -4,7 +4,7 @@ import { store, tabs, type Tool } from '../editor/store'
 import { clearRecent, loadRecent, recentProjects, subscribeRecent } from '../io/recent'
 import { browserProjects, loadBrowserProjects, subscribeBrowserProjects } from '../io/browserProjects'
 import { useCoarse } from './layout'
-import { closeProject, deleteBrowserProject, openBrowserProject, openRecent, documentName, downloadZip, exportImage, importFolder, importImage, openFiles, openProject, openSample, openZip, placeImages, save } from '../editor/actions'
+import { closeProject, deleteBrowserProject, openBrowserProject, openRecent, documentName, downloadZip, exportImage, importFolder, importImage, openFiles, openProject, openAnything, openSample, placeImages, save } from '../editor/actions'
 import { copy, cut, layerViaCopy, paste } from '../editor/clipboard'
 import { carriesFiles, readDrop, canWriteDirectories } from '../io/files'
 import { adjustmentKinds, blendModes } from '../model/types'
@@ -190,7 +190,7 @@ export function App() {
         { label: 'Clear Menu', action: clearRecent, disabled: !recent.length },
       ] },
       ...(!canWriteDirectories ? [{ label: 'Open Saved in Browser', disabled: !saved.length, submenu: saved.map(p => ({ label: p.name, action: () => openBrowserProject(p) })) }] : []),
-      { label: 'Open Zipped Project…', action: openZip },
+      { label: 'Open…', action: openAnything },
       { label: 'Import Images…', action: importImage },
       { label: 'Import Folder…', action: importFolder },
       { label: 'Open Sample Project', action: openSample },
@@ -422,10 +422,8 @@ function Welcome() {
         <p className="muted">Open a <code>.comp</code> project from the Mac app, start a new canvas, or drop an image here.</p>
         <div className="actions">
           <button className="primary" onClick={open('New Canvas')}>New Canvas…</button>
+          <button onClick={openAnything} title="An image, a Photoshop or camera RAW file, or a zipped project">Open…</button>
           {!coarse && <button onClick={openProject}>Open Project Folder…</button>}
-          <button onClick={openZip}>Open Zipped Project…</button>
-          <button onClick={importImage}>Open Image…</button>
-          <button onClick={openSample}>Open Sample Project</button>
         </div>
         {saved.length > 0 && <div className="actions"><span className="muted">Saved in this browser</span>{saved.slice(0, 5).map(p => <button key={p.id} onClick={() => openBrowserProject(p)}>{p.name} <span className="muted">· {new Date(p.savedAt).toLocaleDateString()}</span></button>)}</div>}
       </div>

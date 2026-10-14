@@ -90,15 +90,6 @@ export const openProject = guard(async () => {
   input.click()
 })
 
-export const openZip = guard(async () => {
-  const input = Object.assign(document.createElement('input'), { type: 'file', accept: '.zip,application/zip' })
-  input.onchange = () => {
-    const file = input.files?.[0]
-    if (file) guard(async () => openFiles(unzipPackage(new Uint8Array(await file.arrayBuffer())), { kind: 'download', name: file.name.replace(/\.zip$/, '') }))()
-  }
-  input.click()
-})
-
 // Opens an image as a new document when nothing is open, or places it as a layer. A Photoshop file brings its layers. Dropped on the
 // canvas, each is centered where it was dropped (`at`, in document pixels).
 export const placeImages = guard(async (files: File[], at?: [number, number]) => {
@@ -201,9 +192,24 @@ export const importFolder = guard(async () => {
   input.click()
 })
 
+const imageTypes = 'image/*,.hif,.heif,.heic,.tif,.tiff,.svg,.exr,.hdr,.psd,.psb,.dng,.cr2,.cr3,.nef,.nrw,.arw,.raf,.orf,.rw2,.pef,.srw,.3fr,.iiq,.erf,.kdc,.mos,.mrw,.raw,.rwl,.x3f'
+
 export const importImage = guard(async () => {
-  const input = Object.assign(document.createElement('input'), { type: 'file', accept: 'image/*,.hif,.heif,.heic,.tif,.tiff,.svg,.exr,.hdr,.psd,.psb,.dng,.cr2,.cr3,.nef,.nrw,.arw,.raf,.orf,.rw2,.pef,.srw,.3fr,.iiq,.erf,.kdc,.mos,.mrw,.raw,.rwl,.x3f', multiple: true })
+  const input = Object.assign(document.createElement('input'), { type: 'file', accept: imageTypes, multiple: true })
   input.onchange = () => input.files?.length && placeImages([...input.files])
+  input.click()
+})
+
+// Open…: any file the app reads, as a drop would take it: a zipped project opens in a tab of its own, images and Photoshop and RAW
+// files open (the first as the canvas, when none is open) or come in as layers. A project folder can't be picked with files, so it
+// keeps its own command.
+export const openAnything = guard(async () => {
+  const input = Object.assign(document.createElement('input'), { type: 'file', accept: `${imageTypes},.zip,application/zip`, multiple: true })
+  input.onchange = () => guard(async () => {
+    const files = [...input.files ?? []], zips = files.filter(file => file.name.toLowerCase().endsWith('.zip')), images = files.filter(file => !zips.includes(file))
+    for (const zip of zips) await openFiles(unzipPackage(new Uint8Array(await zip.arrayBuffer())), { kind: 'download', name: zip.name.replace(/\.zip$/i, '') })
+    if (images.length) await placeImages(images)
+  })()
   input.click()
 })
 
