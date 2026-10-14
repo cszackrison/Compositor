@@ -67,6 +67,16 @@ describe('project format', () => {
     await expect(readProject(files)).rejects.toThrow(/version 14/)
   })
 
+  it('rejects folders inside themselves', async () => {
+    const files = writeProject(sampleDoc(), null)
+    const manifest = JSON.parse(new TextDecoder().decode(files.get('manifest.json')))
+    const records = manifest.layers as { id: string; isGroup?: boolean; parentID?: string }[]
+    records[0].isGroup = true; records[1].isGroup = true
+    records[0].parentID = records[1].id; records[1].parentID = records[0].id
+    files.set('manifest.json', new TextEncoder().encode(JSON.stringify(manifest)))
+    await expect(readProject(files)).rejects.toThrow(/inside itself/)
+  })
+
   // The sample project with its pixel layer's image swapped for `bytes`, named `file`, at format `version`.
   function withLayerImage(bytes: Uint8Array, file: string, version = 13) {
     const files = writeProject(sampleDoc(), null)

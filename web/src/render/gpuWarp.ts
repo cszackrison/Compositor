@@ -121,7 +121,8 @@ export class GPUWarp {
 
   // `deep`: a 16-bit or HDR layer's pixels as half floats, warped alongside its 8-bit ones (`readDeep` brings them back).
   static create(compositor: Compositor | null, raster: Raster, deep?: Uint16Array): GPUWarp | null {
-    if (!compositor || raster.channels !== 4) return null
+    // A layer larger than the GPU takes is warped on the CPU, as its texture is only a reduced copy.
+    if (!compositor || raster.channels !== 4 || Math.max(raster.width, raster.height) > compositor.maxSize) return null
     const found = programsFor(compositor.gl)
     return found ? new GPUWarp(compositor, raster, found, deep) : null
   }

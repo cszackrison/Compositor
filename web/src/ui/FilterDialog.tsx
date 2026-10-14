@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { FilterSession, isJob, type FilterJob, type FilterRun } from '../editor/filters'
+import { store } from '../editor/store'
 
 // A filter's sheet: controls on the left of OK/Cancel, the canvas previewing every change live on the layer itself. `docked` stands it
 // at the window's right, full height, as Camera Raw's column.
@@ -13,7 +14,8 @@ export function FilterDialog<P>({ title, initial, run, onClose, onCommit, childr
     session.current = FilterSession.start({ masks, growEmpty })
     if (!session.current) onClose()
     else { session.current.onError = setError; session.current.onBusy = setBusy }
-    return () => { session.current?.cancel(); session.current = null }
+    // Closed by leaving its tab (the sheet belongs to the tab showing): it's cancelled in its own tab, which shows no sheet on return.
+    return () => { const s = session.current; session.current = null; s?.cancel(); if (s && s.owner !== store) s.owner.set({ panel: null }) }
   }, [])
   // A filter that throws (Content-Aware Fill with nothing to sample) shows why under the controls instead of changing anything.
   const guarded = (filter: FilterRun | FilterJob): FilterRun | FilterJob => isJob(filter) ? filter : input => { try { const out = filter(input); setError(null); return out } catch (e) { setError((e as Error).message); return null } }
@@ -28,10 +30,17 @@ export function FilterDialog<P>({ title, initial, run, onClose, onCommit, childr
     // OK waits for a filter still working in the background; one that fails changes nothing.
     setFinishing(true)
     // What OK keeps: the filter as previewed, or `final`'s run when the preview showed something OK leaves out.
-    const clean = final?.(params)
-    const kept = await s.commit(title, clean ? guarded(clean) : live ? undefined : guarded(run(params)), trim)
-    session.current = null
-    if (kept) onCommit?.(params)
+    try {
+      const clean = final?.(params)
+      const kept = await s.commit(title, clean ? guarded(clean) : live ? undefined : guarded(run(params)), trim)
+      session.current = null
+      if (kept) onCommit?.(params)
+    } catch (e) {
+      // Something that failed while keeping the result leaves the layer as it was rather than the sheet stuck open.
+      session.current = null
+      s.cancel()
+      s.owner.notify((e as Error).message)
+    }
     onClose()
   }
   cancelRef.current = () => finish(false)

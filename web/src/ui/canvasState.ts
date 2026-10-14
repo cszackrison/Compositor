@@ -64,7 +64,7 @@ function composite(doc: Doc, floats: boolean): Raster | Float32Array | null {
     const x0 = Math.max(0, tx - margin), y0 = Math.max(0, ty - margin), x1 = Math.min(width, tx + size + margin), y1 = Math.min(height, ty + size + margin)
     const target = c.renderRegion(doc, x0, y0, x1 - x0, y1 - y0)
     try {
-      if (floats && !c.hdr) return null
+      if (floats && target.format !== 'rgba16f') return null
       const tile = floats ? c.readFloat(target) : c.read(target).data
       if (fits) return floats ? tile as Float32Array : new Raster(width, height, 4, tile as Uint8Array)
       out ??= floats ? new Float32Array(width * height * 4) : new Raster(width, height, 4)

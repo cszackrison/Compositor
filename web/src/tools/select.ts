@@ -143,6 +143,8 @@ export const magic: ToolHandler = {
     dragUp()
   },
   busy: () => !!drag,
+  // Escape (or a second finger) while dragging the outline puts it back.
+  key: event => event.key === 'Escape' && !!drag && (cancelDrag(), true),
   cursor: () => 'crosshair',
 }
 

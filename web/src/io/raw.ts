@@ -15,6 +15,7 @@ type LibRaw = { open(bytes: Uint8Array, settings: object): Promise<unknown>; met
 export class RawSource {
   private engine: Promise<LibRaw> | null = null
   private decodes = new Map<string, Promise<DecodedRaw>>()
+  private queue: Promise<unknown> = Promise.resolve()
   constructor(readonly bytes: Uint8Array, readonly name: string) {}
 
   private libraw() { return this.engine ??= import('libraw-wasm').then(module => new (module.default as unknown as new () => LibRaw)()) }
@@ -33,14 +34,16 @@ export class RawSource {
     const key = JSON.stringify([half, s.highlightRecovery, s.noiseReduction])
     let found = this.decodes.get(key)
     if (!found) {
-      found = (async () => {
+      // One decode at a time: LibRaw holds one open file, so another opened before this one's pixels are read would hand them over.
+      found = this.queue.then(async () => {
         const raw = await this.libraw()
         await raw.open(this.bytes.slice(), { useCameraWb: true, outputBps: 16, outputColor: 1, gamm: [1, 1], noAutoBright: true, halfSize: half, userQual: half ? 0 : 3, highlight: s.highlightRecovery ? 2 : 0, threshold: s.noiseReduction * 400 })
         const image = await raw.imageData()
         if (!image || image.colors !== 3) throw new Error(`“${this.name}” couldn’t be developed.`)
         const pixels = image.data instanceof Uint16Array ? image.data : new Uint16Array(image.data.buffer, image.data.byteOffset, image.data.byteLength >> 1)
         return { width: image.width, height: image.height, pixels }
-      })()
+      })
+      this.queue = found.catch(() => {})
       // Only the newest few stay, as each holds a whole frame.
       this.decodes.set(key, found)
       while (this.decodes.size > 3) this.decodes.delete(this.decodes.keys().next().value!)

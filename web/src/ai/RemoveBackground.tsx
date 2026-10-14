@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { store } from '../editor/store'
+import { type Store, store } from '../editor/store'
 import { Raster } from '../model/raster'
 import type { Transform } from '../model/types'
 import { pixelToDocument } from '../render/compositor'
@@ -43,15 +43,17 @@ export function RemoveBackgroundDialog() {
   const [settings, setSettings] = useState(remembered)
   const [status, setStatus] = useState<string | null>('Finding the subject…')
   const [error, setError] = useState<string | null>(null)
-  const session = useRef<{ layerId: string; image: Raster; base: Raster | null; transform: Transform; found: Float32Array | null } | null>(null)
+  const session = useRef<{ owner: Store; layerId: string; image: Raster; base: Raster | null; transform: Transform; found: Float32Array | null } | null>(null)
   const frame = useRef(0)
+  const latest = useRef(settings)
+  latest.current = settings
 
   // The mask the layer gets: the subject, refined, under the existing mask, through the selection.
   const maskFor = (s: BackgroundSettings, limit: number, done?: Float32Array) => {
     const { image, base, transform, found } = session.current!
     const { width, height } = image, subject = bytes(done ?? refined(found!, image.data, width, height, s, limit))
     if (base) for (let i = 0; i < subject.length; i++) subject[i] = Math.round(subject[i] * base.data[i] / 255)
-    const selection = store.state.selection
+    const selection = session.current!.owner.state.selection
     if (selection) {
       const m = pixelToDocument(transform, width, height)
       for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
@@ -64,9 +66,10 @@ export function RemoveBackgroundDialog() {
     return new Raster(width, height, 1, subject)
   }
   const show = (s: BackgroundSettings, limit: number, done?: Float32Array) => {
-    if (!session.current?.found) return
-    store.updateLayerLive(session.current.layerId, { mask: maskFor(s, limit, done), maskEnabled: true, maskPlacement: null })
-    store.pixelsChanged()
+    const current = session.current
+    if (!current?.found) return
+    current.owner.updateLayerLive(current.layerId, { mask: maskFor(s, limit, done), maskEnabled: true, maskPlacement: null })
+    current.owner.pixelsChanged()
   }
 
   useEffect(() => {
@@ -75,7 +78,7 @@ export function RemoveBackgroundDialog() {
     store.beginGesture('Remove Background')
     // As on the Mac, an existing mask on the layer's grid is kept (multiplied) whether or not it's switched on.
     const base = layer.mask && !layer.maskPlacement && layer.mask.width === layer.image.width && layer.mask.height === layer.image.height ? layer.mask : null
-    session.current = { layerId: layer.id, image: layer.image, base, transform: layer.transform, found: null }
+    session.current = { owner: store, layerId: layer.id, image: layer.image, base, transform: layer.transform, found: null }
     let alive = true
     findSubject(layer.image, s => alive && setStatus(describe(s))).then(found => {
       if (!alive || !session.current) return
@@ -84,9 +87,17 @@ export function RemoveBackgroundDialog() {
       if (!any) { setError('No foreground subject was detected in this layer. Try an image with a more distinct subject.'); setStatus(null); return }
       session.current.found = found
       setStatus(null)
-      show(settings, 1400)
+      show(latest.current, 1400)
     }, e => { if (alive) { setError((e as Error).message); setStatus(null) } })
-    return () => { alive = false; cancelAnimationFrame(frame.current); if (session.current) { store.cancelGesture(); store.pixelsChanged(); session.current = null } }
+    // Closed by leaving its tab, it's cancelled in its own tab, which shows no sheet on return.
+    return () => {
+      alive = false; cancelAnimationFrame(frame.current)
+      const s = session.current
+      if (!s) return
+      session.current = null
+      s.owner.cancelGesture(); s.owner.pixelsChanged()
+      if (s.owner !== store) s.owner.set({ panel: null })
+    }
   }, [])
 
   const set = (changes: Partial<BackgroundSettings>) => {
@@ -105,14 +116,14 @@ export function RemoveBackgroundDialog() {
         try { show(settings, Infinity, await refineInWorker(s.found, s.image, settings)) } catch (e) { setError((e as Error).message); setStatus(null); return }
         if (session.current !== s) return
       }
-      store.set({ editingMask: true })
-      store.endGesture()
-      store.history.renameLast('Remove Background')
-      store.pixelsChanged()
+      s.owner.set({ editingMask: true })
+      s.owner.endGesture()
+      s.owner.history.renameLast('Remove Background')
+      s.owner.pixelsChanged()
       remembered = settings
       session.current = null
     }
-    store.set({ panel: null })
+    ;(s?.owner ?? store).set({ panel: null })
   }
 
   return (

@@ -147,7 +147,7 @@ export function layoutText(style: TextStyle): TextLayout {
           if (i === end || (content[i] === ' ' && content[i - 1] !== ' ')) breakAt = i
           if (content[i - 1] === ' ' && i < end && content[i] !== ' ') breakAt = i
         }
-        if (breakAt <= lineStart) { breakAt = lineStart + 1; while (breakAt < end && at(breakAt + 1) - at(lineStart) <= available) breakAt++ }
+        if (breakAt <= lineStart) { breakAt = lineStart + 1; while (breakAt < end && (insidePair(content, breakAt) || at(breakAt + 1) - at(lineStart) <= available)) breakAt++ }
         while (breakAt < end && content[breakAt] === ' ') breakAt++
         lineEnd = breakAt
       }
@@ -204,6 +204,9 @@ export function caretAt(layout: TextLayout, index: number) {
   return { x, top: line.baseline - layout.ascent, bottom: line.baseline + layout.descent, line: lineOf(layout, index) }
 }
 
+// Between the two halves of a character outside the Basic Multilingual Plane (an emoji): never a place for the caret or a break.
+const insidePair = (content: string, index: number) => index > 0 && index < content.length && content.charCodeAt(index) >= 0xdc00 && content.charCodeAt(index) <= 0xdfff && content.charCodeAt(index - 1) >= 0xd800 && content.charCodeAt(index - 1) <= 0xdbff
+
 // The letter boundary nearest a point in layer pixels.
 export function indexAt(layout: TextLayout, x: number, y: number) {
   const lineHeightPx = lineHeight(layout.style)
@@ -213,6 +216,7 @@ export function indexAt(layout: TextLayout, x: number, y: number) {
   for (let k = 0; k < line.xs.length; k++) {
     const index = line.start + k
     if (index > line.end) break
+    if (insidePair(layout.style.content, index)) continue
     const d = Math.abs(line.left + line.xs[k] - x)
     if (d < distance) { distance = d; best = index }
   }

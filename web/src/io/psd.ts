@@ -1,4 +1,4 @@
-import { unzlibSync } from 'fflate'
+import { Unzlib } from 'fflate'
 import { Raster } from '../model/raster'
 import { type Deep, linearToHDR, makeDeep } from '../model/deep'
 import { type Adjustment, type BlendMode, type ColorRange, type Layer, colorRanges, documentPixelBudget, fullTransform, maxSide, maxSurfacePixels, newAdjustment, newLayer, uuid } from '../model/types'
@@ -417,10 +417,19 @@ export function decodeChannel(compression: number, width: number, height: number
 // ZIP, with prediction: each row stores differences from the sample before, of whole 16-bit samples at 16 bits; at 32 bits a row's
 // bytes are differenced in turn after being laid out most significant first (every sample's first byte, then every second...).
 function inflate(data: Uint8Array, width: number, height: number, predicted: boolean, sample = 1) {
-  let plane: Uint8Array
-  try { plane = unzlibSync(data) } catch { throw new PSDError('truncated') }
-  const row = width * sample
-  if (plane.length < row * height) throw new PSDError('truncated')
+  // Inflated into the channel's own size, a piece at a time, so a file claiming more than that is refused before it fills memory.
+  // Bytes past the channel are let go; inflating stops once they run far past it.
+  const row = width * sample, plane = new Uint8Array(row * height)
+  let filled = 0, total = 0
+  try {
+    const stream = new Unzlib(chunk => {
+      plane.set(chunk.subarray(0, Math.max(0, plane.length - filled)), filled)
+      filled = Math.min(plane.length, filled + chunk.length); total += chunk.length
+      if (total > plane.length + 65536) throw new PSDError('truncated')
+    })
+    stream.push(data, true)
+  } catch { if (filled < plane.length) throw new PSDError('truncated') }
+  if (filled < plane.length) throw new PSDError('truncated')
   if (!predicted) return plane
   if (sample === 2) for (let y = 0; y < height; y++) for (let x = 1, at = y * row + 2; x < width; x++, at += 2) {
     const v = ((plane[at] << 8) | plane[at + 1]) + ((plane[at - 2] << 8) | plane[at - 1])

@@ -71,15 +71,49 @@ async function filesInEntry(entry: FileSystemDirectoryEntry) {
   }
 }
 
-// A plain folder (not a .comp project) brings in the images directly inside it, not its subfolders'.
-async function folderImages(name: string, files: () => Promise<File[]>, project: () => Promise<PackageFiles>): Promise<File[] | null> {
+// A plain folder (not a .comp project) brings in the images directly inside it, not its subfolders'; null for a project.
+async function folderImages(name: string, files: () => Promise<File[]>): Promise<File[] | null> {
   if (name.endsWith('.comp')) return null
   const inside = await files()
   if (inside.some(file => file.name === 'manifest.json')) return null
   const images = imagesIn(inside)
-  if (images.length) return images
-  // A folder holding a project further down still opens it.
-  try { rootedAtManifest(await project()); return null } catch { throw new Error(`There are no images in “${name}”.`) }
+  return images.length ? images : null
+}
+
+// The folder holding a project's manifest.json: this one, or the nearest inside it, a few levels down. Only names are looked at, so a
+// large folder isn't read to find out; and a project found inside is the folder that's saved to and watched, not the one chosen.
+const skipped = (name: string) => name === 'QuickLook' || name === '__MACOSX' || name.startsWith('.')
+export async function projectFolder(handle: FileSystemDirectoryHandle, depth = 3): Promise<FileSystemDirectoryHandle | null> {
+  let level = [handle]
+  for (let d = 0; d <= depth && level.length; d++) {
+    const next: FileSystemDirectoryHandle[] = []
+    for (const folder of level) for await (const [name, entry] of (folder as any).entries() as AsyncIterable<[string, FileSystemHandle]>) {
+      if (entry.kind === 'file' && name === 'manifest.json') return folder
+      if (entry.kind === 'directory' && !skipped(name)) next.push(entry as FileSystemDirectoryHandle)
+    }
+    level = next
+  }
+  return null
+}
+async function childrenOf(entry: FileSystemDirectoryEntry) {
+  const reader = entry.createReader(), children: FileSystemEntry[] = []
+  for (;;) {
+    const batch = await new Promise<FileSystemEntry[]>((resolve, reject) => reader.readEntries(resolve, reject))
+    if (!batch.length) return children
+    children.push(...batch)
+  }
+}
+async function projectEntry(entry: FileSystemDirectoryEntry, depth = 3): Promise<FileSystemDirectoryEntry | null> {
+  let level = [entry]
+  for (let d = 0; d <= depth && level.length; d++) {
+    const next: FileSystemDirectoryEntry[] = []
+    for (const folder of level) for (const child of await childrenOf(folder)) {
+      if (child.isFile && child.name === 'manifest.json') return folder
+      if (child.isDirectory && !skipped(child.name)) next.push(child as FileSystemDirectoryEntry)
+    }
+    level = next
+  }
+  return null
 }
 
 // Whether a drag carries something a drop can open: files, or links dragged from another page.
@@ -106,16 +140,20 @@ export async function readDrop(transfer: DataTransfer): Promise<{ project?: { fi
     const handle = await pending
     if (handle?.kind === 'directory') {
       const directory = handle as FileSystemDirectoryHandle
-      const found = await folderImages(directory.name, () => filesInHandle(directory), () => readDirectoryHandle(directory))
+      const found = await folderImages(directory.name, () => filesInHandle(directory))
       if (found) return { images: found, folder: directory.name }
-      return { project: { files: rootedAtManifest(await readDirectoryHandle(directory)), target: { kind: 'directory', handle: directory, name: directory.name } }, images }
+      const root = await projectFolder(directory)
+      if (!root) throw new Error(`There are no images in “${directory.name}”.`)
+      return { project: { files: rootedAtManifest(await readDirectoryHandle(root)), target: { kind: 'directory', handle: root, name: root.name } }, images }
     }
     if (entry?.isDirectory) {
-      const found = await folderImages(entry.name, () => filesInEntry(entry as FileSystemDirectoryEntry), async () => { const files: PackageFiles = new Map(); await readEntry(entry, '', files); return files })
+      const found = await folderImages(entry.name, () => filesInEntry(entry as FileSystemDirectoryEntry))
       if (found) return { images: found, folder: entry.name }
+      const root = await projectEntry(entry as FileSystemDirectoryEntry)
+      if (!root) throw new Error(`There are no images in “${entry.name}”.`)
       const files: PackageFiles = new Map()
-      await readEntry(entry, '', files)
-      return { project: { files: rootedAtManifest(files), target: { kind: 'download', name: entry.name } }, images }
+      await readEntry(root, '', files)
+      return { project: { files: rootedAtManifest(files), target: { kind: 'download', name: root.name } }, images }
     }
     if (!file) continue
     if (file.name.endsWith('.zip')) return { project: { files: unzipPackage(new Uint8Array(await file.arrayBuffer())), target: { kind: 'download', name: file.name.replace(/\.zip$/, '') } }, images }

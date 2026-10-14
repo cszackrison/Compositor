@@ -1,4 +1,4 @@
-import { store } from '../editor/store'
+import { Store, store } from '../editor/store'
 import { prefs } from '../editor/prefs'
 import { apply } from '../render/gl'
 import { drawOrder, effectivelyVisible, following, transformCorners, unitToDocument } from '../render/compositor'
@@ -396,3 +396,7 @@ export const move: ToolHandler = {
   },
 }
 let hoverCursor = 'default'
+
+// Another layer chosen, or another tab: a distort waiting for Return is applied first, in the tab it was made in.
+const previous = Store.beforeLayerChange
+Store.beforeLayerChange = (owner, next) => { previous?.(owner, next); if (distort && (next === null || !(distort.ids.includes(next) || distort.mask === next))) applyDistort() }

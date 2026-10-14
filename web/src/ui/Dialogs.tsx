@@ -9,7 +9,7 @@ import { EffectPanel, Scrub } from './Inspector'
 import { ColorSwatch } from './ColorPicker'
 import { useEditor } from './hooks'
 import type { Raster } from '../model/raster'
-import { type Transform, maxSide } from '../model/types'
+import { type Transform, maxSide, maxSurfacePixels } from '../model/types'
 import { isDeep, isHDR } from '../model/deep'
 import { chosenProfile, pickProfile, subscribeProfiles } from '../io/cmyk'
 import { outline } from '../model/selection'
@@ -106,18 +106,21 @@ function CanvasSize() {
   const doc = store.state.doc
   const [width, setWidth] = useState(doc.width), [height, setHeight] = useState(doc.height)
   const [anchor, setAnchor] = useState('c')
+  const valid = [width, height].every(v => Number.isInteger(v) && v >= 1 && v <= maxSide) && width * height <= maxSurfacePixels
   const submit = () => {
+    if (!valid) return
     const fx = anchor.includes('w') ? 0 : anchor.includes('e') ? 1 : 0.5, fy = anchor.includes('n') ? 0 : anchor.includes('s') ? 1 : 0.5
     store.resizeCanvas(Math.round(width), Math.round(height), Math.round((width - doc.width) * fx), Math.round((height - doc.height) * fy))
   }
   return (
-    <Modal title="Canvas Size" onSubmit={submit}>
+    <Modal title="Canvas Size" onSubmit={submit} disabled={!valid}>
       <div className="grid">
-        <span className="muted">Width</span><input type="number" min={1} max={30000} value={width} onChange={e => setWidth(+e.target.value)} autoFocus />
-        <span className="muted">Height</span><input type="number" min={1} max={30000} value={height} onChange={e => setHeight(+e.target.value)} />
+        <span className="muted">Width</span><input type="number" min={1} max={maxSide} value={width} onChange={e => setWidth(+e.target.value)} autoFocus />
+        <span className="muted">Height</span><input type="number" min={1} max={maxSide} value={height} onChange={e => setHeight(+e.target.value)} />
         <span className="muted">Anchor</span>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 26px)', gap: 3 }}>{anchors.map(a => <button key={a} type="button" style={{ height: 22, padding: 0, background: a === anchor ? 'var(--accent)' : undefined }} onClick={() => setAnchor(a)} />)}</div>
       </div>
+      {!valid && <span style={{ color: '#ffb35c' }}>{`Enter whole numbers from 1 to ${maxSide.toLocaleString()} pixels.`}</span>}
     </Modal>
   )
 }
@@ -200,17 +203,20 @@ function ExportAs({ start }: { start?: ExportFormat }) {
   const key = JSON.stringify([format, width, height, format === 'JPEG' ? quality : 0, keepsClear ? 0 : background, inks ? profile?.name ?? '' : '', deepPNG])
   const ready = result?.key === key && !error
   useEffect(() => {
+    // An encode overtaken by a newer setting is dropped when it finishes, so the slower one can't replace what's shown.
+    let current = true
     const timer = setTimeout(async () => {
       try {
         if (inks && !profile) throw new Error('Load a CMYK profile to export in inks.')
         const encoded = await encodeExport(pixels, format, width, height, { quality, background, resolution, linear, cmyk: inks ? profile : null, deep: deepPNG ? deep : null })
+        if (!current) return
         if (shownUrl.current) URL.revokeObjectURL(shownUrl.current)
         shownUrl.current = URL.createObjectURL(encoded.preview)
         setResult({ blob: encoded.blob, url: shownUrl.current, key })
         setError(null)
-      } catch (e) { setError((e as Error).message) }
+      } catch (e) { if (current) setError((e as Error).message) }
     }, 200)
-    return () => clearTimeout(timer)
+    return () => { current = false; clearTimeout(timer) }
   }, [key])
   useEffect(() => () => { if (shownUrl.current) URL.revokeObjectURL(shownUrl.current) }, [])
   // Both sides follow one, keeping the canvas's proportions, within the export limits.

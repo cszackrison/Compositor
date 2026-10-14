@@ -84,8 +84,9 @@ export async function copy(merged = false) {
 export async function cut() {
   if (!store.state.selection) { store.notify('Make a selection to cut.'); return }
   await copy()
+  const last = store.history.last
   store.fill(store.state.editingMask ? store.state.background : null)
-  store.history.renameLast(store.state.editingMask ? 'Fill Mask' : 'Clear')
+  if (store.history.last !== last) store.history.renameLast(store.state.editingMask ? 'Fill Mask' : 'Clear')
 }
 
 function pastePixels(pixels: Raster, origin: [number, number] | null, name = 'Paste', deep?: DeepRegion) {

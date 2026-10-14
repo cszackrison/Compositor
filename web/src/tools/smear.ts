@@ -172,6 +172,8 @@ export const smear: ToolHandler = {
     // The selection limits what changes, applied when the stroke ends.
     const selection = store.state.selection, toDoc = invert(w.toPixel)
     const x0 = Math.max(0, d.x0), y0 = Math.max(0, d.y0), x1 = Math.min(w.raster.width, d.x1), y1 = Math.min(w.raster.height, d.y1)
+    // A stroke that never touched the layer (only empty canvas beside it) changes nothing.
+    if (x1 <= x0 || y1 <= y0) { store.cancelGesture(); return }
     const [m0, m1, , m3, m4, , m6, m7] = toDoc, data = w.raster.data, original = w.original
     if (selection) for (let y = y0; y < y1; y++) {
       for (let x = x0, i = (y * w.raster.width + x0) * 4; x < x1; x++, i += 4) {

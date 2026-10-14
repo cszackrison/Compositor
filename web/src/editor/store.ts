@@ -77,7 +77,11 @@ export class Store {
   hasDocument = false
   // An unsaved project's name, the lowest "Untitled N" free when it was first shown (documentName); a project opened afresh gets a new one.
   untitled: string | null = null
-  history = new History<Snapshot>()
+  history = new History<Snapshot>(undefined, undefined, (before, after) => {
+    const pixels = (snapshot: Snapshot) => snapshot.doc.layers.flatMap(l => [l.image?.data, l.mask?.data, l.deep?.pixels, l.deep?.base]).filter(b => !!b)
+    const held = new Set(pixels(before))
+    return pixels(after).reduce((sum, b) => held.has(b) ? sum : sum + b.byteLength, 0)
+  })
   static renderer: Renderer | null = null
   // The Type tool's recolor for a text layer (tools/type.ts), set there so the store doesn't load text layout.
   static recolorText: ((store: Store, layer: Layer, color: [number, number, number]) => boolean) | null = null

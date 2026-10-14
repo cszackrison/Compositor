@@ -10,16 +10,17 @@ export class History<S> {
   private undoStack: HistoryEntry<S>[] = []
   private redoStack: HistoryEntry<S>[] = []
   private bytes = 0
-  constructor(private limitBytes = 1024 * 1024 * 1024, private limitEntries = 200) {}
+  private sizes = new WeakMap<HistoryEntry<S>, number>()
+  // `measure`: the bytes a step's states newly hold (whole layers a filter or a merge replaced), beyond its patches.
+  constructor(private limitBytes = 1024 * 1024 * 1024, private limitEntries = 200, private measure?: (before: S, after: S) => number) {}
 
   push(entry: HistoryEntry<S>) {
     this.undoStack.push(entry)
     this.redoStack = []
-    this.bytes += entry.patches.reduce((sum, patch) => sum + patch.before.length * 2, 0)
-    while (this.undoStack.length > 1 && (this.bytes > this.limitBytes || this.undoStack.length > this.limitEntries)) {
-      const dropped = this.undoStack.shift()!
-      this.bytes -= dropped.patches.reduce((sum, patch) => sum + patch.before.length * 2, 0)
-    }
+    const size = entry.patches.reduce((sum, patch) => sum + patch.before.length * 2, 0) + (this.measure?.(entry.before, entry.after) ?? 0)
+    this.sizes.set(entry, size)
+    this.bytes += size
+    while (this.undoStack.length > 1 && (this.bytes > this.limitBytes || this.undoStack.length > this.limitEntries)) this.bytes -= this.sizes.get(this.undoStack.shift()!) ?? 0
   }
   undo(): HistoryEntry<S> | undefined {
     const entry = this.undoStack.pop()
@@ -43,6 +44,8 @@ export class History<S> {
     return true
   }
   renameLast(name: string) { const last = this.undoStack.at(-1); if (last) last.name = name }
+  // The newest step, to tell whether an edit made one.
+  get last() { return this.undoStack.at(-1) }
   get canUndo() { return this.undoStack.length > 0 }
   get canRedo() { return this.redoStack.length > 0 }
   get undoName() { return this.undoStack.at(-1)?.name }

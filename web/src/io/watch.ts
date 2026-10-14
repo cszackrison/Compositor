@@ -48,7 +48,8 @@ export async function watchProject(owner: Store, handle: FileSystemDirectoryHand
   timer ||= window.setInterval(look, 1500)
 }
 
-export const watching = async (owner: Store) => watches.has(owner)
+// Whether the tab's project is watched in `handle` (after Save As elsewhere, it's the old folder that is).
+export const watching = async (owner: Store, handle: FileSystemDirectoryHandle) => { const watch = watches.get(owner); return !!watch && await watch.handle.isSameEntry(handle) }
 
 // A save of our own: not a change to reload, and what's on disk afterwards is the new starting point.
 export async function savingProject(owner: Store, save: () => Promise<void>) {

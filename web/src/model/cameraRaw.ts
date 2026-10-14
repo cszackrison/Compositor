@@ -153,7 +153,7 @@ export function loadCameraRawTables(file?: Uint8Array): Promise<void> {
   if (tablesAt) return Promise.resolve()
   return loading ??= (async () => {
     const fetched = async () => {
-      const response = await fetch(new URL('CameraRawTables.bin', assetBase ?? new URL(import.meta.env.BASE_URL, location.href)))
+      const response = await fetch(new URL(`CameraRawTables.bin?v=${typeof __BUILD__ === 'undefined' ? '' : __BUILD__}`, assetBase ?? new URL(import.meta.env.BASE_URL, location.href)))
       if (!response.ok) throw new Error('Camera Raw’s color tables could not be loaded.')
       return new Uint8Array(await response.arrayBuffer())
     }

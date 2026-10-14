@@ -6,7 +6,7 @@ let compiled: WebAssembly.Module | undefined
 // Workers take the page's compiled module, since a relative base URL would resolve against the worker's own script.
 export async function loadKernels(source?: BufferSource | WebAssembly.Module) {
   if (exports) return
-  compiled = source instanceof WebAssembly.Module ? source : await WebAssembly.compile(source ?? await fetch(`${import.meta.env.BASE_URL}kernels.wasm`).then(response => response.arrayBuffer()))
+  compiled = source instanceof WebAssembly.Module ? source : await WebAssembly.compile(source ?? await fetch(`${import.meta.env.BASE_URL}kernels.wasm?v=${__BUILD__}`).then(response => response.arrayBuffer()))
   const instance = await WebAssembly.instantiate(compiled, {})
   exports = instance.exports as unknown as Exports
   exports._initialize?.()

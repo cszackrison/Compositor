@@ -173,9 +173,12 @@ export class Compositor {
         gl.texSubImage2D(gl.TEXTURE_2D, 0, dirty.x, dirty.y, dirty.w, dirty.h, format[1], gl.UNSIGNED_BYTE, raster.data)
         gl.pixelStorei(gl.UNPACK_ROW_LENGTH, 0); gl.pixelStorei(gl.UNPACK_SKIP_PIXELS, 0); gl.pixelStorei(gl.UNPACK_SKIP_ROWS, 0)
       } else gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, raster.width, raster.height, format[1], gl.UNSIGNED_BYTE, raster.data)
-      record.version = raster.version
-      // The texture has it all now: the next change starts a fresh dirty rectangle instead of growing this one all stroke long.
-      raster.dirty = null
+      // A region (an export's tile, a sample) leaves the change for the live frame to find and redraw; it uploads it again then.
+      if (!this.regionParts) {
+        record.version = raster.version
+        // The texture has it all now: the next change starts a fresh dirty rectangle instead of growing this one all stroke long.
+        raster.dirty = null
+      }
     }
     gl.bindTexture(gl.TEXTURE_2D, record.texture)
     if (mipmaps && record.mipVersion !== record.version) { gl.generateMipmap(gl.TEXTURE_2D); record.mipVersion = record.version }
@@ -192,7 +195,9 @@ export class Compositor {
   // A region's own parts (renderRegion), let go when it's done, so the live view's stay as they are.
   private regionParts: Map<Raster, Part> | null = null
   private part(raster: Raster, x: number, y: number, w: number, h: number) {
-    const gl = this.gl, key = `${x},${y},${w},${h}`, parts = this.regionParts ?? this.parts, kept = parts.get(raster)
+    // The whole raster reduced (a mask) is the same for every region, so it's kept with the live view's.
+    const whole = x === 0 && y === 0 && w === raster.width && h === raster.height
+    const gl = this.gl, key = `${x},${y},${w},${h}`, parts = this.regionParts && !whole ? this.regionParts : this.parts, kept = parts.get(raster)
     if (kept?.key === key && kept.version === raster.version) return kept
     const channels = raster.channels, format = channels === 4 ? gl.RGBA : gl.RED
     // What changed since the part was made, when that's known (a stroke on the layer), or all of it.
@@ -206,7 +211,7 @@ export class Compositor {
       gl.texStorage2D(gl.TEXTURE_2D, Math.floor(Math.log2(Math.max(width, height))) + 1, channels === 4 ? gl.RGBA8 : gl.R8, width, height)
       part = { key, version: raster.version, texture, step, width, height }
       parts.set(raster, part)
-      if (!this.regionParts) this.releasedParts.register(raster, part)
+      if (parts === this.parts) this.releasedParts.register(raster, part)
     }
     const { step } = part
     // The texels to bring up to date, and the pixels they average.
@@ -330,9 +335,10 @@ export class Compositor {
         const gpu = this.gpuChanges.get(raster)
         if (gpu) add(raster, transform, gpu)
         // A raster never drawn (a hidden layer, a disabled mask) isn't in the picture; showing it changes its layer.
-        const record = this.textures.get(raster)
-        if (!record || record.version === raster.version) continue
-        const dirty = raster.dirty && raster.dirtyFrom <= record.version ? raster.dirty : null
+        // One too large for the GPU is drawn from a part of it, which keeps its own version.
+        const version = this.textures.get(raster)?.version ?? this.parts.get(raster)?.version
+        if (version === undefined || version === raster.version) continue
+        const dirty = raster.dirty && raster.dirtyFrom <= version ? raster.dirty : null
         if (!dirty) return 'all'
         add(raster, transform, { x0: dirty.x, y0: dirty.y, x1: dirty.x + dirty.w, y1: dirty.y + dirty.h })
       }
@@ -597,7 +603,9 @@ export class Compositor {
       return
     }
     const t = layer.transform
+    // Deep pixels larger than the GPU takes are drawn from the layer's 8-bit copy, cut down to fit.
     const deep = this.hdr ? deepOf(layer) : null
+    if (deep && Math.max(deep.width, deep.height) > this.maxSize) { this.draw(target, { texture: this.white, raster: layer.image, width: layer.image.width, height: layer.image.height, unitToDoc: unitToDocument(t), sampling: t.sampling, rotation: t.rotation }, { opacity, blendMode, mask: this.layerMask(layer), clip: options.clip, coverage: options.coverage }); return }
     if (deep) { this.draw(target, { texture: this.deepTexture(layer, deep), mipmapped: true, width: layer.image.width, height: layer.image.height, unitToDoc: unitToDocument(t), sampling: t.sampling, rotation: t.rotation }, { opacity, blendMode, mask: this.layerMask(layer), clip: options.clip, coverage: options.coverage }); return }
     this.draw(target, { texture: this.sourceTexture(layer.image), raster: layer.image, width: layer.image.width, height: layer.image.height, unitToDoc: unitToDocument(t), sampling: t.sampling, rotation: t.rotation }, { opacity, blendMode, mask: this.layerMask(layer), clip: options.clip, coverage: options.coverage })
   }
@@ -756,15 +764,19 @@ export class Compositor {
   // Composites a rectangle of the document (`x`, `y`, `w` × `h` in its pixels) at `renderScale` into a target of its own: a tile of an
   // export too large for one texture, or the view's detail over a canvas too large to show whole. The live frame's caches stay as
   // they are. The caller disposes of the target. `live` draws effects still being redone as the live view does, from the last result.
+  // The target is half-float when the region's document has deep layers (and the GPU renders floats), whatever the live view's is.
   renderRegion(doc: Doc, x: number, y: number, w: number, h: number, renderScale = 1, live = false): Target {
-    this.matchDepth(doc)
-    const saved = { output: this.output, width: this.width, height: this.height, renderScale: this.renderScale, origin: this.origin, prefix: this.prefix, previous: this.previous, lastSignatures: this.lastSignatures, live: this.live, clipCache: this.clipCache, gpuChanges: this.gpuChanges }
+    const saved = { output: this.output, width: this.width, height: this.height, renderScale: this.renderScale, origin: this.origin, prefix: this.prefix, previous: this.previous, lastSignatures: this.lastSignatures, live: this.live, clipCache: this.clipCache, gpuChanges: this.gpuChanges, hdr: this.hdr, pool: this.pool, drawnEffects: this.drawnEffects, drawnStale: this.drawnStale }
+    const hdr = this.floatTargets && doc.layers.some(l => !!l.deep), ownPool = hdr !== this.hdr
+    this.hdr = hdr
+    if (ownPool) this.pool = new TargetPool(this.gl, this.format)
     const width = Math.max(1, Math.round(w * renderScale)), height = Math.max(1, Math.round(h * renderScale)), target = new Target(this.gl, width, height, this.format, true)
-    Object.assign(this, { output: target, width, height, renderScale, origin: [x, y], prefix: null, previous: null, lastSignatures: [], live, clipCache: new Map(), gpuChanges: new Map(), regionParts: new Map() })
+    Object.assign(this, { output: target, width, height, renderScale, origin: [x, y], prefix: null, previous: null, lastSignatures: [], live, clipCache: new Map(), gpuChanges: new Map(), regionParts: new Map(), drawnEffects: new Map(), drawnStale: new Map() })
     try { this.compose(doc, target, width, height) } finally {
       this.clipCache.forEach(t => t.dispose())
       this.regionParts!.forEach(part => this.gl.deleteTexture(part.texture))
       this.regionParts = null
+      if (ownPool) this.pool.trim(-1, -1)
       Object.assign(this, saved)
       this.pool.trim(saved.width, saved.height)
     }
@@ -856,7 +868,8 @@ export class Compositor {
     }
     coverages.forEach(t => this.pool.give(t))
     for (const [key, target] of this.clipCache) if (!used.has(key)) { target.dispose(); this.clipCache.delete(key) }
-    for (const id of this.effectsCache.keys()) if (!byId.has(id)) this.effectsCache.delete(id)
+    // Only the live frame drops effects for layers gone: a region may draw some layers alone (a copy, a sample).
+    if (!this.regionParts) for (const id of this.effectsCache.keys()) if (!byId.has(id)) this.effectsCache.delete(id)
     this.region = null
     gl.disable(gl.SCISSOR_TEST)
     gl.bindTexture(gl.TEXTURE_2D, canvas.texture)

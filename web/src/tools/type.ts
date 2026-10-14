@@ -156,10 +156,11 @@ function update(style: TextStyle, corner?: [number, number]) {
   requestRender(); requestOverlay(); changed()
 }
 
-function open(owner: Store, layer: Layer, style: TextStyle, isNew: boolean, selection: [number, number]) {
+function open(owner: Store, layer: Layer, style: TextStyle, isNew: boolean, selection: [number, number], focus = true) {
   const { layout } = rasterizeText(style)
   draft = { owner, layerId: layer.id, isNew, style, original: isNew ? null : style, transform: layer.transform, size: [layer.image!.width, layer.image!.height], layout, selection, anchor: selection[0], stickyX: null, preview: null }
-  focusField()
+  if (focus) focusField()
+  else { const f = input(); f.value = style.content; f.setSelectionRange(...selection) }
   blinking()
   requestOverlay(); changed()
 }
@@ -181,14 +182,15 @@ function beginNew(point: [number, number], box?: [number, number]) {
 }
 
 // Opens the selected text layer, the caret after its text unless a click places it.
-export function editActiveText(at?: number) {
+// `focus`: false when a change from the Type bar opens it, so typing there (a size, a color) stays in the bar's field.
+export function editActiveText(at?: number, focus = true) {
   if (draft) return
   const layer = store.active, style = liveText(layer)
   if (!layer || !style) return
   if (store.state.tool !== 'type') store.setTool('type')
   store.beginGesture('Edit Text')
   const index = at ?? style.content.length
-  open(store, layer, style, false, [index, index])
+  open(store, layer, style, false, [index, index], focus)
 }
 
 // Keeps the text being edited as one undo step; new text with nothing typed leaves no layer.
@@ -200,8 +202,10 @@ export function finishText() {
   if (d.isNew && !d.style.content.trim()) d.owner.cancelGesture()
   else if (!d.isNew && JSON.stringify(d.style) === JSON.stringify(d.original)) d.owner.cancelGesture()
   else {
+    const last = d.owner.history.last
     d.owner.endGesture()
-    d.owner.history.renameLast(d.isNew ? 'New Text Layer' : 'Edit Text')
+    // Only a step this made is named (a box handle clicked without a drag changes nothing on the canvas).
+    if (d.owner.history.last !== last) d.owner.history.renameLast(d.isNew ? 'New Text Layer' : 'Edit Text')
     const { colorRuns: _c, fontRuns: _f, ...kept } = d.style
     defaults = kept
   }
@@ -222,7 +226,7 @@ export function cancelText() {
 // A change from the Type bar: to the text being edited (its selected letters, for color and face), or the selected text layer, which
 // opens for it, or the settings new text starts with.
 export function changeTextStyle(change: (style: TextStyle, selection: [number, number]) => TextStyle) {
-  if (!draft && liveText(store.active)) editActiveText()
+  if (!draft && liveText(store.active)) editActiveText(undefined, false)
   if (draft) { const next = change(draft.style, draft.selection); if (isValidText(next)) update(next); return }
   const next = change(defaults, [0, 0])
   if (isValidText(next)) { defaults = next; changed() }

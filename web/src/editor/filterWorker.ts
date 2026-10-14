@@ -41,9 +41,10 @@ self.onmessage = async (event: MessageEvent<Request | DeepRequest | WebAssembly.
     const toDocument = scale < 1 ? multiply(input.toDocument, scaleBy(full.width / pixels.width, full.height / pixels.height)) : input.toDocument
     let out = run({ ...input, pixels, toDocument }, ...args.map((a, i) => scaled.includes(i) && typeof a === 'number' ? a * scale : a))
     if (scale < 1 && out) {
-      const small = out instanceof Raster ? out : out.pixels, origin = out instanceof Raster ? [0, 0] : out.origin
-      const big = resample(small, Math.max(1, Math.round(small.width / scale)), Math.max(1, Math.round(small.height / scale)))
-      out = out instanceof Raster ? big : { pixels: big, origin: [Math.round(origin[0] / scale), Math.round(origin[1] / scale)] }
+      // Enlarged by the copy's own ratios, so a result on the copy's grid comes back exactly on the layer's.
+      const small = out instanceof Raster ? out : out.pixels, origin = out instanceof Raster ? [0, 0] : out.origin, fx = full.width / pixels.width, fy = full.height / pixels.height
+      const big = resample(small, Math.max(1, Math.round(small.width * fx)), Math.max(1, Math.round(small.height * fy)))
+      out = out instanceof Raster ? big : { pixels: big, origin: [Math.round(origin[0] * fx), Math.round(origin[1] * fy)] }
     }
     const raster = out instanceof Raster ? out : out?.pixels
     const result = raster ? { width: raster.width, height: raster.height, channels: raster.channels, data: raster.data, origin: out instanceof Raster ? null : out!.origin } : null

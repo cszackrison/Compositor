@@ -6,7 +6,7 @@ import { commitFloating } from './floating'
 import { Store, activateTab, closeTab, store, tabForOpening, tabs } from './store'
 import { forgetRecent, noteRecent, type Recent } from '../io/recent'
 import { deleteFromBrowser, readFromBrowser, saveToBrowser, type BrowserProject } from '../io/browserProjects'
-import { canWriteDirectories, download, filesInHandle, isPSD, imagesIn, readDirectoryHandle, readFileList, rootedAtManifest, unzipPackage, writeDirectory, zipPackage, type PackageFiles, type PackageTarget } from '../io/files'
+import { canWriteDirectories, download, filesInHandle, isPSD, imagesIn, projectFolder, readDirectoryHandle, readFileList, rootedAtManifest, unzipPackage, writeDirectory, zipPackage, type PackageFiles, type PackageTarget } from '../io/files'
 import { readProject, writeProject } from '../io/project'
 import { pdfOfImage } from '../io/pdf'
 import { encodeEXR } from '../io/exr'
@@ -78,9 +78,10 @@ export const openFiles = guard(async (files: PackageFiles, target: PackageTarget
 
 export const openProject = guard(async () => {
   if (canWriteDirectories) {
-    const handle: FileSystemDirectoryHandle = await (window as any).showDirectoryPicker({ id: 'compositor-projects', mode: 'readwrite' })
-    const files = rootedAtManifest(await readDirectoryHandle(handle))
-    await openFiles(files, { kind: 'directory', handle, name: handle.name })
+    const picked: FileSystemDirectoryHandle = await (window as any).showDirectoryPicker({ id: 'compositor-projects', mode: 'readwrite' })
+    const handle = await projectFolder(picked)
+    if (!handle) throw new Error('No manifest.json found. Choose a .comp project folder.')
+    await openFiles(rootedAtManifest(await readDirectoryHandle(handle)), { kind: 'directory', handle, name: handle.name })
     return
   }
   const input = Object.assign(document.createElement('input'), { type: 'file' })
@@ -209,8 +210,10 @@ export const importImage = guard(async () => {
 export const save = guard(async (as: boolean = false) => {
   if (!store.hasDocument) return
   commitFloating()
-  const files = writeProject(store.state.doc, store.state.activeId)
-  let target = store.state.target
+  // The tab and the document as they were when Save was chosen: another tab may show, or edits come in, while the files are written.
+  const owner = store, doc = owner.state.doc, written = () => owner.state.doc === doc
+  const files = writeProject(doc, owner.state.activeId)
+  let target = owner.state.target
   if (as || !target || target.kind !== 'directory') {
     if (canWriteDirectories) {
       const parent: FileSystemDirectoryHandle = await (window as any).showDirectoryPicker({ id: 'compositor-save', mode: 'readwrite' })
@@ -224,22 +227,21 @@ export const save = guard(async (as: boolean = false) => {
       if (!name) return
       const id = !as && target?.kind === 'browser' ? target.id : uuid()
       await saveToBrowser(id, name, zipPackage(name, files))
-      store.set({ saved: true, target: { kind: 'browser', id, name } })
+      owner.set({ saved: written(), target: { kind: 'browser', id, name } })
       // Kept unless space runs out where the browser grants it; Safari on iOS clears what a site stores after a week without a visit
       // unless it's on the Home Screen, so it says so.
       const kept = await navigator.storage?.persist?.().catch(() => false)
       const ios = /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)
       const homeScreen = (navigator as Navigator & { standalone?: boolean }).standalone || matchMedia('(display-mode: standalone)').matches
-      store.notify(ios && !homeScreen && !kept ? `Saved ${name} in this browser. Safari can clear it after a week without a visit: add Compositor to the Home Screen, or Download as Zip to keep a copy.` : `Saved ${name} in this browser. Download as Zip to keep a copy elsewhere.`, 'info')
+      owner.notify(ios && !homeScreen && !kept ? `Saved ${name} in this browser. Safari can clear it after a week without a visit: add Compositor to the Home Screen, or Download as Zip to keep a copy.` : `Saved ${name} in this browser. Download as Zip to keep a copy elsewhere.`, 'info')
       return
     }
   }
-  const owner = store
   await savingProject(owner, () => writeDirectory(target.handle, files))
-  if (!(await watching(owner))) watchProject(owner, target.handle)
+  if (!(await watching(owner, target.handle))) watchProject(owner, target.handle)
   noteRecent(target.handle)
-  store.set({ saved: true, target })
-  store.notify(`Saved ${target.name}`, 'info')
+  owner.set({ saved: written(), target })
+  owner.notify(`Saved ${target.name}`, 'info')
 })
 
 export const openBrowserProject = guard(async (project: BrowserProject) => {

@@ -17,7 +17,10 @@ export async function developRaw(file: File): Promise<{ image: Raster; deep: Dee
   const source = new RawSource(new Uint8Array(await file.arrayBuffer()), file.name)
   const settings = await source.asShot()
   return new Promise(resolve => {
-    pending = { source, settings, resolve: result => { source.dispose(); resolve(result) } }
+    // One sheet at a time: a RAW dropped while another is up cancels that one.
+    pending?.resolve(null)
+    let settled = false
+    pending = { source, settings, resolve: result => { if (settled) return; settled = true; source.dispose(); resolve(result) } }
     store.set({ panel: 'Develop RAW' })
   })
 }
@@ -37,9 +40,13 @@ function shrink(decoded: { width: number; height: number; pixels: Uint16Array },
 export function RawDevelop() {
   useEditor()
   const job = pending
-  const [settings, setSettings] = useState(job?.settings)
-  const [working, setWorking] = useState(true), [importing, setImporting] = useState(false), [error, setError] = useState<string | null>(null)
   const canvas = useRef<HTMLCanvasElement>(null), small = useRef<{ key: string; frame: ReturnType<typeof shrink> } | null>(null)
+  const [settings, setSettings] = useState(job?.settings)
+  // Another RAW in the same sheet starts from its own settings; the sheet closed some other way cancels its RAW.
+  const shownJob = useRef(job)
+  if (shownJob.current !== job) { shownJob.current = job; small.current = null; setSettings(job?.settings) }
+  useEffect(() => () => { if (shownJob.current && pending === shownJob.current) { pending = null; shownJob.current.resolve(null) } }, [])
+  const [working, setWorking] = useState(true), [importing, setImporting] = useState(false), [error, setError] = useState<string | null>(null)
   useEffect(() => {
     if (!job || !settings) return
     let live = true

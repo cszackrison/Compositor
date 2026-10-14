@@ -79,6 +79,15 @@ export async function readProject(files: PackageFiles): Promise<{ doc: Doc; acti
     if (layer.parentId && !layers.find(other => other.id === layer.parentId)?.isGroup) fail(`layer "${layer.name}" is inside a folder that doesn't exist`)
     if (layer.clipTo && !ids.has(layer.clipTo)) layer.clipTo = null
   }
+  // A folder inside itself, however far down, would have no top to draw from.
+  const parentOf = new Map(layers.map(layer => [layer.id, layer.parentId]))
+  for (const layer of layers) {
+    const seen = new Set<string>()
+    for (let id: string | null | undefined = layer.id; id; id = parentOf.get(id)) {
+      if (seen.has(id)) fail(`folder "${layer.name}" is inside itself`)
+      seen.add(id)
+    }
+  }
   const activeId = manifest.activeLayerID ? String(manifest.activeLayerID).toUpperCase() : null
   return {
     doc: { id: String(manifest.documentID ?? uuid()).toUpperCase(), width: manifest.width, height: manifest.height, resolution: manifest.resolution ?? 72, layers, guides: manifest.guides ?? [], extra: Object.fromEntries(Object.entries(manifest).filter(([key]) => !knownTop.has(key))) },

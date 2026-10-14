@@ -1,4 +1,4 @@
-import { store } from './store'
+import { type Store, store } from './store'
 import { Raster } from '../model/raster'
 import { apply, invert, type Mat3 } from '../render/gl'
 import type { Adjustment, Layer, Transform } from '../model/types'
@@ -151,12 +151,13 @@ export class FilterSession {
     store.beginGesture('Filter')
     const target = store.editTarget()
     if (!target) { store.cancelGesture(); store.notify('Choose a layer with pixels, or its mask, to filter.'); return null }
-    const session = new FilterSession(target.raster, target.isMask, target.layer.id, target.toDocument, target.layer.transform)
+    const session = new FilterSession(store, target.raster, target.isMask, target.layer.id, target.toDocument, target.layer.transform)
     session.deep = target.isMask ? null : deepOf(target.layer)
     return session
   }
 
-  private constructor(readonly original: Raster, readonly isMask: boolean, readonly layerId: string, readonly toDocument: Mat3, readonly transform: Transform) {}
+  // `owner`: the tab the filter was opened in, which it finishes in even when another tab is showing.
+  private constructor(readonly owner: Store, readonly original: Raster, readonly isMask: boolean, readonly layerId: string, readonly toDocument: Mat3, readonly transform: Transform) {}
 
   input(): FilterInput {
     const pixels = this.isMask ? maskToRGBA(this.original) : this.original.clone()
@@ -183,6 +184,8 @@ export class FilterSession {
     this.running = runJob(next, input, scale)
       .then(out => { if (!this.closed) { this.failed = false; this.applyResult(out); this.shownJob = next; this.shownReduced = scale < 1; this.onError?.(null) } }, (error: Error) => { if (!this.closed) { this.failed = true; this.onError?.(error.message) } })
       .then(() => this.previewHDR(next, scale))
+      // A result that can't be shown fails like the filter itself, so OK never waits on a broken run.
+      .catch((error: Error) => { if (!this.closed) { this.failed = true; this.onError?.(error.message) } })
       .finally(() => { this.running = null; this.pump() })
   }
 
@@ -198,11 +201,11 @@ export class FilterSession {
     const channels = original.channels
     const transformFor = () => grown && !this.isMask ? grownTransform(this.transform, toDocument, original.width, original.height, origin, pixels.width, pixels.height) : this.transform
     // Without a selection every pixel takes the filter's result, so a layer's result is shown as it came.
-    if (!store.state.selection && channels === 4) { pixels.touch(); this.show(pixels, transformFor()); return }
+    if (!this.owner.state.selection && channels === 4) { pixels.touch(); this.show(pixels, transformFor()); return }
     const base = grown ? placeOnGrid(original, origin, pixels.width, pixels.height) : original
     const reuse = this.shown && this.shown !== original && this.shown.width === pixels.width && this.shown.height === pixels.height
     const out = reuse ? this.shown! : new Raster(pixels.width, pixels.height, channels)
-    const selection = store.state.selection
+    const selection = this.owner.state.selection
     const [m0, m1, , m3, m4, , m6, m7] = toDocument, src = base.data, dst = out.data, next = pixels.data
     for (let y = 0; y < pixels.height; y++) {
       for (let x = 0, i = y * pixels.width; x < pixels.width; x++, i++) {
@@ -224,14 +227,14 @@ export class FilterSession {
   private show(raster: Raster, transform: Transform) {
     this.shown = raster
     this.last = { raster, transform }
-    const layer = store.layer(this.layerId)!
-    if (this.isMask) store.updateLayerLive(this.layerId, { mask: raster })
+    const layer = this.owner.layer(this.layerId)!
+    if (this.isMask) this.owner.updateLayerLive(this.layerId, { mask: raster })
     else {
       // A mask on the layer's own grid stays where it was when the grid grows, its edge tone continuing past the old edge.
       const keepMask = layer.mask && !layer.maskPlacement && transform !== this.transform ? { maskPlacement: this.transform } : {}
-      store.updateLayerLive(this.layerId, { image: raster, transform, ...keepMask })
+      this.owner.updateLayerLive(this.layerId, { image: raster, transform, ...keepMask })
     }
-    store.pixelsChanged()
+    this.owner.pixelsChanged()
   }
 
   // Keeps the result, once any worker job still running has finished; false when the filter failed. `trim` crops a result that
@@ -253,13 +256,13 @@ export class FilterSession {
       this.onBusy?.(false)
     }
     this.closed = true
-    if (this.failed) { store.cancelGesture(); store.pixelsChanged(); return false }
-    if (!this.last || this.last.raster === this.original) { store.cancelGesture(); return true }
+    if (this.failed) { this.owner.cancelGesture(); this.owner.pixelsChanged(); return false }
+    if (!this.last || this.last.raster === this.original) { this.owner.cancelGesture(); return true }
     if (trim && !this.isMask) this.trim()
-    if (!this.isMask) store.updateLayerLive(this.layerId, { text: undefined, shape: undefined })
-    store.endGesture()
-    store.history.renameLast(name)
-    store.pixelsChanged()
+    if (!this.isMask) this.owner.updateLayerLive(this.layerId, { text: undefined, shape: undefined })
+    this.owner.endGesture()
+    this.owner.history.renameLast(name)
+    this.owner.pixelsChanged()
     return true
   }
 
@@ -270,10 +273,10 @@ export class FilterSession {
     if (!deep?.hdr || this.closed || this.failed || this.finalRun || this.queuedJob || scale < 1 || rasterizes.has(job.job) || !this.last || this.last.raster === this.original) return
     const result = await runDeepJob(job, { isMask: false, toDocument: this.toDocument, layerId: this.layerId, transform: this.transform }, { pixels: flattened(deep).slice(), width: deep.width, height: deep.height, hdr: true }, this.grid(), true).catch(() => null)
     if (!result || this.closed || this.queuedJob || this.finalRun) return
-    const pixels = store.state.selection ? this.blendDeep(result.pixels, deep, this.grid(), result.width, result.height) : result.pixels
+    const pixels = this.owner.state.selection ? this.blendDeep(result.pixels, deep, this.grid(), result.width, result.height) : result.pixels
     const made = makeDeep(pixels, result.width, result.height, true)
     this.show(made.image, this.last.transform)
-    store.updateLayerLive(this.layerId, { deep: made.deep })
+    this.owner.updateLayerLive(this.layerId, { deep: made.deep })
   }
 
   private grid(): DeepGrid | null {
@@ -287,15 +290,15 @@ export class FilterSession {
     const deep = this.deep!, transform = this.last!.transform, grid = this.grid()
     const input = { isMask: false, toDocument: this.toDocument, layerId: this.layerId, transform: this.transform }
     const result = await runDeepJob(job, input, { pixels: flattened(deep).slice(), width: deep.width, height: deep.height, hdr: deep.hdr }, grid)
-    const pixels = store.state.selection ? this.blendDeep(result.pixels, deep, grid, result.width, result.height) : result.pixels
+    const pixels = this.owner.state.selection ? this.blendDeep(result.pixels, deep, grid, result.width, result.height) : result.pixels
     const made = makeDeep(pixels, result.width, result.height, deep.hdr)
     this.show(made.image, transform)
-    store.updateLayerLive(this.layerId, { deep: made.deep })
+    this.owner.updateLayerLive(this.layerId, { deep: made.deep })
   }
 
   // `next` (on `grid`) where the selection covers it, the layer's own pixels elsewhere, mixed by its soft edge.
   private blendDeep(next: Uint16Array, deep: Deep, grid: DeepGrid | null, width: number, height: number) {
-    const selection = store.state.selection!, original = flattened(deep), hdr = deep.hdr, ox = grid?.x ?? 0, oy = grid?.y ?? 0
+    const selection = this.owner.state.selection!, original = flattened(deep), hdr = deep.hdr, ox = grid?.x ?? 0, oy = grid?.y ?? 0
     const [m0, m1, , m3, m4, , m6, m7] = this.toDocument, out = new Uint16Array(next.length)
     const value = (v: number) => hdr ? fromHalf(v) : v, encode = (v: number) => hdr ? toHalf(v) : Math.round(v)
     for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
@@ -316,14 +319,14 @@ export class FilterSession {
     withBuffers([{ data: raster.data }, { data: bounds, out: true }], ([pixels, out]) => call('brush_alpha_bounds', pixels, raster.width, raster.height, raster.width * 4, out))
     const [x0, y0, x1, y1] = bounds
     if (x1 <= x0 || y1 <= y0 || (x0 === 0 && y0 === 0 && x1 === raster.width && y1 === raster.height)) return
-    store.updateLayerLive(this.layerId, croppedLayer({ ...store.layer(this.layerId)!, image: raster, transform }, x0, y0, x1 - x0, y1 - y0))
+    this.owner.updateLayerLive(this.layerId, croppedLayer({ ...this.owner.layer(this.layerId)!, image: raster, transform }, x0, y0, x1 - x0, y1 - y0))
   }
 
   cancel() {
     cancelAnimationFrame(this.pending)
     this.closed = true
     this.queuedJob = null
-    store.cancelGesture()
-    store.pixelsChanged()
+    this.owner.cancelGesture()
+    this.owner.pixelsChanged()
   }
 }

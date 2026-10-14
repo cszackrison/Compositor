@@ -1,4 +1,4 @@
-import { store } from '../editor/store'
+import { Store, store } from '../editor/store'
 import { pixelToDocument } from '../render/compositor'
 import { croppedLayer, grownTransform, placeOnGrid } from '../editor/filters'
 import { padMask } from '../editor/floating'
@@ -186,3 +186,7 @@ export const gradient: ToolHandler = {
     }
   },
 }
+
+// Another layer chosen, or another tab: a gradient waiting to be applied is applied first, in the tab it was drawn in.
+const previous = Store.beforeLayerChange
+Store.beforeLayerChange = (owner, next) => { previous?.(owner, next); if (pending && (next === null || next !== pending.layerId)) applyGradient() }
