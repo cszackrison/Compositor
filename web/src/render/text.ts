@@ -26,16 +26,25 @@ export function guessFace(name: string) {
   return { family, weight, italic: /italic|oblique/i.test(stylePart) }
 }
 
+// The CSS font for a face, SIZE standing for its size: the installed face itself when it was found (`found`), then its guessed family.
+// Weight and style lead, as the shorthand needs: anywhere else the browser rejects the whole font and draws at 10 px.
+export function faceCSS(name: string, found: boolean) {
+  const guess = guessFace(name)
+  return `${guess.italic ? 'italic ' : ''}${guess.weight} SIZE ${found ? `"ps ${name}", ` : ''}"${guess.family}", Helvetica, Arial, sans-serif`
+}
+
 function face(name: string): Face {
   const found = faces.get(name)
   if (found) return found
-  const guess = guessFace(name), fallback = `${guess.italic ? 'italic ' : ''}${guess.weight} SIZE "${guess.family}", Helvetica, Arial, sans-serif`
-  const entry: Face = { css: fallback, ready: false, loaded: Promise.resolve(true) }
+  const guess = guessFace(name)
+  const entry: Face = { css: faceCSS(name, false), ready: false, loaded: Promise.resolve(true) }
   faces.set(name, entry)
   const fonts = typeof document !== 'undefined' ? document.fonts : null
   if (fonts && typeof FontFace !== 'undefined') {
-    const family = `ps ${name}`, loading = new FontFace(family, `local("${name.replace(/"/g, '')}")`)
-    entry.loaded = loading.load().then(loaded => { fonts.add(loaded); entry.css = `SIZE "${family}", ${fallback.replace('SIZE ', '')}`; entry.ready = true; fontListeners.forEach(l => l()); return true }, () => { entry.ready = true; return false })
+    // The face found is declared with the weight and style asked for, so the browser draws it as it is rather than making it bolder
+    // or slanting it.
+    const family = `ps ${name}`, loading = new FontFace(family, `local("${name.replace(/"/g, '')}")`, { weight: String(guess.weight), style: guess.italic ? 'italic' : 'normal' })
+    entry.loaded = loading.load().then(loaded => { fonts.add(loaded); entry.css = faceCSS(name, true); entry.ready = true; fontListeners.forEach(l => l()); return true }, () => { entry.ready = true; return false })
   } else entry.ready = true
   return entry
 }

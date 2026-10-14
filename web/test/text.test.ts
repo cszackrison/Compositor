@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { faceCSS } from '../src/render/text'
 import { defaultTextStyle, readTextStyle, replaceText, setTextColor, setTextFont, textLayerName, uniformFont, writeTextStyle } from '../src/model/text'
 
 // TypeTool.swift's LayerTextStyle: runs of letters in other colors and faces, kept through typing, saved as the Mac saves them.
@@ -32,5 +33,12 @@ describe('text layers', () => {
     expect(readTextStyle({ ...saved, fontSize: 5000 })).toBeNull()
     expect(readTextStyle({ ...saved, colorRuns: [{ location: 8, length: 9, red: 0, green: 0, blue: 0 }] })).toBeNull()
     expect(textLayerName('  Big\n\nTitle   here ')).toBe('Big Title here')
+  })
+})
+
+describe('Faces', () => {
+  it('leads the CSS font with weight and style, so the browser takes it', () => {
+    expect(faceCSS('NotoSans-Regular', true)).toBe('400 SIZE "ps NotoSans-Regular", "Noto Sans", Helvetica, Arial, sans-serif')
+    expect(faceCSS('Helvetica-BoldOblique', false)).toBe('italic 700 SIZE "Helvetica", Helvetica, Arial, sans-serif')
   })
 })
