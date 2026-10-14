@@ -280,6 +280,7 @@ function About() {
   const link = (href: string, text: string) => <a href={href} target="_blank" rel="noreferrer" style={{ color: 'var(--accent)' }}>{text}</a>
   return (
     <Modal title="Compositor for the web">
+      <p className="muted" style={{ margin: 0 }}>{[__VERSION__ && `Version ${__VERSION__}`, `built ${__BUILT__}`, __COMMIT__ && link(`https://github.com/cszackrison/Compositor/commit/${__COMMIT__}`, __COMMIT__)].filter(Boolean).map((part, i) => <span key={i}>{i ? ' · ' : ''}{part}</span>)}</p>
       <p style={{ margin: 0, maxWidth: 400 }}>Compositor was created by <strong>Robbie Tilton</strong>. It’s a free, open-source image editor for Mac: get it from {link('https://robbietilton.com/compositor', 'robbietilton.com/compositor')}, with source code at {link('https://github.com/robbietilton/Compositor', 'github.com/robbietilton/Compositor')}.</p>
       <p style={{ margin: 0, maxWidth: 400 }}>This is an unofficial web port of his Mac app by <strong>Scott Zackrison</strong>, in a fork of the project: {link('https://github.com/cszackrison/Compositor', 'github.com/cszackrison/Compositor')}. It opens and saves the same <code>.comp</code> projects and runs the app’s own C pixel code, compiled to WebAssembly.</p>
       <p className="muted" style={{ margin: 0, maxWidth: 400 }}>MIT License · © 2026 Wonder Assembly LLC · {link('./LICENSE.txt', 'license')}. Select Subject and Remove Background use the {link('https://huggingface.co/onnx-community/ormbg-ONNX', 'ormbg')} model (Apache-2.0) with ONNX Runtime Web (MIT).</p>
