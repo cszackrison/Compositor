@@ -8,11 +8,13 @@ import { type DeepGrid, type DeepPixels, runDeep } from './deepFilters'
 import type { Adjustment } from '../model/types'
 
 // Filter previews off the main thread: the same filter functions and wasm kernels, so a slow one never freezes the page.
-type Request = { id: number; name: keyof typeof kinds; args: unknown[]; scale?: number; scaled?: number[]; input: Omit<FilterInput, 'pixels'> & { pixels: { width: number; height: number; channels: 1 | 4; data: Uint8Array } } }
+type Request = { id: number; name: keyof typeof kinds; args: unknown[]; scale?: number; scaled?: number[]; source?: number; enlarge?: boolean; input: Omit<FilterInput, 'pixels'> & { pixels: { width: number; height: number; channels: 1 | 4; data: Uint8Array } } }
 // A 16-bit or HDR layer's OK: the filter at full depth (deepFilters.ts).
 type DeepRequest = { id: number; name: keyof typeof kinds; args: unknown[]; input: Omit<FilterInput, 'pixels'>; deep: DeepPixels; grid: DeepGrid | null; single?: boolean }
 
 let ready: Promise<void> | undefined
+// The last reduced copy, by the session that sent its pixels: every preview in a session starts from the same original.
+let reduced: { source: number; pixels: Raster } | null = null
 
 self.onmessage = async (event: MessageEvent<Request | DeepRequest | WebAssembly.Module | { assetBase: string }>) => {
   if (event.data instanceof WebAssembly.Module) { ready = loadKernels(event.data); return }
@@ -28,19 +30,23 @@ self.onmessage = async (event: MessageEvent<Request | DeepRequest | WebAssembly.
     } catch (error) { self.postMessage({ id, error: (error as Error).message }) }
     return
   }
-  const { id, name, args, input, scale = 1, scaled = [] } = event.data
+  const { id, name, args, input, scale = 1, scaled = [], source, enlarge = true } = event.data
   try {
     await ready
     if (name === 'cameraRaw') await loadCameraRawTables()
     const full = new Raster(input.pixels.width, input.pixels.height, input.pixels.channels, input.pixels.data)
     const run = kinds[name] as unknown as (input: FilterInput, ...args: unknown[]) => FilterOutput
     // A preview of a large layer runs on a copy at most 2048 px on its longest side, its pixel-sized settings scaled to match,
-    // and comes back enlarged to the layer's grid, as the Mac app previews (FilterJob.scale). OK always runs at full size.
-    const pixels = scale < 1 ? resample(full, Math.max(1, Math.round(full.width * scale)), Math.max(1, Math.round(full.height * scale))) : full
+    // and comes back enlarged to the layer's grid, as the Mac app previews (FilterJob.scale), or as it is when `enlarge` is off and
+    // it's on the copy's own grid. OK always runs at full size.
+    const width = Math.max(1, Math.round(full.width * scale)), height = Math.max(1, Math.round(full.height * scale))
+    const cached = reduced && reduced.source === source && reduced.pixels.width === width && reduced.pixels.height === height ? reduced.pixels : null
+    const pixels = scale >= 1 ? full : cached?.clone() ?? resample(full, width, height)
+    if (scale < 1 && !cached && source !== undefined) reduced = { source, pixels: pixels.clone() }
     // The copy's pixels map to the document through the layer's mapping, scaled up to the layer's own pixels first.
     const toDocument = scale < 1 ? multiply(input.toDocument, scaleBy(full.width / pixels.width, full.height / pixels.height)) : input.toDocument
     let out = run({ ...input, pixels, toDocument }, ...args.map((a, i) => scaled.includes(i) && typeof a === 'number' ? a * scale : a))
-    if (scale < 1 && out) {
+    if (scale < 1 && out && (enlarge || !(out instanceof Raster))) {
       // Enlarged by the copy's own ratios, so a result on the copy's grid comes back exactly on the layer's.
       const small = out instanceof Raster ? out : out.pixels, origin = out instanceof Raster ? [0, 0] : out.origin, fx = full.width / pixels.width, fy = full.height / pixels.height
       const big = resample(small, Math.max(1, Math.round(small.width * fx)), Math.max(1, Math.round(small.height * fy)))

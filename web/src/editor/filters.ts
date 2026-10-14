@@ -32,13 +32,15 @@ export function canvasSides(): kinds.Sides {
 
 export const isJob = (run: FilterRun | FilterJob | undefined | null): run is FilterJob => !!run && typeof run === 'object' && 'job' in run
 
-let worker: Worker | null | undefined
+// Two workers: previews run on the first; the second sharpens a draft preview once the settings rest, so a new setting never waits on it.
+const workers: (Worker | null | undefined)[] = []
 let nextId = 1
 const waiting = new Map<number, { resolve: (out: FilterOutput | DeepPixels) => void; reject: (error: Error) => void }>()
 const onMainThread = (j: FilterJob, input: FilterInput) => (kinds[j.job] as unknown as (input: FilterInput, ...args: unknown[]) => FilterOutput)(input, ...j.args)
 
-function filterWorker(): Worker | null {
-  if (worker !== undefined) return worker
+function filterWorker(index = 0): Worker | null {
+  if (workers[index] !== undefined) return workers[index]
+  let worker: Worker | null
   try {
     worker = new Worker(new URL('./filterWorker.ts', import.meta.url), { type: 'module' })
     worker.onmessage = (event: MessageEvent<{ id: number; error?: string; deep?: DeepPixels; result?: { width: number; height: number; channels: 1 | 4; data: Uint8Array; origin: [number, number] | null } | null }>) => {
@@ -54,16 +56,16 @@ function filterWorker(): Worker | null {
     worker.postMessage({ assetBase: new URL(import.meta.env.BASE_URL, location.href).href })
     worker.onerror = () => { waiting.forEach(p => p.reject(new Error('The filter stopped unexpectedly.'))); waiting.clear() }
   } catch { worker = null }
-  return worker
+  return workers[index] = worker
 }
 
 // Runs a filter job in the worker, or here where workers can't start. The input's pixels move to the worker.
 // The filters whose settings are in pixels, by which arguments: a preview of a large layer scales those with the copy it runs on.
-const previewLimit = 2048
+const previewLimit = 2048, draftLimit = 1024
 const pixelSettings: Partial<Record<keyof typeof kinds, number[]>> = { gaussianBlur: [0], motionBlur: [1], progressiveBlur: [0, 1], bloom: [1], tonalContrast: [4], cameraRaw: [2] }
 // Noise, grain, dither and scanlines preview at full size, as on the Mac: made on a smaller copy they'd look coarser once enlarged.
 const fullSize = (j: FilterJob) => j.job === 'addNoise' || j.job === 'dither' || j.job === 'scanlines' || j.job === 'contentAwareFill' || (j.job === 'adjustPixels' && (j.args[0] as Adjustment).kind === 'Grain')
-const previewScale = (j: FilterJob, input: FilterInput) => fullSize(j) ? 1 : Math.min(1, previewLimit / Math.max(input.pixels.width, input.pixels.height))
+const previewScale = (j: FilterJob, input: FilterInput, limit = previewLimit) => fullSize(j) ? 1 : Math.min(1, limit / Math.max(input.pixels.width, input.pixels.height))
 
 // A filter job on a 16-bit or HDR layer's pixels at their full depth (deepFilters.ts), on `grid` when it spreads past the layer.
 function runDeepJob(j: FilterJob, input: Omit<FilterInput, 'pixels'>, deep: DeepPixels, grid: DeepGrid | null, single = false): Promise<DeepPixels> {
@@ -76,13 +78,15 @@ function runDeepJob(j: FilterJob, input: Omit<FilterInput, 'pixels'>, deep: Deep
   })
 }
 
-function runJob(j: FilterJob, input: FilterInput, scale = 1): Promise<FilterOutput> {
-  const w = filterWorker()
+// `source` names the pixels, so the worker reduces them once per session; with `enlarge` false a result on the layer's grid comes
+// back at the reduced size, for the GPU to stretch over the layer.
+function runJob(j: FilterJob, input: FilterInput, scale = 1, source?: number, enlarge = true, index = 0): Promise<FilterOutput> {
+  const w = filterWorker(index)
   if (!w) { try { return Promise.resolve(onMainThread(j, input)) } catch (error) { return Promise.reject(error) } }
   const id = nextId++, { pixels, ...rest } = input
   return new Promise((resolve, reject) => {
     waiting.set(id, { resolve: out => resolve(out as FilterOutput), reject })
-    w.postMessage({ id, name: j.job, args: j.args, scale, scaled: pixelSettings[j.job] ?? [], input: { ...rest, pixels: { width: pixels.width, height: pixels.height, channels: pixels.channels, data: pixels.data } } }, [pixels.data.buffer])
+    w.postMessage({ id, name: j.job, args: j.args, scale, scaled: pixelSettings[j.job] ?? [], source, enlarge, input: { ...rest, pixels: { width: pixels.width, height: pixels.height, channels: pixels.channels, data: pixels.data } } }, [pixels.data.buffer])
   })
 }
 
@@ -120,10 +124,14 @@ export function placeOnGrid(source: Raster, origin: [number, number], width: num
   return out
 }
 
+let sessions = 0
+const sameJob = (a: FilterJob, b: FilterJob | null) => !!b && a.job === b.job && JSON.stringify(a.args) === JSON.stringify(b.args)
+
 // A filter being previewed on the active layer (or its mask). Each preview runs on the untouched original and shows the result in
 // place; `commit` keeps it as one undo step, `cancel` puts the original back. With a selection only the selected part changes,
 // blended by its soft edge.
 export class FilterSession {
+  private readonly source = ++sessions
   private pending = 0
   private queued: FilterRun | null = null
   private shown: Raster | null = null
@@ -136,6 +144,9 @@ export class FilterSession {
   // The job last shown, and whether it was a reduced preview that OK has to run again at full size.
   private shownJob: FilterJob | null = null
   private shownReduced = false
+  // The larger preview running on the second worker, and the one to run once it's done.
+  private sharpening: Promise<void> | null = null
+  private nextSharpen: { job: FilterJob; scale: number } | null = null
   private finalRun = false
   // A 16-bit or HDR layer's pixels, which OK runs the filter on at their full depth; and the grid the last result came on.
   private deep: Deep | null = null
@@ -180,19 +191,35 @@ export class FilterSession {
     this.queuedJob = null
     if (!next) { this.onBusy?.(false); return }
     this.onBusy?.(true)
-    const input = this.input(), scale = this.finalRun ? 1 : previewScale(next, input)
-    this.running = runJob(next, input, scale)
+    // A large layer previews first from a small copy, quick enough to follow a slider, then from a larger one once the settings rest.
+    const input = this.input(), scale = this.finalRun ? 1 : previewScale(next, input, draftLimit), sharper = this.finalRun ? 1 : previewScale(next, input)
+    this.running = runJob(next, input, scale, this.source, this.enlarges())
       .then(out => { if (!this.closed) { this.failed = false; this.applyResult(out); this.shownJob = next; this.shownReduced = scale < 1; this.onError?.(null) } }, (error: Error) => { if (!this.closed) { this.failed = true; this.onError?.(error.message) } })
-      .then(() => this.previewHDR(next, scale))
+      .then(() => sharper > scale ? this.sharpen(next, sharper) : this.previewHDR(next, scale))
       // A result that can't be shown fails like the filter itself, so OK never waits on a broken run.
       .catch((error: Error) => { if (!this.closed) { this.failed = true; this.onError?.(error.message) } })
       .finally(() => { this.running = null; this.pump() })
+  }
+
+  private enlarges() { return this.isMask || !!this.owner.state.selection }
+
+  // The draft shown for `job` made again at `scale` on the second worker, shown unless a newer setting has come since.
+  private sharpen(job: FilterJob, scale: number) {
+    const stale = () => this.closed || this.finalRun || this.failed || !!this.queuedJob || this.shownJob !== job
+    if (stale()) return
+    if (this.sharpening) { this.nextSharpen = { job, scale }; return }
+    this.sharpening = runJob(job, this.input(), scale, this.source, this.enlarges(), 1)
+      .then(out => { if (stale() || this.running) return; this.applyResult(out); this.shownReduced = scale < 1; return this.previewHDR(job, scale) })
+      .catch(() => {})
+      .finally(() => { this.sharpening = null; const next = this.nextSharpen; this.nextSharpen = null; if (next) this.sharpen(next.job, next.scale) })
   }
 
   applyNow(run: FilterRun) { this.applyResult(run(this.input())) }
 
   private applyResult(result: FilterOutput) {
     if (!result) { this.shape = null; this.show(this.original, this.transform); return }
+    // A reduced preview on the layer's own grid, stretched over it as it is.
+    if (result instanceof Raster && (result.width !== this.original.width || result.height !== this.original.height)) { this.shape = null; result.touch(); this.show(result, this.transform); return }
     const pixels = result instanceof Raster ? result : result.pixels
     const origin: [number, number] = result instanceof Raster ? [0, 0] : result.origin
     this.shape = { origin, width: pixels.width, height: pixels.height }
@@ -246,7 +273,10 @@ export class FilterSession {
     while (this.running) await this.running
     const next = run ?? this.queuedJob ?? this.queued ?? (this.shownReduced ? this.shownJob : null)
     this.queued = null
-    if (isJob(next)) { this.queuedJob = next; this.pump() }
+    // A 16-bit or HDR layer's result comes from its full-depth run, so a reduced preview on its own grid goes straight to that.
+    const deepNext = isJob(next) && this.deep && this.shownReduced && !this.grid() && !this.failed && !rasterizes.has(next.job) && sameJob(next, this.shownJob)
+    if (deepNext) this.queuedJob = null
+    else if (isJob(next)) { this.queuedJob = next; this.pump() }
     else if (next) this.applyNow(next)
     while (this.running) await this.running
     const finalJob = this.shownJob
