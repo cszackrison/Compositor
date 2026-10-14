@@ -37,7 +37,8 @@ export class RawSource {
       // One decode at a time: LibRaw holds one open file, so another opened before this one's pixels are read would hand them over.
       found = this.queue.then(async () => {
         const raw = await this.libraw()
-        await raw.open(this.bytes.slice(), { useCameraWb: true, outputBps: 16, outputColor: 1, gamm: [1, 1], noAutoBright: true, halfSize: half, userQual: half ? 0 : 3, highlight: s.highlightRecovery ? 2 : 0, threshold: s.noiseReduction * 400 })
+        // Every option this needs is given: LibRaw keeps the last open's (`asShot`'s noInterpolation would leave the full frame undemosaiced).
+        await raw.open(this.bytes.slice(), { noInterpolation: false, useCameraWb: true, outputBps: 16, outputColor: 1, gamm: [1, 1], noAutoBright: true, halfSize: half, userQual: half ? 0 : 3, highlight: s.highlightRecovery ? 2 : 0, threshold: s.noiseReduction * 400 })
         const image = await raw.imageData()
         if (!image || image.colors !== 3) throw new Error(`“${this.name}” couldn’t be developed.`)
         const pixels = image.data instanceof Uint16Array ? image.data : new Uint16Array(image.data.buffer, image.data.byteOffset, image.data.byteLength >> 1)

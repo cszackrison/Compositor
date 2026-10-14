@@ -79,7 +79,7 @@ export function RawDevelop() {
   }
   const set = (change: Partial<RawDevelopSettings>) => setSettings({ ...settings, ...change })
   const slider = (title: string, key: 'exposure' | 'temperature' | 'tint' | 'boost' | 'noiseReduction', min: number, max: number, step: number, unit: string, digits: number, disabled = false, help?: string) => (
-    <div className="row" title={help} style={disabled ? { opacity: 0.45 } : undefined}><span style={{ width: 110 }}>{title}</span><input type="range" min={min} max={max} step={step} disabled={disabled || importing} value={settings[key]} onChange={e => set({ [key]: +e.target.value })} style={{ width: 300 }} /><span className="muted" style={{ width: 80, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{settings[key].toFixed(digits)}{unit}</span></div>
+    <div className="row" title={help} style={{ gridTemplateColumns: '120px 1fr 72px', ...(disabled ? { opacity: 0.45 } : {}) }}><span>{title}</span><input type="range" min={min} max={max} step={step} disabled={disabled || importing} value={settings[key]} onChange={e => set({ [key]: +e.target.value })} style={{ width: '100%' }} /><span className="muted" style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{settings[key].toFixed(digits)}{unit}</span></div>
   )
   return (
     <div className="modal-back">
@@ -94,7 +94,7 @@ export function RawDevelop() {
         {slider('Tint', 'tint', -150, 150, 1, '', 0)}
         {slider('Boost', 'boost', 0, 1, 0.01, '', 2)}
         {slider('Noise Reduction', 'noiseReduction', 0, 1, 0.01, '', 2, !settings.supportsNoiseReduction, 'Smooths grain, at the cost of fine detail')}
-        <div className="row" style={{ paddingLeft: 120, gap: 20 }}>
+        <div style={{ display: 'flex', paddingLeft: 128, gap: 20 }}>
           <label title="This file has no lens profile the web can apply" style={{ opacity: 0.45, whiteSpace: 'nowrap' }}><input type="checkbox" disabled checked={settings.lensCorrection} /> Lens Correction</label>
           <label title="Brings back detail in bright areas the camera partly clipped" style={{ whiteSpace: 'nowrap' }}><input type="checkbox" disabled={importing} checked={settings.highlightRecovery} onChange={e => set({ highlightRecovery: e.target.checked })} /> Highlight Recovery</label>
         </div>
