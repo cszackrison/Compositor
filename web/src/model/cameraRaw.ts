@@ -135,8 +135,9 @@ export function normalized(s: CameraRawSettings): CameraRawSettings {
 // MARK: The measured tables (CameraRawTables.swift)
 
 const size = 17, grid = 33, entries = size * size * size * 3, count = 763
+// Shadows' tables (from 236) are no longer read: see CameraRawShadows below.
 const exposureStart = 81, whitesStart = 102, blacksStart = 111, saturationStart = 120, vibranceStart = 129
-const contrastStart = 138, highlightsStart = 187, shadowsStart = 236, mixerStart = 285, calibrationStart = 405, parametricStart = 435
+const contrastStart = 138, highlightsStart = 187, mixerStart = 285, calibrationStart = 405, parametricStart = 435
 const gradingStart = 455, gradingLuminanceStart = 743
 const brightnesses = [53, 80, 104, 130, 160, 190, 224], adaptiveValues = [-100, -50, -25, 0, 25, 50, 100]
 
@@ -149,15 +150,18 @@ export function setAssetBase(url: string) { assetBase = url }
 
 // The tables file as the Mac keeps it (Resources/CameraRawTables.bin, copied beside the page at build time): a header, then each
 // table and channel's change from no change in steps, as a running difference, packed with xz. Decoded into wasm memory once.
-export function loadCameraRawTables(file?: Uint8Array): Promise<void> {
+// `shadowsFile`: Resources/CameraRawShadows.bin, fetched beside the tables when not given; without it Shadows changes nothing, as on
+// the Mac.
+export function loadCameraRawTables(file?: Uint8Array, shadowsFile?: Uint8Array): Promise<void> {
   if (tablesAt) return Promise.resolve()
   return loading ??= (async () => {
-    const fetched = async () => {
-      const response = await fetch(new URL(`CameraRawTables.bin?v=${typeof __BUILD__ === 'undefined' ? '' : __BUILD__}`, assetBase ?? new URL(import.meta.env.BASE_URL, location.href)))
+    const fetched = async (name: string) => {
+      const response = await fetch(new URL(`${name}?v=${typeof __BUILD__ === 'undefined' ? '' : __BUILD__}`, assetBase ?? new URL(import.meta.env.BASE_URL, location.href)))
       if (!response.ok) throw new Error('Camera Raw’s color tables could not be loaded.')
       return new Uint8Array(await response.arrayBuffer())
     }
-    const bytes = file ?? await fetched()
+    shadowTables = readShadowTables(shadowsFile ?? await fetched('CameraRawShadows.bin').catch(() => new Uint8Array(0)))
+    const bytes = file ?? await fetched('CameraRawTables.bin')
     const field = (at: number) => bytes[at] | bytes[at + 1] << 8
     if (String.fromCharCode(...bytes.subarray(0, 4)) !== 'CRT3' || field(4) !== size || field(6) !== count) throw new Error('Camera Raw’s color tables could not be read.')
     const step = field(8)
@@ -181,6 +185,37 @@ export function loadCameraRawTables(file?: Uint8Array): Promise<void> {
   })().catch(error => { loading = null; throw error })
 }
 export const cameraRawTablesLoaded = () => tablesAt !== 0
+
+// Camera Raw's Shadows as Photoshop's Camera Raw Filter draws it (CameraRawShadows.swift): it adapts to the picture region by region,
+// lifting a dark region below brighter ones far more than the same tone in a picture dark all over, so it's a pass of its own
+// (`adjust_camera_raw_shadows`) on coefficients fitted to Photoshop's renders. A picture under about 1020 pixels on its long side
+// takes Photoshop's gentler set.
+type ShadowTables = { normalFrom: number; amounts: number[]; coefficients: Float32Array[][]; xCount: number; kCount: number; xLow: number; xStep: number; kLow: number; kStep: number }
+let shadowTables: ShadowTables | null = null
+
+// "CRS2"; then, as 16-bit integers, the number of sets, amounts, x columns, K rows and terms; as 32-bit floats, the long side the
+// second set starts at, x's low end and step, K's low end and step, the amounts, and each set's coefficients amount by amount.
+export function readShadowTables(bytes: Uint8Array): ShadowTables | null {
+  if (bytes.length <= 34 || String.fromCharCode(...bytes.subarray(0, 4)) !== 'CRS2') return null
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength), int16 = (at: number) => view.getInt16(at, true), float = (at: number) => view.getFloat32(at, true)
+  const sets = int16(4), amounts = int16(6), xCount = int16(8), kCount = int16(10), terms = int16(12), per = xCount * kCount * terms, header = 34
+  if (sets !== 2 || amounts <= 0 || terms !== 3 || bytes.length !== header + amounts * 4 + sets * amounts * per * 4) return null
+  const start = header + amounts * 4
+  const coefficients = Array.from({ length: sets }, (_, set) => Array.from({ length: amounts }, (_, a) => Float32Array.from({ length: per }, (_, i) => float(start + ((set * amounts + a) * per + i) * 4))))
+  return { normalFrom: float(14), amounts: Array.from({ length: amounts }, (_, i) => float(header + i * 4)), coefficients, xCount, kCount, xLow: float(18), xStep: float(22), kLow: float(26), kStep: float(30) }
+}
+
+// The coefficients at `amount` (−100…100) for one set: the fitted amounts either side blended, zero itself being no change.
+function shadowCoefficients(amount: number, set: number, tables: ShadowTables): Float32Array {
+  const points: [number, Float32Array | null][] = tables.amounts.map((a, i) => [a, tables.coefficients[set][i]])
+  points.push([0, null])
+  points.sort((a, b) => a[0] - b[0])
+  const value = Math.min(points[points.length - 1][0], Math.max(points[0][0], amount))
+  let index = 0
+  while (index < points.length - 2 && value > points[index + 1][0]) index++
+  const [low, lower] = points[index], [high, upper] = points[index + 1], t = (value - low) / (high - low), count = tables.coefficients[set][0].length
+  return Float32Array.from({ length: count }, (_, i) => (lower?.[i] ?? 0) * (1 - t) + (upper?.[i] ?? 0) * t)
+}
 const table = (index: number) => tablesAt + index * entries
 
 // A stage: up to eight tables and their weights, as CameraRawStage (eight pointers, then eight floats).
@@ -213,6 +248,13 @@ function whiteBalance(temperature: number, tint: number): Stage {
 type Brightness = { brightest: number; luminance: number; logBrightest: number }
 const hasMeasuredDividers = (c: CurveSettings) => c.shadowSplit === 25 && c.darkSplit === 50 && c.lightSplit === 75 && c.refineSaturation === 0
 
+// How many of the stages come before Shadows, which runs as a pass of its own between them and the rest: Calibration, Exposure,
+// white balance, Contrast and Highlights.
+function beforeShadows(s: CameraRawSettings) {
+  const c = s.calibration
+  return [c.redHue, c.redSaturation, c.greenHue, c.greenSaturation, c.blueHue, c.blueSaturation].filter(v => v).length + +!!s.exposure + +!!(s.temperature || s.tint) + +!!s.contrast + +!!s.highlights
+}
+
 function stages(s: CameraRawSettings, b: Brightness): Stage[] {
   const out: Stage[] = [], c = s.calibration
   ;[c.redHue, c.redSaturation, c.greenHue, c.greenSaturation, c.blueHue, c.blueSaturation].forEach((v, i) => { if (v) out.push(fifty(calibrationStart + i * 5, v)) })
@@ -220,7 +262,6 @@ function stages(s: CameraRawSettings, b: Brightness): Stage[] {
   if (s.temperature || s.tint) out.push(whiteBalance(s.temperature, s.tint))
   if (s.contrast) out.push(adaptive(contrastStart, s.contrast, b.brightest))
   if (s.highlights) out.push(adaptive(highlightsStart, s.highlights, b.logBrightest))
-  if (s.shadows) out.push(adaptive(shadowsStart, s.shadows, b.luminance))
   if (s.whites) out.push(run(whitesStart, s.whites, -100, 25, 9))
   if (s.blacks) out.push(run(blacksStart, s.blacks, -100, 25, 9))
   if (s.saturation) out.push(run(saturationStart, s.saturation, -100, 25, 9))
@@ -308,17 +349,26 @@ export function applyCameraRaw(source: Raster, raw: CameraRawSettings, seed = 0,
   const paintColor = !folds && plain && (colorAdjusts || visualize >= 0)
   const pixels = plain && visualize < 0 && adjusts(s, 'Geometry') ? warp(source, s.geometry) : source.clone()
   const { width, height } = pixels, stride = width * 4
-  const b = s.contrast || s.highlights || s.shadows ? brightness(pixels) : { brightest: 128, luminance: 128, logBrightest: 128 }
-  let lookup = compose(stages(s, b))
+  const b = s.contrast || s.highlights ? brightness(pixels) : { brightest: 128, luminance: 128, logBrightest: 128 }
+  // Shadows adapts region by region, so it can't join the color table: the stages before it run, then it, then the rest. Its set
+  // goes by the layer's own size, so a preview drawn smaller matches the result.
+  const shadows = s.shadows && shadowTables ? shadowTables : null, all = stages(s, b), split = shadows ? beforeShadows(s) : 0
+  const before = shadows ? compose(all.slice(0, split)) : null
+  const coefficients = shadows ? shadowCoefficients(s.shadows, Math.max(width, height) / (scale > 0 ? scale : 1) >= shadows.normalFrom ? 1 : 0, shadows) : null
+  let lookup = compose(all.slice(split))
   if (folds && colorAdjusts) {
     lookup ??= identityTable()
     if (adjusts(s, 'Curve')) withBuffers([{ data: lookup, out: true }, { data: toneTable(s.curve) }, { data: channelTable(s.curve.red) }, { data: channelTable(s.curve.green) }, { data: channelTable(s.curve.blue) }], ([t, tone, r, g, bl]) => call('camera_raw_table_curves', t, grid, tone, r, g, bl))
     const more = [...mixerStages(s.mixer), ...gradingStages(s.grading)]
     if (more.length) compose(more, lookup)
   }
-  withBuffers([{ data: pixels.data, out: true }, ...(lookup ? [{ data: lookup }] : [])], ([p, t]) => {
+  withBuffers([{ data: pixels.data, out: true }, { data: lookup ?? new Float32Array(1) }, { data: before ?? new Float32Array(1) }, { data: coefficients ?? new Float32Array(1) }], ([p, t, early, c]) => {
     if (plain && s.calibration.shadowTint) call('adjust_camera_raw_calibration', p, width, height, stride, s.calibration.shadowTint, 0, 0, 0, 0, 0, 0, processVersions.indexOf(s.calibration.process) + 1)
-    if (t || clipping) call('adjust_camera_raw', p, width, height, stride, t ?? 0, grid, clipping)
+    if (shadows) {
+      if (before) call('adjust_camera_raw', p, width, height, stride, early, grid, 0)
+      call('adjust_camera_raw_shadows', p, width, height, stride, c, shadows.xCount, shadows.xLow, shadows.xStep, shadows.kCount, shadows.kLow, shadows.kStep)
+    }
+    if (lookup || clipping) call('adjust_camera_raw', p, width, height, stride, lookup ? t : 0, grid, clipping)
   })
   if (paintColor) {
     const mixerTable = compose(mixerStages(s.mixer)), gradeTable = compose(gradingStages(s.grading))

@@ -2,3 +2,4 @@ node_modules
 dist
 public/kernels.wasm
 public/CameraRawTables.bin
+public/CameraRawShadows.bin

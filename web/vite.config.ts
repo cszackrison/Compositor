@@ -14,7 +14,7 @@ const offline = (): Plugin => ({
   generateBundle(_, bundle) {
     const optional = /libheif|libraw|ort-wasm|subjectWorker|objectWorker|worker-/
     const built = Object.keys(bundle).filter(name => !optional.test(name) && !name.endsWith('.map'))
-    const files = ['./', 'index.html', `kernels.wasm?v=${build}`, `CameraRawTables.bin?v=${build}`, 'manifest.webmanifest', 'icon.png', 'icon-192.png', 'icon-512.png', 'apple-touch-icon.png', ...built.filter(n => n !== 'index.html')]
+    const files = ['./', 'index.html', `kernels.wasm?v=${build}`, `CameraRawTables.bin?v=${build}`, `CameraRawShadows.bin?v=${build}`, 'manifest.webmanifest', 'icon.png', 'icon-192.png', 'icon-512.png', 'apple-touch-icon.png', ...built.filter(n => n !== 'index.html')]
     this.emitFile({ type: 'asset', fileName: 'offline.json', source: JSON.stringify(files) })
   },
 })

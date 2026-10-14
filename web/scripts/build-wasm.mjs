@@ -6,9 +6,12 @@ import { fileURLToPath } from 'node:url'
 const web = join(dirname(fileURLToPath(import.meta.url)), '..')
 const kernels = join(web, '../Compositor/Rendering')
 const output = join(web, 'public/kernels.wasm')
-// Camera Raw's measured color tables go beside the page as the Mac keeps them; the browser unpacks them on first use.
-const tables = join(web, '../Compositor/Resources/CameraRawTables.bin'), tablesOut = join(web, 'public/CameraRawTables.bin')
-if (!existsSync(tablesOut) || statSync(tablesOut).mtimeMs < statSync(tables).mtimeMs) { mkdirSync(dirname(tablesOut), { recursive: true }); copyFileSync(tables, tablesOut) }
+// Camera Raw's measured color tables and its Shadows coefficients go beside the page as the Mac keeps them; the browser reads them on
+// first use.
+for (const name of ['CameraRawTables.bin', 'CameraRawShadows.bin']) {
+  const from = join(web, '../Compositor/Resources', name), to = join(web, 'public', name)
+  if (!existsSync(to) || statSync(to).mtimeMs < statSync(from).mtimeMs) { mkdirSync(dirname(to), { recursive: true }); copyFileSync(from, to) }
+}
 const sources = readdirSync(kernels).filter(name => /\.[ch]$/.test(name))
 const newest = Math.max(...[...sources.map(name => join(kernels, name)), join(web, 'wasm/runtime.c'), join(web, 'wasm/include/dispatch/dispatch.h'), import.meta.filename].map(path => statSync(path).mtimeMs))
 if (existsSync(output) && statSync(output).mtimeMs > newest) process.exit(0)

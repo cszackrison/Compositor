@@ -6,7 +6,8 @@ import { applyCameraRaw, newPointColor, autoBalance, defaultCameraRaw, isIdentit
 
 beforeAll(async () => {
   await loadKernels(readFileSync(new URL('../public/kernels.wasm', import.meta.url)))
-  await loadCameraRawTables(new Uint8Array(readFileSync(new URL('../../Compositor/Resources/CameraRawTables.bin', import.meta.url))))
+  const resource = (name: string) => new Uint8Array(readFileSync(new URL(`../../Compositor/Resources/${name}`, import.meta.url)))
+  await loadCameraRawTables(resource('CameraRawTables.bin'), resource('CameraRawShadows.bin'))
 })
 
 const solid = (rgb: number[], width = 4, height = 4, alpha = 255) => Raster.filled(width, height, 4, [...rgb.map(v => Math.round(v * alpha / 255)), alpha])
@@ -131,5 +132,52 @@ describe('Camera Raw', () => {
     const level = graded(input, s => { s.geometry = { ...s.geometry, upright: 'Guided', guides: [guide] } })
     const rowOf = (x: number) => { let best = 0, at = 0; for (let y = 0; y < height; y++) { const v = level.data[(y * width + x) * 4]; if (v > best) { best = v; at = y } } return at }
     expect(Math.abs(rowOf(20) - rowOf(60))).toBeLessThanOrEqual(1)
+  })
+
+  // Shadows adapts to the picture as Photoshop's does, measured on a made-up landscape (value noise over seven octaves from a fixed
+  // seed: a cloudy sky brightening upward over dark textured ground) against Photoshop's own renders of exactly these pictures. A
+  // picture under about 1020 pixels on its long side gets Photoshop's gentler treatment of small pictures, which ours follows less
+  // closely.
+  it('adapts Shadows to the picture as Photoshop does', () => {
+    const field = (width: number, height: number, seed: bigint) => {
+      let state = seed
+      const unit = () => { state = (state * 6364136223846793005n + 1442695040888963407n) & 0xffffffffffffffffn; return Number(state >> 11n) / 2 ** 53 }
+      const out = new Float64Array(width * height)
+      let amplitude = 1, total = 0
+      for (let octave = 0; octave < 7; octave++) {
+        const cell = Math.max(1, Math.max(width, height) >> (octave + 2)), gw = Math.floor(width / cell) + 2, gh = Math.floor(height / cell) + 2
+        const grid = Array.from({ length: gw * gh }, unit)
+        for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
+          const fx = x / cell, fy = y / cell, x0 = Math.floor(fx), y0 = Math.floor(fy), tx = fx - x0, ty = fy - y0
+          const top = grid[y0 * gw + x0] * (1 - tx) + grid[y0 * gw + x0 + 1] * tx, bottom = grid[(y0 + 1) * gw + x0] * (1 - tx) + grid[(y0 + 1) * gw + x0 + 1] * tx
+          out[y * width + x] += amplitude * (top * (1 - ty) + bottom * ty)
+        }
+        total += amplitude
+        amplitude *= 0.6
+      }
+      return out.map(v => v / total)
+    }
+    const landscape = (width: number) => {
+      const height = Math.floor(width * 2 / 3), clouds = field(width, height, 1n), lay = field(width, height, 2n), image = new Raster(width, height, 4)
+      for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
+        const i = y * width + x, horizon = height * (0.5 + 0.25 * (lay[x] - 0.5))
+        const sky = 140 + 80 * (1 - y / horizon) + 60 * (clouds[i] - 0.5), ground = 4 + 70 * Math.pow(clouds[i], 2.2) + 20 * (lay[i] - 0.5)
+        const value = Math.max(0, Math.min(255, Math.round(y < horizon ? sky : ground)))
+        image.data.set([value, value, value, 255], i * 4)
+      }
+      return image
+    }
+    // The bottom fifth's mean, all ground, and the top fifth's, all sky.
+    const means = (image: Raster) => {
+      const mean = (from: number, to: number) => { let sum = 0; for (let y = from; y < to; y++) for (let x = 0; x < image.width; x++) sum += image.data[(y * image.width + x) * 4 + 1]; return sum / ((to - from) * image.width) }
+      return { ground: mean(Math.floor(image.height * 4 / 5), image.height), sky: mean(0, Math.floor(image.height / 5)) }
+    }
+    // Width, Shadows, Photoshop's ground and sky, and how near ours must be. Unchanged: ground 19.7, sky 204.7.
+    const cases: [number, number, number, number, number][] = [[1200, 100, 59.0, 205.9, 4], [1200, 50, 34.9, 205.3, 4], [1200, -100, 4.2, 203.6, 4], [600, 100, 51.0, 205.8, 10], [600, 50, 32.2, 205.2, 4], [600, -100, 5.5, 203.6, 4]]
+    for (const [width, amount, ground, sky, tolerance] of cases) {
+      const result = means(graded(landscape(width), s => { s.shadows = amount }))
+      expect(Math.abs(result.ground - ground), `${width} wide, Shadows ${amount}: ground ${result.ground}, Photoshop ${ground}`).toBeLessThanOrEqual(tolerance)
+      expect(Math.abs(result.sky - sky), `${width} wide, Shadows ${amount}: sky ${result.sky}, Photoshop ${sky}`).toBeLessThanOrEqual(2)
+    }
   })
 })

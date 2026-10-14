@@ -104,6 +104,17 @@ opt-in pen pressure, a web app manifest for the home screen, a large-canvas warn
 - [x] Saving in the browser asks for persistent storage, and on iOS away from the Home Screen the notice says Safari can clear it after a
   week without a visit, pointing to Add to Home Screen or Download as Zip.
 
+## From upstream (Mac 1.5.2)
+
+Merged 2026-10-14.
+
+- [x] **Camera Raw Shadows adapts to the picture** (735c2cc): Shadows is a pass of its own between the stages before and after it
+  (`adjust_camera_raw_shadows`, compiled with the other kernels), on the coefficients in Resources/CameraRawShadows.bin, copied
+  beside the page at build time like the color tables. Pictures under about 1020 px on their long side take Photoshop's gentler
+  set, chosen by the layer's own size so a preview matches. Upstream's test against Photoshop's renders of a made-up landscape passes
+  here too.
+- [x] **Camera Raw…** in the RAW develop sheet (a3a0e29): imports the RAW, then opens the Camera Raw Filter on its layer.
+
 ## From upstream (Mac 1.4.6 to 1.5.1)
 
 Merged 2026-10-12. Done in the merge: format version 13 (16-bit PNG and HDR OpenEXR layers open, shown dithered to 8 bits as the

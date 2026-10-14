@@ -9,11 +9,13 @@ import type { Raster } from '../model/raster'
 // The develop sheet for a camera RAW (RawDevelopSheet.swift): a RAW holds more range than a layer can, so what to keep is chosen
 // here. The preview develops a small copy as the sliders move; Import develops the full frame once, as a 16-bit layer.
 
-type Pending = { source: RawSource; settings: RawDevelopSettings; resolve: (result: { image: Raster; deep: Deep } | null) => void }
+// `cameraRaw`: Camera Raw… was chosen, so the Camera Raw Filter opens on the layer once it's in.
+type Developed = { image: Raster; deep: Deep; cameraRaw?: boolean }
+type Pending = { source: RawSource; settings: RawDevelopSettings; resolve: (result: Developed | null) => void }
 let pending: Pending | null = null
 
 // Puts the sheet up for `file` and waits for the choice; null when it's cancelled.
-export async function developRaw(file: File): Promise<{ image: Raster; deep: Deep } | null> {
+export async function developRaw(file: File): Promise<Developed | null> {
   const source = new RawSource(new Uint8Array(await file.arrayBuffer()), file.name)
   const settings = await source.asShot()
   return new Promise(resolve => {
@@ -67,12 +69,12 @@ export function RawDevelop() {
     return () => { live = false; clearTimeout(timer) }
   }, [settings])
   if (!job || !settings) return null
-  const finish = (result: { image: Raster; deep: Deep } | null) => { pending = null; store.set({ panel: null }); job.resolve(result) }
-  const importFrame = async () => {
+  const finish = (result: Developed | null) => { pending = null; store.set({ panel: null }); job.resolve(result) }
+  const importFrame = async (cameraRaw = false) => {
     setImporting(true)
     try {
       const frame = await job.source.develop(false, settings)
-      finish(makeDeep(frame.pixels, frame.width, frame.height, false))
+      finish({ ...makeDeep(frame.pixels, frame.width, frame.height, false), cameraRaw })
     } catch (e) { setImporting(false); setError((e as Error).message) }
   }
   const set = (change: Partial<RawDevelopSettings>) => setSettings({ ...settings, ...change })
@@ -99,7 +101,7 @@ export function RawDevelop() {
         {error && <span style={{ color: 'var(--danger)' }}>{error}</span>}
         <div className="buttons" style={{ justifyContent: 'space-between' }}>
           <button type="button" disabled={isAsShot(settings) || importing} onClick={() => setSettings(resetRaw(settings))}>Reset</button>
-          <span style={{ display: 'flex', gap: 8 }}><button type="button" disabled={importing} onClick={() => finish(null)}>Cancel</button><button type="submit" className="primary" disabled={importing}>Import</button></span>
+          <span style={{ display: 'flex', gap: 8 }}><button type="button" disabled={importing} onClick={() => finish(null)}>Cancel</button><button type="button" disabled={importing} title="Import, then open the Camera Raw Filter" onClick={() => importFrame(true)}>Camera Raw…</button><button type="submit" className="primary" disabled={importing}>Import</button></span>
         </div>
       </form>
     </div>

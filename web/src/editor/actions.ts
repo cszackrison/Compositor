@@ -93,6 +93,9 @@ export const openProject = guard(async () => {
 // Opens an image as a new document when nothing is open, or places it as a layer. A Photoshop file brings its layers. Dropped on the
 // canvas, each is centered where it was dropped (`at`, in document pixels).
 export const placeImages = guard(async (files: File[], at?: [number, number]) => {
+  // A RAW brought in with Camera Raw…: the Camera Raw Filter opens on its layer once everything is in, as Photoshop opens a RAW in
+  // Camera Raw.
+  let cameraRawOn: string | null = null
   for (const file of files) {
     const name = file.name.replace(/\.[^.]+$/, '')
     if (isPSD(new Uint8Array(await file.slice(0, 4).arrayBuffer()))) { await placePhotoshop(file, name, at); continue }
@@ -101,7 +104,9 @@ export const placeImages = guard(async (files: File[], at?: [number, number]) =>
     if (isRAW(file.name) && !developed) continue
     const { image, deep, profile }: Awaited<ReturnType<typeof decodeLayerFile>> = developed ?? await decodeLayerFile(file, store.hasDocument ? store.state.doc : undefined)
     await placeImage(image, name, deep, profile, at)
+    if (developed?.cameraRaw) cameraRawOn = store.state.activeId
   }
+  if (cameraRawOn && store.layer(cameraRawOn)) { store.setActive(cameraRawOn); store.set({ panel: 'Camera Raw Filter' }) }
 })
 
 async function placeImage(image: Raster, name: string, deep?: Layer['deep'], profile?: CMYKProfile | null, at?: [number, number]) {
