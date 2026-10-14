@@ -4,7 +4,7 @@ import { store, tabs, type Tool } from '../editor/store'
 import { clearRecent, loadRecent, recentProjects, subscribeRecent } from '../io/recent'
 import { browserProjects, loadBrowserProjects, subscribeBrowserProjects } from '../io/browserProjects'
 import { useCoarse } from './layout'
-import { closeProject, deleteBrowserProject, openBrowserProject, openRecent, documentName, downloadZip, exportImage, importFolder, importImage, openFiles, openProject, openAnything, openSample, placeImages, save } from '../editor/actions'
+import { closeProject, deleteBrowserProject, openBrowserProject, openRecent, documentName, downloadZip, exportImage, importFolder, importImage, openFiles, openProject, openAnything, placeImages, save } from '../editor/actions'
 import { copy, cut, layerViaCopy, paste } from '../editor/clipboard'
 import { carriesFiles, readDrop, canWriteDirectories } from '../io/files'
 import { adjustmentKinds, blendModes } from '../model/types'
@@ -194,7 +194,6 @@ export function App() {
       ...(!canWriteDirectories ? [{ label: 'Open Saved in Browser', disabled: !saved.length, submenu: saved.map(p => ({ label: p.name, action: () => openBrowserProject(p) })) }] : []),
       { label: 'Import Images…', action: importImage },
       { label: 'Import Folder…', action: importFolder },
-      { label: 'Open Sample Project', action: openSample },
       'divider',
       item(canWriteDirectories ? 'Save' : 'Save in Browser', 'Save'),
       item('Save As…', 'Save As'),

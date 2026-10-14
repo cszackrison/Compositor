@@ -359,11 +359,6 @@ export const pasteImage = guard(async () => {
   store.notify('There is no image on the clipboard.')
 })
 
-export const openSample = guard(async () => {
-  const bytes = new Uint8Array(await (await fetch(`${import.meta.env.BASE_URL}samples/Sample.comp.bin`)).arrayBuffer())
-  await openFiles(unzipPackage(bytes), { kind: 'download', name: 'Sample' })
-})
-
 // Open Recent: a project that's already open is just brought forward; one that's gone is dropped from the list.
 export const openRecent = guard(async (recent: Recent) => {
   for (const tab of tabs) if (tab.state.target?.kind === 'directory' && await tab.state.target.handle.isSameEntry(recent.handle)) { activateTab(tab); return }
