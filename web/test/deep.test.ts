@@ -1,7 +1,7 @@
 import { describe, expect, it, beforeAll } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { loadKernels } from '../src/kernels'
-import { runDeep } from '../src/editor/deepFilters'
+import { deepMerge, deepRun, deepRunCount, runDeep } from '../src/editor/deepFilters'
 import * as kinds from '../src/editor/filterKinds'
 import type { FilterInput, FilterOutput } from '../src/editor/filters'
 import { newAdjustment } from '../src/model/types'
@@ -62,6 +62,23 @@ describe('16-bit and HDR layers through filters (DeepLayerTests.swift)', () => {
     expect(fromHalf(down[0])).toBeLessThan(2.3)
     const blurred = runDeep('gaussianBlur', job('gaussianBlur', 0.5, false, { left: true, right: true, top: true, bottom: true }), input, { pixels: hdr, width: 2, height: 1, hdr: true }, null).pixels
     expect(fromHalf(blurred[0])).toBeGreaterThan(1)
+  })
+
+  it('makes the same result from its 8-bit runs one at a time, as workers share them', () => {
+    const hdr = new Uint16Array(256 * 4)
+    for (let x = 0; x < 256; x++) hdr.set([toHalf(x / 64), toHalf(0.3), toHalf(x / 300), toHalf(1)], x * 4)
+    for (const pixels of [ramp(), hdr]) {
+      const deep = { pixels, width: 256, height: 1, hdr: pixels === hdr }, run = job('tonalContrast', 60, 20, 30, 40, 4)
+      const count = deepRunCount('tonalContrast')
+      const parts = Array.from({ length: count }, (_, i) => deepRun('tonalContrast', run, input, deep, null, i))
+      expect(count).toBe(10)
+      expect(deepMerge('tonalContrast', deep, null, parts).pixels).toEqual(runDeep('tonalContrast', run, input, deep, null).pixels)
+      // Merged a band of rows at a time, as the workers share it.
+      const square = { ...deep, width: 16, height: 16 }, squareParts = Array.from({ length: count }, (_, i) => deepRun('tonalContrast', run, input, square, null, i))
+      const band = (y0: number, y1: number) => deepMerge('tonalContrast', { ...square, pixels: pixels.slice(y0 * 64, y1 * 64), height: y1 - y0 }, null, squareParts.map(r => new Raster(16, y1 - y0, 4, r.data.slice(y0 * 64, y1 * 64))), y0).pixels
+      expect([...band(0, 5), ...band(5, 16)]).toEqual([...deepMerge('tonalContrast', square, null, squareParts).pixels])
+    }
+    expect(deepRunCount('gaussianBlur')).toBe(0)
   })
 
   it('keeps HDR pixels HDR only while they go past white', () => {

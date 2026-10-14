@@ -6,8 +6,11 @@ import { execSync } from 'node:child_process'
 // optional parts loaded on first use (HEIC, RAW, the AI runtimes), which it keeps once they're used. The build's version names it.
 // Files without a hash in their name are asked for with the build's version, so a page never gets another build's copy.
 const build = Date.now().toString(36)
-// What the About box shows: the Mac app's version this port follows (from its Xcode project), and the commit and day it was built.
+// What the About box shows: the Mac app's version this port follows (from its Xcode project) and the web release on it, as
+// package.json's version gives them (1.5.2-1); then the commit and day it was built. A version for another Mac release isn't shown.
 const macVersion = (() => { try { return readFileSync(new URL('../Compositor.xcodeproj/project.pbxproj', import.meta.url), 'utf8').match(/MARKETING_VERSION = ([^;]+);/)?.[1] ?? '' } catch { return '' } })()
+const webVersion = (JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')) as { version?: string }).version ?? ''
+const version = macVersion && webVersion.startsWith(`${macVersion}-`) ? webVersion : macVersion
 const commit = (() => { try { return execSync('git rev-parse --short HEAD', { stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim() } catch { return '' } })()
 const offline = (): Plugin => ({
   name: 'offline-files',
@@ -20,4 +23,4 @@ const offline = (): Plugin => ({
 })
 
 // libraw-wasm starts its own worker beside itself, which Vite's dependency pre-bundling would move away from it.
-export default defineConfig({ base: './', plugins: [offline()], define: { __BUILD__: JSON.stringify(build), __VERSION__: JSON.stringify(macVersion), __COMMIT__: JSON.stringify(commit), __BUILT__: JSON.stringify(new Date().toISOString().slice(0, 10)) }, esbuild: { jsx: 'automatic' }, build: { target: 'es2022' }, optimizeDeps: { exclude: ['libraw-wasm'] }, worker: { format: 'es' } })
+export default defineConfig({ base: './', plugins: [offline()], define: { __BUILD__: JSON.stringify(build), __VERSION__: JSON.stringify(version), __COMMIT__: JSON.stringify(commit), __BUILT__: JSON.stringify(new Date().toISOString().slice(0, 10)) }, esbuild: { jsx: 'automatic' }, build: { target: 'es2022' }, optimizeDeps: { exclude: ['libraw-wasm'] }, worker: { format: 'es' } })

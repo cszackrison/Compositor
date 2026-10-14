@@ -3,7 +3,7 @@ import { Raster } from '../model/raster'
 import { apply, invert, type Mat3 } from '../render/gl'
 import type { Adjustment, Layer, Transform } from '../model/types'
 import { type Deep, bound, cutDeep, deepOf, flattened, makeDeep } from '../model/deep'
-import { type DeepGrid, type DeepPixels, rasterizes, runDeep } from './deepFilters'
+import { type DeepGrid, type DeepPixels, deepRunCount, placed, rasterizes, runDeep } from './deepFilters'
 import { fromHalf } from '../model/deep'
 import { toHalf } from '../io/exr'
 import { call, kernelModule, withBuffers } from '../kernels'
@@ -68,14 +68,33 @@ const fullSize = (j: FilterJob) => j.job === 'addNoise' || j.job === 'dither' ||
 const previewScale = (j: FilterJob, input: FilterInput, limit = previewLimit) => fullSize(j) ? 1 : Math.min(1, limit / Math.max(input.pixels.width, input.pixels.height))
 
 // A filter job on a 16-bit or HDR layer's pixels at their full depth (deepFilters.ts), on `grid` when it spreads past the layer.
-function runDeepJob(j: FilterJob, input: Omit<FilterInput, 'pixels'>, deep: DeepPixels, grid: DeepGrid | null, single = false): Promise<DeepPixels> {
-  const w = filterWorker(), adjustment = j.job === 'adjustPixels' ? j.args[0] as Adjustment : undefined
-  if (!w) { try { return Promise.resolve(runDeep(j.job, pixels => onMainThread(j, pixels), input, deep, grid, adjustment, single)) } catch (error) { return Promise.reject(error) } }
-  const id = nextId++
-  return new Promise((resolve, reject) => {
-    waiting.set(id, { resolve: out => resolve(out as DeepPixels), reject })
-    w.postMessage({ id, name: j.job, args: j.args, input, deep, grid, single }, [deep.pixels.buffer])
+// Its 8-bit runs, each a whole filter on the layer, are shared among several workers.
+async function runDeepJob(j: FilterJob, input: Omit<FilterInput, 'pixels'>, deep: DeepPixels, grid: DeepGrid | null, single = false): Promise<DeepPixels> {
+  const adjustment = j.job === 'adjustPixels' ? j.args[0] as Adjustment : undefined, count = single ? 0 : deepRunCount(j.job, adjustment)
+  if (!filterWorker()) return runDeep(j.job, pixels => onMainThread(j, pixels), input, deep, grid, adjustment, single)
+  const send = <T>(index: number, message: object, transfer: Transferable[] = []) => new Promise<T>((resolve, reject) => {
+    const id = nextId++
+    waiting.set(id, { resolve: out => resolve(out as T), reject })
+    filterWorker(index)!.postMessage({ id, name: j.job, args: j.args, input, grid, ...message }, transfer)
   })
+  if (count < 2) return send<DeepPixels>(0, { deep, single }, [deep.pixels.buffer])
+  const runs: Raster[] = [], lanes = Array.from({ length: Math.min(count, deepLanes()) }, (_, index) => index).filter(index => filterWorker(index))
+  let next = 0
+  await Promise.all(lanes.map(async index => { while (next < count) { const part = next++; runs[part] = await send<Raster>(index, { deep, part }) } }))
+  const source = placed(deep, grid), { width, height } = source, out = new Uint16Array(width * height * 4), bands = Math.min(lanes.length, height)
+  await Promise.all(lanes.slice(0, bands).map(async (index, band) => {
+    const y0 = Math.floor(height * band / bands), y1 = Math.floor(height * (band + 1) / bands), from = y0 * width * 4, to = y1 * width * 4
+    const pixels = source.pixels.slice(from, to), parts = runs.map(r => r.data.slice(from, to))
+    const merged = await send<DeepPixels>(index, { deep: { ...source, pixels, height: y1 - y0 }, grid: null, firstRow: y0, runs: parts.map(data => ({ width, height: y1 - y0, data })) }, [pixels.buffer, ...parts.map(data => data.buffer)])
+    out.set(merged.pixels, from)
+  }))
+  return { ...source, pixels: out }
+}
+
+// Workers for a deep OK's runs: one per core spared from the page, fewer where memory is short, as each holds a full-size copy.
+function deepLanes() {
+  const cores = Math.max(1, (navigator.hardwareConcurrency || 2) - 1), memory = (navigator as { deviceMemory?: number }).deviceMemory ?? 8
+  return Math.min(cores, memory >= 8 ? 5 : 2)
 }
 
 // `source` names the pixels, so the worker reduces them once per session; with `enlarge` false a result on the layer's grid comes

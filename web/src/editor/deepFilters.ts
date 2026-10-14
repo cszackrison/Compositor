@@ -26,7 +26,7 @@ export const rasterizes = new Set(['contentAwareFill', 'dither'])
 
 const stride = (width: number) => width * 8
 
-function placed(source: DeepPixels, grid: DeepGrid | null): DeepPixels {
+export function placed(source: DeepPixels, grid: DeepGrid | null): DeepPixels {
   if (!grid || (grid.width === source.width && grid.height === source.height && !grid.x && !grid.y)) return source
   const out = new Uint16Array(grid.width * grid.height * 4), row = source.width * 4
   for (let y = 0; y < source.height; y++) out.set(source.pixels.subarray(y * row, (y + 1) * row), ((y + grid.y) * grid.width + grid.x) * 4)
@@ -72,14 +72,36 @@ export function runDeep(name: string, run: (input: FilterInput) => FilterOutput,
   return { ...source, pixels: normalizing(source, sixteen => split(sixteen, width, height, mixesChannels.has(name), operation)) }
 }
 
+// `runDeep`'s 8-bit runs one at a time, so several workers can share them (`deepRun`, then `deepMerge` on all their results, which
+// can go a band of rows at a time). Only filters go this way; adjustments mostly take a color lookup instead.
+export const deepRunCount = (name: string, adjustment?: Adjustment) => adjustment || runsAtFullDepth.has(name) || rasterizes.has(name) ? 0 : splitSteps(mixesChannels.has(name)).length
+
+export function deepRun(name: string, run: (input: FilterInput) => FilterOutput, input: Omit<FilterInput, 'pixels'>, deep: DeepPixels, grid: DeepGrid | null, index: number): Raster {
+  const source = placed(deep, grid), pixels = splitAt(normalized(source).sixteen, source.width, source.height, splitSteps(mixesChannels.has(name))[index])
+  return onGrid(run({ ...input, pixels }), pixels, (w, h) => new Raster(w, h, 4))
+}
+
+// `firstRow`: where a band of rows starts in the whole picture.
+export function deepMerge(name: string, deep: DeepPixels, grid: DeepGrid | null, runs: Raster[], firstRow = 0): DeepPixels {
+  const source = placed(deep, grid), { sixteen, restore } = normalized(source)
+  return { ...source, pixels: restore(merged(sixteen, source.width, source.height, mixesChannels.has(name), runs, firstRow)) }
+}
+
 // `body` on 16-bit pixels: an HDR layer's with each highlight divided down to within white, its result multiplied back.
 export function normalizing(source: DeepPixels, body: (sixteen: Uint16Array) => Uint16Array): Uint16Array {
-  if (!source.hdr) return body(source.pixels)
+  const { sixteen, restore } = normalized(source)
+  return restore(body(sixteen))
+}
+
+function normalized(source: DeepPixels): { sixteen: Uint16Array; restore: (result: Uint16Array) => Uint16Array } {
+  if (!source.hdr) return { sixteen: source.pixels, restore: result => result }
   const { width, height } = source, normal = new Uint16Array(source.pixels.length), scales = new Float32Array(width * height)
   withBuffers([{ data: source.pixels }, { data: normal, out: true }, { data: scales, out: true }], ([h, n, s]) => call('deep_hdr_normalize', h, stride(width), n, stride(width), s, width, height))
-  const result = body(normal), out = new Uint16Array(result.length)
-  withBuffers([{ data: result }, { data: scales }, { data: out, out: true }], ([n, s, h]) => call('deep_hdr_restore', n, stride(width), s, h, stride(width), width, height))
-  return out
+  return { sixteen: normal, restore: result => {
+    const out = new Uint16Array(result.length)
+    withBuffers([{ data: result }, { data: scales }, { data: out, out: true }], ([n, s, h]) => call('deep_hdr_restore', n, stride(width), s, h, stride(width), width, height))
+    return out
+  } }
 }
 
 function lookup(pixels: Uint16Array, width: number, height: number, cube: Float32Array) {
@@ -97,19 +119,26 @@ function exposure(source: DeepPixels, adjustment: Adjustment) {
 
 // An 8-bit operation on 16-bit pixels without losing their precision (`DeepLayer.run`).
 function split(pixels: Uint16Array, width: number, height: number, mixes: boolean, operation: (pixels: Raster) => Raster): Uint16Array {
-  const runs: Raster[] = []
-  for (const [step, channel] of [[0, -1], ...[1, 2, 4].flatMap(step => (mixes ? [0, 1, 2] : [-1]).map(channel => [step, channel]))]) {
-    const low = new Raster(width, height, 4)
-    withBuffers([{ data: pixels }, { data: low.data, out: true }], ([d, o]) => call('deep_split', d, stride(width), o, width * 4, width, height, step, channel))
-    runs.push(operation(low))
-  }
+  return merged(pixels, width, height, mixes, splitSteps(mixes).map(step => operation(splitAt(pixels, width, height, step))))
+}
+
+// The 8-bit runs' steps up, and the channel each steps (-1 for all three).
+const splitSteps = (mixes: boolean) => [[0, -1], ...[1, 2, 4].flatMap(step => (mixes ? [0, 1, 2] : [-1]).map(channel => [step, channel]))]
+
+function splitAt(pixels: Uint16Array, width: number, height: number, [step, channel]: number[]) {
+  const low = new Raster(width, height, 4)
+  withBuffers([{ data: pixels }, { data: low.data, out: true }], ([d, o]) => call('deep_split', d, stride(width), o, width * 4, width, height, step, channel))
+  return low
+}
+
+function merged(pixels: Uint16Array, width: number, height: number, mixes: boolean, runs: Raster[], firstRow = 0): Uint16Array {
   const out = new Uint16Array(pixels.length), per = mixes ? 3 : 1
   const triple = (index: number) => [0, 1, 2].map(c => runs[1 + index * per + (mixes ? c : 0)])
   const buffers = [runs[0], ...triple(0), ...triple(1), ...triple(2)]
   return withBuffers([{ data: pixels }, ...buffers.map(r => ({ data: r.data })), { data: out, out: true }, { data: new Uint32Array(9) }], (pointers) => {
     const [d, low, ...rest] = pointers, results = rest.slice(0, 9), o = rest[9], table = rest[10]
     new Uint32Array(heap().buffer, table, 9).set(results)
-    call('deep_merge', d, stride(width), low, table, table + 12, table + 24, width * 4, o, stride(width), width, height, mixes ? 1 : 0)
+    call('deep_merge_rows', d, stride(width), low, table, table + 12, table + 24, width * 4, o, stride(width), width, height, mixes ? 1 : 0, firstRow)
     return out
   })
 }

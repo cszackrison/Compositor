@@ -30,6 +30,12 @@ void deep_merge(const uint16_t *deep, size_t deepStride, const uint8_t *lowResul
                 const uint8_t *const midResults[3], const uint8_t *const farResults[3], size_t stride, uint16_t *out,
                 size_t outStride, size_t width, size_t height, int mixes);
 
+// `deep_merge` on a band of a picture's rows, `firstRow` its first: each pixel's noise goes by its row in the whole picture, so
+// bands merged apart come out as the whole would.
+void deep_merge_rows(const uint16_t *deep, size_t deepStride, const uint8_t *lowResult, const uint8_t *const nearResults[3],
+                     const uint8_t *const midResults[3], const uint8_t *const farResults[3], size_t stride, uint16_t *out,
+                     size_t outStride, size_t width, size_t height, int mixes, size_t firstRow);
+
 // A painted 16-bit layer made whole: where its 8-bit pixels (`painted`, the base with the strokes over it) differ from
 // its 8-bit base alone (`base`), paint went there and its value is taken; elsewhere the 16-bit pixels in `deep` stay.
 // The strokes' patches are whole tiles, untouched pixels included, so laying them over the 16-bit pixels outright

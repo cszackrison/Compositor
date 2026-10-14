@@ -78,7 +78,8 @@ edited one saves as 8-bit. Text and shape metadata are dropped once their pixels
 ## Deploying
 
 It's live at [compositor.fyi](https://compositor.fyi). `npm run deploy` builds and uploads `dist/` to the server, where nginx
-serves it as static files over HTTPS (needed for WebGPU, folder access and the clipboard).
+serves it as static files over HTTPS (needed for WebGPU, folder access and the clipboard). Before a deploy, raise the web release in
+`package.json`'s version (`1.5.2-1`: the Mac version this follows, then the web release on it), which the About box shows.
 
 ## Not yet ported
 

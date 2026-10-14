@@ -84,6 +84,12 @@ void deep_split(const uint16_t *deep, size_t deepStride, uint8_t *out, size_t st
 void deep_merge(const uint16_t *deep, size_t deepStride, const uint8_t *lowResult, const uint8_t *const nearResults[3],
                 const uint8_t *const midResults[3], const uint8_t *const farResults[3], size_t stride, uint16_t *out,
                 size_t outStride, size_t width, size_t height, int mixes) {
+    deep_merge_rows(deep, deepStride, lowResult, nearResults, midResults, farResults, stride, out, outStride, width, height, mixes, 0);
+}
+
+void deep_merge_rows(const uint16_t *deep, size_t deepStride, const uint8_t *lowResult, const uint8_t *const nearResults[3],
+                     const uint8_t *const midResults[3], const uint8_t *const farResults[3], size_t stride, uint16_t *out,
+                     size_t outStride, size_t width, size_t height, int mixes, size_t firstRow) {
     deep_rows(height, ^(size_t first, size_t last) {
         for (size_t y = first; y < last; ++y) {
             const uint16_t *in = (const uint16_t *)((const uint8_t *)deep + y * deepStride);
@@ -96,7 +102,7 @@ void deep_merge(const uint16_t *deep, size_t deepStride, const uint8_t *lowResul
                 float past[3];
                 long room[3];
                 for (int k = 0; k < 3; ++k) {
-                    long low = deep_low(p[k], alpha, x, y, k);
+                    long low = deep_low(p[k], alpha, x, firstRow + y, k);
                     past[k] = deep_past(p[k], low);
                     room[k] = alpha - low;
                 }
