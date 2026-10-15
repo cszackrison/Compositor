@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
-import { canvasPicker, renderFull } from './canvasState'
+import { canvasPicker, sampleComposite } from './canvasState'
 import { store } from '../editor/store'
 import { NumberField, Scrub } from './Inspector'
 
@@ -43,13 +43,10 @@ function Picker({ request: r }: { request: Request }) {
   // Clicking the canvas samples the composite under the pointer, with any tool.
   useEffect(() => {
     if (r.sampling === false) return
-    const composite = renderFull(store.state.doc)
     canvasPicker.current = point => {
-      const x = Math.floor(point[0]), y = Math.floor(point[1])
-      if (x < 0 || y < 0 || x >= composite.width || y >= composite.height) return
-      const i = (y * composite.width + x) * 4, a = composite.data[i + 3]
-      if (!a) return
-      setHSB(h => fromRGB([0, 1, 2].map(c => Math.round(Math.min(a, composite.data[i + c]) / a * 255)) as RGB255, h))
+      const pixel = sampleComposite(store.state.doc, point), a = pixel?.[3]
+      if (!pixel || !a) return
+      setHSB(h => fromRGB([0, 1, 2].map(c => Math.round(Math.min(a, pixel[c]) / a * 255)) as RGB255, h))
     }
     return () => { canvasPicker.current = null }
   }, [])

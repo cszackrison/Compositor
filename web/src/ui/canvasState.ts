@@ -148,6 +148,20 @@ export function samplePixels(allLayers: boolean): Raster | null {
   return renderFull({ ...doc, layers: [{ ...layer, parentId: null, clipTo: null, opacity: 1, blendMode: 'Normal', visible: true, effects: null }] })
 }
 
+// One premultiplied pixel of the composite, rendered from only what reaches it: the point with the document's blur reach around it,
+// reduced when that is more than the GPU takes in one piece. Null off the canvas or before the canvas is ready.
+export function sampleComposite(doc: Doc, point: [number, number]): [number, number, number, number] | null {
+  const c = compositor, x = Math.floor(point[0]), y = Math.floor(point[1])
+  if (!c || x < 0 || y < 0 || x >= doc.width || y >= doc.height) return null
+  const margin = blurReach(doc), x0 = Math.max(0, x - margin), y0 = Math.max(0, y - margin), x1 = Math.min(doc.width, x + margin + 1), y1 = Math.min(doc.height, y + margin + 1)
+  const scale = Math.min(1, c.maxSize / Math.max(x1 - x0, y1 - y0)), target = c.renderRegion(doc, x0, y0, x1 - x0, y1 - y0, scale)
+  try {
+    const pixels = c.read(target), px = Math.min(pixels.width - 1, Math.floor((x - x0 + 0.5) * scale)), py = Math.min(pixels.height - 1, Math.floor((y - y0 + 0.5) * scale))
+    const i = (py * pixels.width + px) * 4
+    return [pixels.data[i], pixels.data[i + 1], pixels.data[i + 2], pixels.data[i + 3]]
+  } finally { target.dispose() }
+}
+
 // While a panel samples from the canvas (Color Range, Levels' eyedroppers), clicks go to it instead of the tool.
 export const canvasPicker: { current: ((point: [number, number], shift: boolean, alt: boolean) => void) | null } = { current: null }
 // A panel's drag on the canvas (Hue/Saturation's targeted hand): screen x since the press, and whether ⌘ is held.

@@ -10,7 +10,7 @@ import { pixelToDocument } from '../render/compositor'
 import { GPUBrush } from '../render/gpuBrush'
 import { croppedLayer, grownTransform, placeOnGrid } from '../editor/filters'
 import { padMask } from '../editor/floating'
-import { compositor, requestOverlay, requestRender, samplePixels, view } from '../ui/canvasState'
+import { compositor, requestOverlay, requestRender, sampleComposite, samplePixels, view } from '../ui/canvasState'
 import type { ToolHandler } from './tool'
 
 // `blur`: a Blur stroke on a 16-bit or HDR layer, made again at full depth when it ends from the layer as it found it and its blur.
@@ -270,12 +270,10 @@ export const paint: ToolHandler = {
 }
 
 export function pickColor(point: [number, number], background: boolean) {
-  const pixels = samplePixels(true)
-  if (!pixels) return
-  const x = Math.floor(point[0]), y = Math.floor(point[1])
-  if (x < 0 || y < 0 || x >= pixels.width || y >= pixels.height) return
-  const i = (y * pixels.width + x) * 4, a = pixels.data[i + 3]
-  const color: [number, number, number] = a ? [0, 1, 2].map(c => Math.round(pixels.data[i + c] * 255 / a)) as [number, number, number] : [255, 255, 255]
+  const pixel = sampleComposite(store.state.doc, point)
+  if (!pixel) return
+  const a = pixel[3]
+  const color: [number, number, number] = a ? [0, 1, 2].map(c => Math.round(pixel[c] * 255 / a)) as [number, number, number] : [255, 255, 255]
   store.set(background ? { background: color } : { foreground: color })
 }
 
