@@ -39,7 +39,7 @@ export type State = Snapshot & {
   smearMode: SmearMode
   blurRadius: number
   gradient: { shape: 'Linear' | 'Radial'; style: 'Foreground to Transparent' | 'Foreground to Background'; reversed: boolean; opacity: number }
-  shape: { kind: ShapeKind; cornerRadius: number; lineWidth: number }
+  shape: { kind: ShapeKind; cornerRadius: number; smoothing: boolean; lineWidth: number }
   crop: { ratio: string; rect: { x: number; y: number; w: number; h: number } | null }
   tips: Record<'brush' | 'clone' | 'smear', Tip>
   brush: BrushSettings
@@ -70,7 +70,7 @@ export class Store {
     wand: { tolerance: 32, contiguous: true, sampleAll: false, sampleSize: 0 }, wandMode: 'Magic Wand', objectSelection: { sampleAll: true, edgeOffset: 0 }, selectionMode: 'replace', selectionAntialias: true, modifyAmounts: { expand: 1, contract: 1, feather: 2 },
     brush: { diameter: 40, hardness: 1, opacity: 1, smoothing: 0, erasing: false },
     healMode: 'Content-Aware', clone: { aligned: true, sampleAll: false, source: null, offset: null }, smearMode: 'Liquify', blurRadius: 5,
-    gradient: { shape: 'Linear', style: 'Foreground to Transparent', reversed: false, opacity: 1 }, shape: { kind: 'Rectangle', cornerRadius: 0, lineWidth: 4 }, crop: { ratio: 'Free', rect: null },
+    gradient: { shape: 'Linear', style: 'Foreground to Transparent', reversed: false, opacity: 1 }, shape: { kind: 'Rectangle', cornerRadius: 0, smoothing: false, lineWidth: 4 }, crop: { ratio: 'Free', rect: null },
     tips: { brush: { diameter: 40, hardness: 1, opacity: 1 }, clone: { diameter: 40, hardness: 0, opacity: 1 }, smear: { diameter: 40, hardness: 0, opacity: 1 } },
     foreground: [0, 0, 0], background: [255, 255, 255], target: null, saved: true, revision: 0, pixelRevision: 0, message: null, inspector: null, panel: null, effectSelection: null, maskPaintWhite: false,
   }

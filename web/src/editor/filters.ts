@@ -211,7 +211,8 @@ export class FilterSession {
     if (!next) { this.onBusy?.(false); return }
     this.onBusy?.(true)
     // A large layer previews first from a small copy, quick enough to follow a slider, then from a larger one once the settings rest.
-    const input = this.input(), scale = this.finalRun ? 1 : previewScale(next, input, draftLimit), sharper = this.finalRun ? 1 : previewScale(next, input)
+    // Camera Raw's is the layer at full size, as on the Mac, so its detail and what its adaptive sliders read match OK's.
+    const input = this.input(), scale = this.finalRun ? 1 : previewScale(next, input, draftLimit), sharper = this.finalRun || next.job === 'cameraRaw' ? 1 : previewScale(next, input)
     this.running = runJob(next, input, scale, this.source, this.enlarges())
       .then(out => { if (!this.closed) { this.failed = false; this.applyResult(out); this.shownJob = next; this.shownReduced = scale < 1; this.onError?.(null) } }, (error: Error) => { if (!this.closed) { this.failed = true; this.onError?.(error.message) } })
       .then(() => sharper > scale ? this.sharpen(next, sharper) : this.previewHDR(next, scale))

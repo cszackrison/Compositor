@@ -60,6 +60,7 @@ export async function readProject(files: PackageFiles): Promise<{ doc: Doc; acti
     if (record.maskFile && !mask) fail(`the mask for "${record.name}" is missing`)
     const exr = !!image && String(record.imageFile).endsWith('.exr')
     if (exr && manifest.version < 13) fail(`the image for "${record.name}" is OpenEXR, which needs format version 13`)
+    if (record.shape?.smoothing === true && manifest.version < 14) fail(`the shape "${record.name}" has smooth corners, which need format version 14`)
     const decoded = image ? await decodeLayerImage(image, exr) : null
     const blendMode = (record.blendMode ?? 'Normal') as BlendMode
     if (!blendModes.includes(blendMode)) fail(`unknown blend mode "${record.blendMode}"`)

@@ -1,7 +1,7 @@
 {
   "name": "compositor-web",
   "private": true,
-  "version": "1.5.2-2",
+  "version": "1.5.3-1",
   "type": "module",
   "scripts": {
     "wasm": "node scripts/build-wasm.mjs",

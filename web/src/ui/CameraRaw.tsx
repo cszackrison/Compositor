@@ -52,8 +52,8 @@ function Choice<T extends string>({ label, value, options, title, onChange }: { 
   return <div className="row" title={title}><span className="muted">{label}</span><select value={value} onChange={e => onChange(e.target.value as T)}>{options.map(o => <option key={o}>{o}</option>)}</select><span /></div>
 }
 
-// The histogram (or the vectorscope, from its menu) of what the layer shows now, the grade included: every other pixel each way, as
-// the Mac counts them. The triangles paint clipped shadows blue and clipped highlights red on the preview.
+// The histogram (or the vectorscope, from its menu) of what the layer shows now, the grade included: every fourth pixel each way up
+// to 4 megapixels, every eighth above, as the Mac counts them. The triangles paint clipped shadows blue and clipped highlights red on the preview.
 function Histogram({ layerId, view, setView }: { layerId: string; view: CameraRawView; setView: (v: CameraRawView) => void }) {
   const state = useEditor(), ref = useRef<HTMLCanvasElement>(null), [scope, setScope] = useState<'Histogram' | 'Vectorscope'>('Histogram')
   // The Option views and Visualize Range replace the picture, so the scope holds still under them; the triangles only mark clipped pixels.
@@ -62,7 +62,8 @@ function Histogram({ layerId, view, setView }: { layerId: string; view: CameraRa
     const canvas = ref.current
     if (!canvas || !image || frozen) return
     const bins = [new Float64Array(256), new Float64Array(256), new Float64Array(256)], side = 64, plot = new Float64Array(side * side), { width, height, data } = image
-    for (let y = 0; y < height; y += 2) for (let x = 0; x < width; x += 2) {
+    const step = width * height <= 4_000_000 ? 4 : 8
+    for (let y = 0; y < height; y += step) for (let x = 0; x < width; x += step) {
       const i = (y * width + x) * 4, a = data[i + 3]
       if (!a) continue
       const r = Math.min(1, data[i] / a), g = Math.min(1, data[i + 1] / a), b = Math.min(1, data[i + 2] / a), w = a / 255

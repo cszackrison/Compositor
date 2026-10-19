@@ -100,6 +100,26 @@ export function LayersPanel() {
     else { store.setActive(layer.id); store.set({ editingMask: onMask }) }
     setMenu({ x, y })
   }
+  // The middle button grabs the list and scrolls it, without selecting or dragging any rows.
+  const middleScroll = useRef<{ pointer: number; y: number } | null>(null)
+  const startMiddleScroll = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (event.button !== 1) return
+    event.preventDefault()
+    event.currentTarget.setPointerCapture(event.pointerId)
+    event.currentTarget.style.cursor = 'grabbing'
+    middleScroll.current = { pointer: event.pointerId, y: event.clientY }
+  }
+  const moveMiddleScroll = (event: React.PointerEvent<HTMLDivElement>) => {
+    const m = middleScroll.current
+    if (!m || m.pointer !== event.pointerId) return
+    event.currentTarget.scrollTop -= event.clientY - m.y
+    m.y = event.clientY
+  }
+  const endMiddleScroll = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (middleScroll.current?.pointer !== event.pointerId) return
+    middleScroll.current = null
+    event.currentTarget.style.cursor = ''
+  }
   // Touch has no right-click: holding a row still for half a second opens its menu.
   const coarse = useCoarse()
   const press = useRef<{ timer: number; x: number; y: number } | null>(null), touchedAt = useRef(0)
@@ -201,7 +221,8 @@ export function LayersPanel() {
     <aside className="side">
       <h2><span>Layers</span><span className="muted">{state.doc.layers.length}</span></h2>
       <Appearance />
-      <div className="layers" ref={listRef} onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDrop(null) }}>
+      <div className="layers" ref={listRef} onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDrop(null) }} onMouseDown={e => { if (e.button === 1) e.preventDefault() }}
+        onPointerDown={startMiddleScroll} onPointerMove={moveMiddleScroll} onPointerUp={endMiddleScroll} onPointerCancel={endMiddleScroll} onLostPointerCapture={endMiddleScroll}>
         {!store.hasDocument && <p className="muted" style={{ padding: 16, textAlign: 'center' }}>Create a canvas or open a project.</p>}
         {list.map(({ layer, depth, hiddenByParent }) => {
           const selected = state.selectedIds.includes(layer.id), isActive = layer.id === state.activeId

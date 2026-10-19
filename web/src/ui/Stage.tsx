@@ -240,8 +240,9 @@ export function Stage() {
   const overlayRef = useRef<HTMLCanvasElement>(null)
   const pan = useRef<{ x: number; y: number; offsetX: number; offsetY: number } | null>(null)
   const gesturing = useRef(false)
-  // A middle-button drag with ⌘ or Ctrl held zooms, as in Blender: up zooms in, doubling every 100 px, about where it was pressed.
-  const middleZoom = useRef<{ screen: [number, number]; y: number; zoom: number; out: boolean } | null>(null)
+  // A middle-button drag with ⌘ or Ctrl held zooms, as in Blender: up zooms in, doubling every 100 px, about where it was pressed. The
+  // cursor follows the latest movement, even before the pointer crosses back over where it started.
+  const middleZoom = useRef<{ screen: [number, number]; y: number; zoom: number; lastY: number; out: boolean } | null>(null)
   const guideGesture = useRef(false)
   const lastPointer = useRef<Pointer | null>(null)
   const [space, setSpace] = useState(false)
@@ -366,7 +367,7 @@ export function Stage() {
     ;(event.target as Element).setPointerCapture(event.pointerId)
     const p = pointerFrom(event)
     lastPointer.current = p
-    if (event.button === 1 && (event.metaKey || event.ctrlKey)) { middleZoom.current = { screen: p.screen, y: event.clientY, zoom: view.zoom, out: false }; updateCursor(); return }
+    if (event.button === 1 && (event.metaKey || event.ctrlKey)) { middleZoom.current = { screen: p.screen, y: event.clientY, zoom: view.zoom, lastY: event.clientY, out: false }; updateCursor(); return }
     if (space || store.state.tool === 'hand' || event.button === 1) { pan.current = { x: event.clientX, y: event.clientY, offsetX: view.offsetX, offsetY: view.offsetY }; updateCursor(); return }
     if (prefs.rulers && !canvasOnly && event.button === 0 && (p.screen[0] < rulerSize || p.screen[1] < rulerSize)) {
       if ((p.screen[0] >= rulerSize || p.screen[1] >= rulerSize) && !prefs.lockGuides) { startGuideDrag(p.screen[1] < rulerSize ? 'horizontal' : 'vertical', null, p); guideGesture.current = true }
@@ -400,7 +401,9 @@ export function Stage() {
     if (statusRef.current) statusRef.current.textContent = `${Math.floor(p.point[0])}, ${Math.floor(p.point[1])}  ·  ${Math.round(view.zoom * 100)}%`
     if (middleZoom.current) {
       const m = middleZoom.current, factor = Math.pow(2, (m.y - event.clientY) / 100)
-      view.zoomAt(m.zoom * factor / view.zoom, ...m.screen); m.out = factor < 1; updateCursor(); viewChanged(); requestRender(false); return
+      view.zoomAt(m.zoom * factor / view.zoom, ...m.screen)
+      if (event.clientY !== m.lastY) { m.out = event.clientY > m.lastY; m.lastY = event.clientY; updateCursor() }
+      viewChanged(); requestRender(false); return
     }
     if (pan.current) { view.offsetX = pan.current.offsetX + event.clientX - pan.current.x; view.offsetY = pan.current.offsetY + event.clientY - pan.current.y; viewChanged(); requestRender(false); return }
     if (guideGesture.current) { moveGuideDrag(p); return }

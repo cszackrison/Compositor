@@ -5,9 +5,31 @@ import { requestOverlay, view } from '../ui/canvasState'
 import { clearSnap, snapPoint } from './snap'
 import type { ToolHandler } from './tool'
 
-// A shape layer's style, as LayerShapeStyle saves it: colors 0–1, the corner radius and line width in document pixels, and a
-// line's ends as fractions of the layer box.
-export type ShapeStyle = { kind: ShapeKind; red: number; green: number; blue: number; cornerRadius: number; lineWidth?: number; start?: [number, number]; end?: [number, number] }
+// A shape layer's style, as LayerShapeStyle saves it: colors 0–1, the corner radius and line width in document pixels, smooth
+// corners on a rectangle (format 14), and a line's ends as fractions of the layer box.
+export type ShapeStyle = { kind: ShapeKind; red: number; green: number; blue: number; cornerRadius: number; smoothing?: boolean; lineWidth?: number; start?: [number, number]; end?: [number, number] }
+
+// A rectangle's outline into `path`, its corners rounded by `radius` (at most half the shorter side). Smooth corners are Figma's
+// cubic–arc–cubic construction at 60% smoothing (the iOS squircle), backing off where the corners run out of room
+// (ShapeKind.smoothedRectangle). https://www.figma.com/blog/desperately-seeking-squircles/
+export function rectanglePath(path: CanvasPath, x: number, y: number, width: number, height: number, cornerRadius: number, smooth = false) {
+  const radius = Math.min(Math.max(0, cornerRadius), width / 2, height / 2)
+  const smoothing = smooth && radius > 0 ? Math.min(0.6, Math.max(0, Math.min(width, height) / (2 * radius) - 1)) : 0
+  if (!(radius > 0)) { path.rect(x, y, width, height); return }
+  if (!(smoothing > 0)) { path.roundRect(x, y, width, height, radius); return }
+  const reach = (1 + smoothing) * radius, angle = smoothing * Math.PI / 4, tangent = radius * Math.tan(angle / 2), c = tangent * Math.cos(angle), d = tangent * Math.sin(angle)
+  const arcLength = radius * Math.SQRT2 * Math.sin((1 - smoothing) * Math.PI / 4), b = (reach - arcLength - c - d) / 3, a = 2 * b
+  const corners = [[x + width, y], [x + width, y + height], [x, y + height], [x, y]]
+  corners.forEach(([cx, cy], index) => {
+    const rotation = index * Math.PI / 2, cos = Math.cos(rotation), sin = Math.sin(rotation)
+    const at = (u: number, v: number): [number, number] => [cx + u * cos - v * sin, cy + u * sin + v * cos]
+    if (index === 0) path.moveTo(...at(-reach, 0)); else path.lineTo(...at(-reach, 0))
+    path.bezierCurveTo(...at(-reach + a, 0), ...at(-reach + a + b, 0), ...at(-reach + a + b + c, d))
+    path.arc(...at(-radius, radius), radius, -Math.PI / 2 + angle + rotation, -angle + rotation)
+    path.bezierCurveTo(...at(0, reach - a - b), ...at(0, reach - a), ...at(0, reach))
+  })
+  path.closePath()
+}
 
 export function rasterizeShape(style: ShapeStyle, width: number, height: number): Raster {
   const canvas = new OffscreenCanvas(width, height)
@@ -22,9 +44,8 @@ export function rasterizeShape(style: ShapeStyle, width: number, height: number)
   } else if (style.kind === 'Ellipse') {
     context.beginPath(); context.ellipse(width / 2, height / 2, width / 2, height / 2, 0, 0, Math.PI * 2); context.fill()
   } else {
-    const r = Math.min(Math.max(0, style.cornerRadius), width / 2, height / 2)
     context.beginPath()
-    if (r > 0) context.roundRect(0, 0, width, height, r); else context.rect(0, 0, width, height)
+    rectanglePath(context, 0, 0, width, height, style.cornerRadius, style.smoothing === true)
     context.fill()
   }
   const data = new Uint8Array(context.getImageData(0, 0, width, height).data.buffer)
@@ -41,7 +62,7 @@ export function redrawShape(layer: Layer): Partial<Layer> | null {
   return { image: rasterizeShape(style, w, h), ...(layer.mask && !layer.maskPlacement ? { maskPlacement: layer.transform } : {}) }
 }
 
-let draft: { anchor: [number, number]; point: [number, number]; square: boolean; center: boolean; radius: number } | null = null
+let draft: { anchor: [number, number]; point: [number, number]; square: boolean; center: boolean; radius: number; smoothing: boolean } | null = null
 
 function rect(d: NonNullable<typeof draft>) {
   let dx = Math.round(d.point[0]) - d.anchor[0], dy = Math.round(d.point[1]) - d.anchor[1]
@@ -60,7 +81,8 @@ let shiftHeld = false
 export const shapeTool: ToolHandler = {
   down(p) {
     const [x, y] = snapPoint(Math.round(p.point[0]), Math.round(p.point[1]), p.control)
-    draft = { anchor: [Math.round(x), Math.round(y)], point: [x, y], square: false, center: false, radius: store.state.shape.cornerRadius }
+    const { kind, cornerRadius, smoothing } = store.state.shape
+    draft = { anchor: [Math.round(x), Math.round(y)], point: [x, y], square: false, center: false, radius: cornerRadius, smoothing: kind === 'Rectangle' && smoothing && cornerRadius > 0 }
   },
   move(p) {
     if (!draft) return
@@ -84,7 +106,7 @@ export const shapeTool: ToolHandler = {
       style = { kind, red: r, green: g, blue: b, cornerRadius: 0, lineWidth: t, start: [(d.anchor[0] - x0) / box.w, (d.anchor[1] - y0) / box.h], end: [(end[0] - x0) / box.w, (end[1] - y0) / box.h] }
     } else {
       box = rect(d)
-      style = { kind, red: r, green: g, blue: b, cornerRadius: kind === 'Rectangle' ? d.radius : 0 }
+      style = { kind, red: r, green: g, blue: b, cornerRadius: kind === 'Rectangle' ? d.radius : 0, ...(d.smoothing ? { smoothing: true } : {}) }
     }
     if (box.w < 1 || box.h < 1) return
     const w = Math.floor(box.w), h = Math.floor(box.h)
@@ -119,7 +141,7 @@ export const shapeTool: ToolHandler = {
     }
     const box = rect(draft), [x, y] = view.toScreen(box.x, box.y), w = box.w * view.zoom, h = box.h * view.zoom
     if (kind === 'Ellipse') context.ellipse(x + w / 2, y + h / 2, w / 2, h / 2, 0, 0, Math.PI * 2)
-    else context.roundRect(x, y, w, h, Math.min(draft.radius * view.zoom, w / 2, h / 2))
+    else rectanglePath(context, x, y, w, h, draft.radius * view.zoom, draft.smoothing)
     context.fill(); context.stroke()
   },
 }

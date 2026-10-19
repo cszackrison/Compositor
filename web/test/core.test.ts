@@ -14,6 +14,7 @@ import { pixelToDocument } from '../src/render/compositor'
 import { zipPackage, unzipPackage } from '../src/io/files'
 import { contentAwareFill, defaultDither, defaultScanlines, dither, gaussianBlur, noSides, progressiveBlur, scanlines } from '../src/editor/filterKinds'
 import { identity } from '../src/render/gl'
+import { rectanglePath } from '../src/tools/shape'
 
 beforeAll(async () => { await loadKernels(readFileSync(new URL('../public/kernels.wasm', import.meta.url))) })
 
@@ -39,7 +40,7 @@ describe('project format', () => {
     const doc = sampleDoc()
     const files = writeProject(doc, doc.layers[1].id)
     const manifest = JSON.parse(new TextDecoder().decode(files.get('manifest.json')))
-    expect(manifest.version).toBe(13)
+    expect(manifest.version).toBe(14)
     expect(Object.keys(manifest)).toEqual([...Object.keys(manifest)].sort())
     const record = manifest.layers[1]
     expect(record.imageFile).toBe(`${record.id}.png`)
@@ -62,9 +63,20 @@ describe('project format', () => {
   it('rejects a newer format version', async () => {
     const files = writeProject(sampleDoc(), null)
     const manifest = JSON.parse(new TextDecoder().decode(files.get('manifest.json')))
-    manifest.version = 14
+    manifest.version = 15
     files.set('manifest.json', new TextEncoder().encode(JSON.stringify(manifest)))
-    await expect(readProject(files)).rejects.toThrow(/version 14/)
+    await expect(readProject(files)).rejects.toThrow(/version 15/)
+  })
+
+  it('keeps a shape\'s smooth corners, which need format version 14', async () => {
+    const doc = sampleDoc(), style = { kind: 'Rectangle', red: 1, green: 0, blue: 0, cornerRadius: 1, smoothing: true }
+    doc.layers[1] = { ...doc.layers[1], shape: style }
+    const files = writeProject(doc, null)
+    expect((await readProject(files)).doc.layers[1].shape).toEqual(style)
+    const manifest = JSON.parse(new TextDecoder().decode(files.get('manifest.json')))
+    manifest.version = 13
+    files.set('manifest.json', new TextEncoder().encode(JSON.stringify(manifest)))
+    await expect(readProject(files)).rejects.toThrow(/smooth corners, which need format version 14/)
   })
 
   it('rejects folders inside themselves', async () => {
@@ -296,5 +308,31 @@ describe('pixel tools', () => {
     expect(raster.data.every(v => v === 0)).toBe(true)
     history.redo()
     expect(raster.data[center + 3]).toBe(128)
+  })
+})
+
+describe('shape corners', () => {
+  // The calls a path receives, with every point it passes through.
+  function trace(width: number, height: number, radius: number, smooth: boolean) {
+    const calls: string[] = [], points: [number, number][] = []
+    const record = (name: string) => (...args: number[]) => { calls.push(name); for (let i = 0; i + 1 < args.length && name !== 'arc'; i += 2) points.push([args[i], args[i + 1]]); if (name === 'arc') points.push([args[0], args[1]]) }
+    const path = { moveTo: record('moveTo'), lineTo: record('lineTo'), bezierCurveTo: record('bezierCurveTo'), arc: record('arc'), closePath: record('closePath'), rect: record('rect'), roundRect: record('roundRect') } as unknown as CanvasPath
+    rectanglePath(path, 0, 0, width, height, radius, smooth)
+    return { calls, points }
+  }
+
+  it('starts a smooth corner 60% further along the edge than the radius, and stays in the box', () => {
+    const { calls, points } = trace(200, 100, 20, true)
+    expect(calls.filter(c => c === 'arc')).toHaveLength(4)
+    expect(points[0][0]).toBeCloseTo(200 - 1.6 * 20, 9)
+    expect(points[0][1]).toBe(0)
+    for (const [x, y] of points) { expect(x).toBeGreaterThanOrEqual(-1e-9); expect(x).toBeLessThanOrEqual(200 + 1e-9); expect(y).toBeGreaterThanOrEqual(-1e-9); expect(y).toBeLessThanOrEqual(100 + 1e-9) }
+  })
+
+  it('backs off smoothing where the corners have no room, and keeps a zero radius square', () => {
+    expect(trace(40, 40, 20, true).calls).toEqual(['roundRect'])
+    expect(trace(48, 40, 18, true).points[0][0]).toBeCloseTo(48 - (1 + (40 / 36 - 1)) * 18, 9)
+    expect(trace(40, 40, 0, true).calls).toEqual(['rect'])
+    expect(trace(200, 100, 20, false).calls).toEqual(['roundRect'])
   })
 })

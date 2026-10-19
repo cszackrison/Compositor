@@ -1,6 +1,6 @@
 import { useEffect, useState, useSyncExternalStore } from 'react'
 import { useEditor } from './hooks'
-import { openColorPicker } from './ColorPicker'
+import { ColorSwatch, openColorPicker } from './ColorPicker'
 import { store, type HealMode, type ShapeKind, type SmearMode, type Tool } from '../editor/store'
 import { Icon } from './icons'
 import { NumberField, Scrub } from './Inspector'
@@ -136,7 +136,11 @@ export function ToolHeader() {
       </>}
       {state.tool === 'shape' && <>
         <Choice value={state.shape.kind} options={['Rectangle', 'Ellipse', 'Line'] as ShapeKind[]} onChange={kind => store.set({ shape: { ...state.shape, kind } })} />
-        {state.shape.kind === 'Rectangle' && <Range label="Corner Radius" value={state.shape.cornerRadius} min={0} max={200} onChange={cornerRadius => store.set({ shape: { ...state.shape, cornerRadius } })} suffix="px" />}
+        <ColorSwatch title="Fill Color" value={state.foreground} onChange={foreground => store.set({ foreground })} />
+        {state.shape.kind === 'Rectangle' && <>
+          <Range label="Corner Radius" value={state.shape.cornerRadius} min={0} max={200} onChange={cornerRadius => store.set({ shape: { ...state.shape, cornerRadius } })} suffix="px" />
+          <label title={state.shape.cornerRadius > 0 ? 'Smooth squircle corners at 60% smoothing, matching Figma\'s iOS setting' : 'Set a radius above 0 to use smooth corners.'}><input type="checkbox" disabled={state.shape.cornerRadius <= 0} checked={state.shape.smoothing} onChange={e => store.set({ shape: { ...state.shape, smoothing: e.target.checked } })} /> Smooth Corners</label>
+        </>}
         {state.shape.kind === 'Line' && <Range label="Line Width" value={state.shape.lineWidth} min={1} max={100} onChange={lineWidth => store.set({ shape: { ...state.shape, lineWidth } })} suffix="px" />}
         <span className="muted">Fills with the foreground color. Shift for squares and 45° lines, {option} from the center</span>
       </>}
