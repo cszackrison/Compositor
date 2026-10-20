@@ -58,7 +58,7 @@ function composite(doc: Doc, floats: boolean): Raster | Float32Array | null {
   if (!c) throw new Error('The canvas is not ready')
   const { width, height } = doc, fits = Math.max(width, height) <= c.maxSize
   const margin = fits ? 0 : blurReach(doc), size = fits ? Math.max(width, height) : Math.min(4096, c.maxSize - 2 * margin - 32)
-  if (size < 256) throw new Error('A blur on this canvas reaches too far to render it in pieces this GPU can take.')
+  if (!fits && size < 256) throw new Error('A blur on this canvas reaches too far to render it in pieces this GPU can take.')
   let out: Raster | Float32Array | null = null
   for (let ty = 0; ty < height; ty += size) for (let tx = 0; tx < width; tx += size) {
     const x0 = Math.max(0, tx - margin), y0 = Math.max(0, ty - margin), x1 = Math.min(width, tx + size + margin), y1 = Math.min(height, ty + size + margin)

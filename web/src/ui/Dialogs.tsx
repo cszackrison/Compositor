@@ -8,7 +8,7 @@ import { canvasPicker, renderDeep, renderFull, renderLinear, requestRender } fro
 import { EffectPanel, Scrub } from './Inspector'
 import { ColorSwatch } from './ColorPicker'
 import { useEditor } from './hooks'
-import type { Raster } from '../model/raster'
+import type { LinearImage, Raster } from '../model/raster'
 import { type Transform, maxSide, maxSurfacePixels } from '../model/types'
 import { isDeep, isHDR } from '../model/deep'
 import { chosenProfile, pickProfile, subscribeProfiles } from '../io/cmyk'
@@ -179,12 +179,20 @@ function Trim() {
 // print: RGB at each opening, as most exports are for screens.
 type ExportFormat = 'JPEG' | 'PNG' | 'TIFF' | 'PDF' | 'EXR'
 let lastExportFormat: ExportFormat = 'PNG'
+type Flattened = { pixels: Raster; linear: LinearImage | null; deep: Float32Array | null }
+// The flattening the sheet works from, made once as it opens. One that can't be made closes the sheet with a note, rather than the app.
 function ExportAs({ start }: { start?: ExportFormat }) {
-  const pixels = useMemo(() => renderFull(store.state.doc), [])
-  const linear = useMemo(() => store.state.doc.layers.some(isHDR) ? renderLinear(store.state.doc) : null, [])
-  // A document with a 16-bit or HDR layer can be written as a 16-bit PNG, from the flattening at full depth: off by default, it's about
-  // twice the size.
-  const deep = useMemo(() => store.state.doc.layers.some(isDeep) ? renderDeep(store.state.doc) : null, [])
+  const flattened = useMemo((): Flattened | Error => {
+    const doc = store.state.doc
+    // A document with a 16-bit or HDR layer can be written as a 16-bit PNG, from the flattening at full depth: off by default, it's
+    // about twice the size.
+    try { return { pixels: renderFull(doc), linear: doc.layers.some(isHDR) ? renderLinear(doc) : null, deep: doc.layers.some(isDeep) ? renderDeep(doc) : null } }
+    catch (e) { return e as Error }
+  }, [])
+  useEffect(() => { if (flattened instanceof Error) { store.notify(flattened.message); close() } }, [flattened])
+  return flattened instanceof Error ? null : <ExportSheet start={start} {...flattened} />
+}
+function ExportSheet({ start, pixels, linear, deep }: { start?: ExportFormat } & Flattened) {
   const [sixteenBit, setSixteenBit] = useState(false)
   const others: ExportFormat[] = linear ? ['TIFF', 'PDF', 'EXR'] : ['TIFF', 'PDF']
   const resolution = store.state.doc.resolution || 72

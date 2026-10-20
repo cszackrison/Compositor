@@ -9,10 +9,10 @@ import { padMask } from './floating'
 import { deepOf, deepToFloats, flattened, floatsToDeep, isDeep, isHDR, makeDeep, rebound } from '../model/deep'
 
 // The app's own clipboard, shared by every tab: copied pixels keep where they came from, copied layers stay whole. A PNG of copied
-// pixels also goes to the system clipboard; a paste that brings back that same PNG uses the richer copy kept here.
+// pixels or layers also goes to the system clipboard; a paste that brings back that same PNG uses the richer copy kept here.
 // A 16-bit or HDR layer's copied pixels also keep their full depth (`deep`, floats with white at 1).
 type DeepRegion = { hdr: boolean; data: Float32Array }
-type Clip = { kind: 'pixels'; pixels: Raster; deep?: DeepRegion; origin: [number, number]; pngSize: number } | { kind: 'layers'; layers: Layer[]; from: Store; ids: string[] }
+type Clip = { kind: 'pixels'; pixels: Raster; deep?: DeepRegion; origin: [number, number]; pngSize: number } | { kind: 'layers'; layers: Layer[]; from: Store; ids: string[]; pngSize: number }
 let clip: Clip | null = null
 
 // A layer's own pixels drawn through its transform onto the canvas (no mask, opacity, blend mode or effects), or its mask as gray.
@@ -67,9 +67,13 @@ export async function copy(merged = false) {
   if (!merged && !store.state.selection && !store.state.editingMask) {
     if (!layer) return
     const ids = store.state.selectedIds.length ? store.state.selectedIds : [layer.id]
-    clip = { kind: 'layers', layers: [], from: store, ids: ids.filter(id => !store.ancestors(id).some(a => ids.includes(a.id))) }
-    clip.layers = clip.ids.flatMap(id => [store.layer(id)!, ...store.descendants(id)])
-    store.notify(clip.ids.length > 1 ? `Copied ${clip.ids.length} layers` : `Copied ${layer.name}`, 'info')
+    const copied: Clip = clip = { kind: 'layers', layers: [], from: store, ids: ids.filter(id => !store.ancestors(id).some(a => ids.includes(a.id))), pngSize: 0 }
+    copied.layers = copied.ids.flatMap(id => [store.layer(id)!, ...store.descendants(id)])
+    store.notify(copied.ids.length > 1 ? `Copied ${copied.ids.length} layers` : `Copied ${layer.name}`, 'info')
+    // The layers as they look on the canvas go to the system clipboard too, so other apps get them and a paste here isn't taken over by
+    // an older image left there.
+    const shown = copied.layers.map(l => copied.ids.includes(l.id) ? { ...l, parentId: null, clipTo: l.clipTo && copied.layers.some(c => c.id === l.clipTo) ? l.clipTo : null } : l)
+    try { copied.pngSize = await toSystemClipboard(Store.renderer!({ ...store.doc, layers: shown })) } catch { /* the app clipboard still has them */ }
     return
   }
   const source = merged ? Store.renderer!(store.doc) : layer ? layerOnCanvas(layer, store.state.editingMask) : null
@@ -123,7 +127,7 @@ export function copyLayersInto(target: Store, layers: Layer[], name = 'Copy Laye
 export async function paste(event?: ClipboardEvent) {
   const file = event?.clipboardData ? [...event.clipboardData.files].find(f => f.type.startsWith('image/')) : undefined
   // An image on the clipboard that isn't the one we put there came from elsewhere: it wins.
-  if (file && !(clip?.kind === 'pixels' && file.size === clip.pngSize)) {
+  if (file && !(clip && file.size === clip.pngSize)) {
     const image = await decodeImageFile(file)
     if (!store.hasDocument) { const { placeImages } = await import('./actions'); await placeImages([file]); return }
     pastePixels(image, null)
