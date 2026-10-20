@@ -44,7 +44,7 @@ export type ShortcutDefinition = { id: string; group: ShortcutGroup; title: stri
 
 // The Mac app's list, in its order, limited to what the web edition has. Browsers keep ⌘N, ⌘W and ⌘T (and their Shift forms)
 // for themselves, so New Canvas, Close Project, New Blank Layer and Transform add Option here. ⌘O is Open…, which takes any file the
-// app reads (a project folder can't be picked with files), so Open Project Folder adds Option.
+// app reads (a project folder can't be picked with files), so Open Project adds Option.
 export const definitions: ShortcutDefinition[] = ([
   ['Menus', 'Undo', c('z', 1)], ['Menus', 'Redo', c('z', 9)], ['Menus', 'New Canvas', c('n', 3)], ['Menus', 'Open', c('o', 1)], ['Menus', 'Open Project', c('o', 3)],
   ['Menus', 'Save', c('s', 1)], ['Menus', 'Save As', c('s', 9)], ['Menus', 'Export PNG', c('e', 9)], ['Menus', 'Export JPEG', c('s', 11)], ['Menus', 'Export As', c('w', 11)],

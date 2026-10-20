@@ -185,7 +185,7 @@ export function App() {
     { title: 'File', items: [
       item('New Canvas…', 'New Canvas'),
       item('Open…', 'Open'),
-      item(canWriteDirectories ? 'Open Project Folder…' : 'Open Project Folder (read only)…', 'Open Project'),
+      item('Open Project…', 'Open Project'),
       { label: 'Open Recent', disabled: !canWriteDirectories, submenu: [
         ...recent.map(r => ({ label: r.name, action: () => openRecent(r) })),
         ...(recent.length ? ['divider' as const] : []),
@@ -423,7 +423,7 @@ function Welcome() {
         <div className="actions">
           <button className="primary" onClick={open('New Canvas')}>New Canvas…</button>
           <button onClick={openAnything} title="An image, a Photoshop or camera RAW file, or a zipped project">Open…</button>
-          {!coarse && <button onClick={openProject}>Open Project Folder…</button>}
+          {!coarse && <button onClick={openProject} title="A .comp project folder">Open Project…</button>}
         </div>
         {saved.length > 0 && <div className="actions"><span className="muted">Saved in this browser</span>{saved.slice(0, 5).map(p => <button key={p.id} onClick={() => openBrowserProject(p)}>{p.name} <span className="muted">· {new Date(p.savedAt).toLocaleDateString()}</span></button>)}</div>}
       </div>

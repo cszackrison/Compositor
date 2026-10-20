@@ -20,8 +20,8 @@ npm run build    # static site in dist/, deployable anywhere
 
 ## Opening and saving
 
-- **Chrome and Edge**: *Open Project Folder* reads a `.comp` folder and *Save* writes it back in place, using the File System Access API. The Mac app's file watcher picks up the change.
-- **Firefox and Safari**: open a project folder or a zipped `.comp`; *Save* downloads a zip.
+- **Chrome and Edge**: *Open Project* reads a `.comp` folder and *Save* writes it back in place, using the File System Access API. The Mac app's file watcher picks up the change.
+- **Brave, Firefox and Safari**: open a project folder or a zipped `.comp`; *Save* keeps the project in the browser, and *Download as Zip* makes a copy. Brave can turn folder access on at `brave://flags/#file-system-access-api`.
 - Dropping a `.comp` folder, a zip or images onto the window opens or places them.
 
 Fields the web app doesn't edit (text and shape metadata, unknown keys from newer builds) are kept on save. 16-bit and HDR (OpenEXR)
@@ -87,7 +87,7 @@ See [TODO.md](TODO.md) for what's left, largest first.
 
 ## Differences from the Mac app
 
-- **Shortcuts:** browsers keep ⌘N, ⌘W and ⌘T for themselves. New Canvas is ⌥⌘N, Close Project ⌥⌘W, Transform ⌥⌘T and New Blank Layer ⌥⇧⌘N. ⌘O is Open…, which takes any file the app reads (images, Photoshop and RAW files, zipped projects); a project folder can't be picked with files, so Open Project Folder… is ⌥⌘O. Everything can be remapped.
+- **Shortcuts:** browsers keep ⌘N, ⌘W and ⌘T for themselves. New Canvas is ⌥⌘N, Close Project ⌥⌘W, Transform ⌥⌘T and New Blank Layer ⌥⇧⌘N. ⌘O is Open…, which takes any file the app reads (images, Photoshop and RAW files, zipped projects); a project folder can't be picked with files, so Open Project… is ⌥⌘O. Everything can be remapped.
 - **Size changes keep layer effects:** Crop, Canvas Size, Image Size and Trim keep them (the Mac app drops them). Image Size scales their sizes.
 - **Approximations:**
   - Bloom / Glow stands in for Core Image's `CIBloom`.

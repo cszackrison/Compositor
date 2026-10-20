@@ -86,9 +86,14 @@ export const openProject = guard(async () => {
   }
   const input = Object.assign(document.createElement('input'), { type: 'file' })
   input.setAttribute('webkitdirectory', '')
-  input.onchange = () => input.files?.length && guard(async () => openFiles(await readFileList(input.files!), { kind: 'download', name: input.files![0].webkitRelativePath.split('/')[0] }))()
+  input.onchange = () => input.files?.length && guard(async () => {
+    await openFiles(await readFileList(input.files!), { kind: 'download', name: input.files![0].webkitRelativePath.split('/')[0] })
+    if (!toldReadOnly) { toldReadOnly = true; store.notify('This browser can’t save into folders, so Save keeps the project in the browser. Download as Zip makes a copy you can keep anywhere.', 'info') }
+  })()
   input.click()
 })
+// A browser without folder access (Brave, Firefox, Safari) opens a project read only, said once a session as one is opened.
+let toldReadOnly = false
 
 // Opens an image as a new document when nothing is open, or places it as a layer. A Photoshop file brings its layers. Dropped on the
 // canvas, each is centered where it was dropped (`at`, in document pixels).
