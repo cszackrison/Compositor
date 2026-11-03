@@ -6,7 +6,13 @@ import { useEditor } from './hooks'
 import { defaultDither, defaultScanlines, ditherGroups, ditherStyles, ditherUses, type DitherSettings, type Sides, type VignetteSettings } from '../editor/filterKinds'
 import { FilterSession, canvasSides, job, type FilterJob } from '../editor/filters'
 import { RemoveBackgroundDialog } from '../ai/RemoveBackground'
-import { type Adjustment, type AdjustmentKind, type LevelRange, newAdjustment, identityRange } from '../model/types'
+import { type Adjustment, type AdjustmentKind, type FilterLayerSettings, type LevelRange, newAdjustment, identityRange, defaultFilterLayer } from '../model/types'
+import { FilterLayerControls } from './FilterLayerEditor'
+import { RimLightControls } from './RimLightDialog'
+import { VolumetricLightDialog } from './VolumetricLightDialog'
+import { newLayer } from '../model/types'
+import { defaultRimLight } from '../editor/rimLight'
+import { filterLayerJob } from '../editor/filterLayers'
 import { applyRange } from '../model/adjustments'
 import { call, withBuffers } from '../kernels'
 import type { Raster } from '../model/raster'
@@ -24,8 +30,8 @@ const close = () => store.set({ panel: null })
 const seed = () => Math.floor(Math.random() * 2 ** 32)
 
 // What a Filter-menu filter reads from the layer it runs on, worked out when it starts: before a blur's preview grows the layer.
-type FilterContext = { sides: Sides; fillsClear: boolean; seed: number }
-const filterContext = (): FilterContext => ({ sides: canvasSides(), fillsClear: !store.active?.image, seed: seed() })
+type FilterContext = { sides: Sides; fillsClear: boolean; seed: number; side: number }
+const filterContext = (): FilterContext => ({ sides: canvasSides(), fillsClear: !store.active?.image, seed: seed(), side: Math.max(store.active?.image?.width ?? 1, store.active?.image?.height ?? 1) })
 
 // The Filter menu's own filters, by name: each one's job from its settings, so Last Filter can run it again on whatever layer is active.
 const repeatable: Record<string, { job: (p: any, context: FilterContext) => FilterJob; trim?: boolean; growEmpty?: boolean }> = {
@@ -40,6 +46,8 @@ const repeatable: Record<string, { job: (p: any, context: FilterContext) => Filt
   'Tonal Contrast': { job: p => job('tonalContrast', p.amount, p.shadows, p.midtones, p.highlights, p.radius) },
   'Lens Correction': { job: p => job('lensCorrection', p.distortion) },
   'Camera Raw Filter': { job: (p, c) => job('cameraRaw', hiding(p.settings, p.hidden), c.seed, 1, p.view ?? {}) },
+  'Rim Light': { job: p => job('rimLight', p) },
+  ...Object.fromEntries((['Sharpen', 'Reduce Noise', 'RGB Split', 'Lens Effects'] as AdjustmentKind[]).map(kind => [kind, { job: (p: FilterLayerSettings, c: FilterContext) => filterLayerJob(kind, p, { scale: 1, side: c.side, sides: c.sides }) ?? job('sharpen', 0), trim: kind === 'Sharpen' }])),
 }
 
 // Filter › Last Filter (⌃⌘F): the last of those applied, again with the same settings and no dialog, as in Photoshop.
@@ -56,9 +64,9 @@ export async function repeatLastFilter() {
 
 // `fresh` settings start anew at each opening, over the remembered ones.
 // `clean` takes out what only the preview shows, before OK runs the filter and before its settings are remembered.
-function Simple<P extends object>({ name, initial, fresh, docked, clean, children }: { name: string; initial: P; fresh?: Partial<P>; docked?: boolean; clean?: (p: P) => P; children: (p: P, set: (c: Partial<P>) => void) => React.ReactNode }) {
+function Simple<P extends object>({ name, initial, fresh, docked, clean, buttons, children }: { name: string; initial: P; fresh?: Partial<P>; docked?: boolean; clean?: (p: P) => P; buttons?: (cancel: () => void) => React.ReactNode; children: (p: P, set: (c: Partial<P>) => void) => React.ReactNode }) {
   const context = useMemo(filterContext, []), spec = repeatable[name], tidy = clean ?? ((p: P) => p)
-  return <FilterDialog title={name} initial={{ ...recall(name, initial), ...fresh }} run={p => spec.job(p, context)} trim={spec.trim} growEmpty={spec.growEmpty} docked={docked} final={clean ? p => { const c = clean(p); return c === p ? undefined : spec.job(c, context) } : undefined} onClose={close} onCommit={p => { const c = tidy(p); remembered.set(name, c); lastFilter = { name, params: c } }}>{children}</FilterDialog>
+  return <FilterDialog title={name} initial={{ ...recall(name, initial), ...fresh }} run={p => spec.job(p, context)} trim={spec.trim} growEmpty={spec.growEmpty} docked={docked} buttons={buttons} final={clean ? p => { const c = clean(p); return c === p ? undefined : spec.job(c, context) } : undefined} onClose={close} onCommit={p => { const c = tidy(p); remembered.set(name, c); lastFilter = { name, params: c } }}>{children}</FilterDialog>
 }
 
 function GaussianBlurDialog() {
@@ -96,7 +104,7 @@ function ProgressiveBlurDialog() {
   </>}</Simple>
 }
 
-function ProgressiveLine({ settings, set }: { settings: ProgressiveSettings; set: (c: Partial<ProgressiveSettings>) => void }) {
+export function ProgressiveLine({ settings, set }: { settings: Pick<ProgressiveSettings, 'start' | 'end' | 'radial'>; set: (c: Partial<ProgressiveSettings>) => void }) {
   const latest = useRef(settings)
   latest.current = settings
   useEffect(() => {
@@ -180,6 +188,21 @@ function TonalContrastDialog() {
     <Slider label="Highlights" value={p.highlights} min={-100} max={100} onChange={highlights => set({ highlights })} />
     <Slider label="Radius" value={p.radius} min={1} max={100} log onChange={radius => set({ radius })} />
   </>}</Simple>
+}
+
+// Sharpen, Reduce Noise, RGB Split and Lens Effects take the settings their adjustment layers keep, edited with the same controls.
+// RGB Split's center starts in the middle of the layer's visible part, its reach half that part's diagonal.
+function FilterLayerDialog({ kind }: { kind: AdjustmentKind }) {
+  const fresh = useMemo(() => {
+    const doc = store.state.doc, t = store.active?.transform
+    const x0 = Math.max(0, t?.origin[0] ?? 0), y0 = Math.max(0, t?.origin[1] ?? 0), x1 = Math.min(doc.width, t ? t.origin[0] + t.size[0] : doc.width), y1 = Math.min(doc.height, t ? t.origin[1] + t.size[1] : doc.height)
+    const [left, top, right, bottom] = x1 > x0 && y1 > y0 ? [x0, y0, x1, y1] : [0, 0, doc.width, doc.height]
+    return kind === 'RGB Split' ? { rgbSplitCenter: [(left + right) / 2, (top + bottom) / 2] as [number, number], rgbSplitReach: Math.max(1, Math.hypot(right - left, bottom - top) / 2) } : {}
+  }, [])
+  const initial = useMemo(() => ({ ...defaultFilterLayer(), ...newAdjustment(kind).filterLayerSettings }), [])
+  // RGB Split's Split to Layers: the layer's own channels, unshifted, as layers for Export As › Channel Pack.
+  const split = (cancel: () => void) => <button type="button" disabled={!store.canSplitChannels} title="Split the layer's original channels into four grayscale layers, Red, Green, Blue and Alpha, for Export As › Channel Pack. Color under fully transparent pixels can't be recovered" onClick={() => { cancel(); store.splitChannels() }}>Split to Layers</button>
+  return <Simple name={kind} initial={initial} fresh={fresh} buttons={kind === 'RGB Split' ? split : undefined}>{(p, set) => <FilterLayerControls kind={kind} settings={p} onChange={s => set(s)} />}</Simple>
 }
 
 function LensDialog() {
@@ -371,9 +394,19 @@ export function LevelsTools({ source, toSource, adjustment, onChange }: { source
   </>
 }
 
+// Volumetric Light's Extract Depth: the depth as a layer of its own named Depth, over the layer it came from and placed as it is.
+function extractDepth(gray: Raster) {
+  const source = store.active
+  if (!source) return
+  store.addLayer(newLayer({ name: 'Depth', transform: source.transform, image: gray, parentId: source.parentId }), 'Extract Depth')
+}
+
 export const filterPanels: Record<string, () => React.ReactNode> = {
   'Gaussian Blur': () => <GaussianBlurDialog />, 'Motion Blur': () => <MotionBlurDialog />, 'Add Noise': () => <AddNoiseDialog />, Vignette: () => <VignetteDialog />,
   'Progressive Blur': () => <ProgressiveBlurDialog />, 'Bloom / Glow': () => <BloomDialog />, Dither: () => <DitherDialog />, Scanlines: () => <ScanlinesDialog />, 'Tonal Contrast': () => <TonalContrastDialog />, 'Lens Correction': () => <LensDialog />, 'Camera Raw Filter': () => <CameraRawDialog />,
+  'Volumetric Light': () => <VolumetricLightDialog onExtractDepth={extractDepth} />,
+  'Rim Light': () => <Simple name="Rim Light" initial={defaultRimLight}>{(p, set) => <RimLightControls p={p} set={set} />}</Simple>,
+  Sharpen: () => <FilterLayerDialog kind="Sharpen" />, 'Reduce Noise': () => <FilterLayerDialog kind="Reduce Noise" />, 'RGB Split': () => <FilterLayerDialog kind="RGB Split" />, 'Lens Effects': () => <FilterLayerDialog kind="Lens Effects" />,
   'Content-Aware Fill': () => <ContentAwareDialog />, 'Remove Background': () => <RemoveBackgroundDialog />,
   ...Object.fromEntries((['Curves', 'Levels', 'Hue/Saturation', 'Black & White', 'Color Balance', 'Exposure', 'Gradient Map', 'Grain'] as AdjustmentKind[]).map(kind => [kind, () => <AdjustmentFilterDialog kind={kind} />])),
 }

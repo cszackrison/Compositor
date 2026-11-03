@@ -5,7 +5,7 @@ import { type Adjustment, type BlendMode, type ColorRange, type Layer, colorRang
 import { type TextStyle, writeTextStyle } from '../model/text'
 import type { ShapeStyle } from '../tools/shape'
 import { type CMYKProfile, chosenProfile, fromInks, readProfile } from './cmyk'
-import { type PSDTextSource, parseText, missingFontNote, rasterizedNote, textTransform } from './psdText'
+import { type PSDTextSource, artboardRect, parseText, missingFontNote, rasterizedNote, textTransform } from './psdText'
 import { type PathCommand, vectorLive, vectorRaster } from './psdVector'
 
 // Reads Photoshop .psd and .psb files from Adobe's Photoshop File Formats Specification (2019 HTML edition: File Header, Color Mode
@@ -40,8 +40,10 @@ export type PSDRecord = {
   adjustment: Adjustment | null; kind: PSDLayerKind; shape: ShapeStyle | null; shapeNotes: string[]
   // Parsed Photoshop type, when the TySh block maps onto an editable text layer.
   text: PSDTextSource | null
+  // An artboard folder's rectangle on the canvas.
+  artboard: Rect | null
 }
-export const psdRecord = (fields: Partial<PSDRecord> & { name: string }): PSDRecord => ({ id: uuid(), parentId: null, isGroup: false, visible: true, opacity: 1, blendKey: 'norm', clipping: false, croppedToCanvas: false, bounds: { x: 0, y: 0, width: 0, height: 0 }, image: null, deep: null, mask: null, maskBounds: { x: 0, y: 0, width: 0, height: 0 }, maskDefault: 255, maskEnabled: true, maskLinked: true, adjustment: null, kind: 'raster', shape: null, shapeNotes: [], text: null, ...fields })
+export const psdRecord = (fields: Partial<PSDRecord> & { name: string }): PSDRecord => ({ id: uuid(), parentId: null, isGroup: false, visible: true, opacity: 1, blendKey: 'norm', clipping: false, croppedToCanvas: false, bounds: { x: 0, y: 0, width: 0, height: 0 }, image: null, deep: null, mask: null, maskBounds: { x: 0, y: 0, width: 0, height: 0 }, maskDefault: 255, maskEnabled: true, maskLinked: true, adjustment: null, kind: 'raster', shape: null, shapeNotes: [], text: null, artboard: null, ...fields })
 
 // `cmykProfile`: a CMYK file's, which its layers were converted to RGB through. `merged`: a file with no layer records (only a
 // background) as its merged image, which the Mac reads through ImageIO, with its deep pixels at 16 and 32 bits.
@@ -527,6 +529,7 @@ function assemble(raw: RawLayer[], canvas: { width: number; height: number }, re
     record.maskEnabled = !layer.maskDisabled
     record.maskLinked = layer.maskLinked
     if (!isGroup) record.adjustment = parseAdjustment(layer.extra)
+    else record.artboard = artboardRect(layer.extra)
     if (record.adjustment) record.kind = 'adjustment'
     result.push(record)
   }
@@ -543,6 +546,23 @@ function kind(layer: RawLayer, isGroup: boolean): PSDLayerKind {
   if (has('lfx2', 'lrFX', 'lmfx')) return 'effects'
   if ([...adjustmentKeys].some(key => layer.extra.has(key))) return 'adjustment'
   return 'raster'
+}
+
+// A file with artboards as one document per artboard, in the file's order (the bottom of Photoshop's Layers panel first, usually the
+// first artboard made): each the artboard's size, its layers moved so the artboard's corner is the canvas's, with no artboard folder
+// around them. Null for a file without artboards. Layers outside every artboard belong to none, so none of the documents has them.
+export function artboards(document: PSDDocument): { name: string; document: PSDDocument }[] | null {
+  const boards = document.layers.filter(l => l.isGroup && l.artboard)
+  if (!boards.length) return null
+  const ids = new Set(boards.map(b => b.id)), parents = new Map(document.layers.map(l => [l.id, l.parentId]))
+  const boardOf = (id: string) => { for (let next = parents.get(id) ?? null; next; next = parents.get(next) ?? null) if (ids.has(next)) return next; return null }
+  return boards.flatMap(board => {
+    const r = board.artboard!, x = Math.floor(r.x), y = Math.floor(r.y), width = Math.ceil(r.x + r.width) - x, height = Math.ceil(r.y + r.height) - y
+    if (!(width >= 1 && width <= maxSide && height >= 1 && height <= maxSide && width * height <= maxSurfacePixels)) return []
+    const shift = (b: Rect): Rect => ({ ...b, x: b.x - x, y: b.y - y })
+    const layers = document.layers.filter(l => boardOf(l.id) === board.id).map(l => ({ ...l, parentId: l.parentId === board.id ? null : l.parentId, bounds: l.isGroup ? { x: 0, y: 0, width, height } : shift(l.bounds), maskBounds: shift(l.maskBounds), ...(l.text ? { text: { ...l.text, documentAnchor: [l.text.documentAnchor[0] - x, l.text.documentAnchor[1] - y] as [number, number] } } : {}) }))
+    return [{ name: board.name, document: { width, height, resolution: document.resolution, cmykProfile: document.cmykProfile, layers } }]
+  })
 }
 
 // MARK: Adjustments (PSDAdjustments)

@@ -62,7 +62,7 @@ function filterWorker(index = 0): Worker | null {
 // Runs a filter job in the worker, or here where workers can't start. The input's pixels move to the worker.
 // The filters whose settings are in pixels, by which arguments: a preview of a large layer scales those with the copy it runs on.
 const previewLimit = 2048, draftLimit = 1024
-const pixelSettings: Partial<Record<keyof typeof kinds, number[]>> = { gaussianBlur: [0], motionBlur: [1], progressiveBlur: [0, 1], bloom: [1], tonalContrast: [4], cameraRaw: [2] }
+const pixelSettings: Partial<Record<keyof typeof kinds, number[]>> = { gaussianBlur: [0], motionBlur: [1], progressiveBlur: [0, 1], bloom: [1], tonalContrast: [4], cameraRaw: [2], sharpen: [1], reduceNoise: [3], rgbSplit: [0, 1], lensEffects: [1] }
 // Noise, grain, dither and scanlines preview at full size, as on the Mac: made on a smaller copy they'd look coarser once enlarged.
 const fullSize = (j: FilterJob) => j.job === 'addNoise' || j.job === 'dither' || j.job === 'scanlines' || j.job === 'contentAwareFill' || (j.job === 'adjustPixels' && (j.args[0] as Adjustment).kind === 'Grain')
 const previewScale = (j: FilterJob, input: FilterInput, limit = previewLimit) => fullSize(j) ? 1 : Math.min(1, limit / Math.max(input.pixels.width, input.pixels.height))

@@ -1,5 +1,5 @@
 import { store } from '../editor/store'
-import { prefs, setPrefs } from '../editor/prefs'
+import { guidesShown, prefs, setPrefs } from '../editor/prefs'
 import { uuid, type Guide } from '../model/types'
 import { requestOverlay, view, hitSlop } from '../ui/canvasState'
 import { snapGuide } from './snap'
@@ -20,7 +20,7 @@ export function startGuideDrag(axis: Guide['axis'], id: string | null, p: Pointe
   store.beginGesture(id ? 'Move Guide' : 'New Guide')
   const isNew = !id
   if (!id) {
-    if (!prefs.guides) setPrefs({ guides: true })
+    if (!guidesShown()) setPrefs({ guides: true })
     const guide: Guide = { id: uuid(), axis, position: axis === 'vertical' ? Math.round(p.point[0]) : Math.round(p.point[1]) }
     store.set({ doc: { ...store.doc, guides: [...store.doc.guides, guide] } })
     id = guide.id

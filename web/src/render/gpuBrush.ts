@@ -18,6 +18,7 @@ precision highp float;
 uniform vec2 center;
 uniform float radius;
 uniform float hardness;
+uniform float strength;
 uniform int hard;
 out vec4 value;
 float falloff(float u) {
@@ -36,6 +37,7 @@ void main() {
     if (d2 >= radius * radius) discard;
     v = d2 <= inner * inner ? 1.0 : falloff((sqrt(d2) - inner) / band);
   }
+  v *= strength;
   if (v <= 0.0) discard;
   value = vec4(v, 0.0, 0.0, 0.0);
 }`
@@ -211,14 +213,14 @@ export class GPUBrush {
   }
 
   // One dab into the coverage, over its bounds `rect` (raster pixels).
-  dab(cx: number, cy: number, radius: number, hardness: number, rect: Rect) {
+  dab(cx: number, cy: number, radius: number, hardness: number, rect: Rect, strength = 1) {
     const gl = this.gl, hard = hardness >= 1
     gl.bindFramebuffer(gl.FRAMEBUFFER, this.coverageFramebuffer)
     gl.viewport(rect.x0, rect.y0, rect.x1 - rect.x0, rect.y1 - rect.y0)
     gl.enable(gl.BLEND)
     if (hard) gl.blendEquation(gl.MAX)
     else { gl.blendEquation(gl.FUNC_ADD); gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_COLOR) }
-    this.uniforms(this.programs.dab, { center: [cx, cy], radius, hardness, hard: hard ? 1 : 0 })
+    this.uniforms(this.programs.dab, { center: [cx, cy], radius, hardness, strength, hard: hard ? 1 : 0 })
     this.draw()
     this.done()
   }

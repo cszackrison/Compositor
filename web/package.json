@@ -1,7 +1,7 @@
 {
   "name": "compositor-web",
   "private": true,
-  "version": "1.5.3-3",
+  "version": "1.6.2-1",
   "type": "module",
   "scripts": {
     "wasm": "node scripts/build-wasm.mjs",
@@ -28,6 +28,7 @@
     "libheif-js": "^1.19.8",
     "libraw-wasm": "^1.6.0",
     "onnxruntime-web": "^1.30.0",
+    "pdfjs-dist": "^6.5.438",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
     "three": "^0.180.0",

@@ -1,7 +1,8 @@
 import type { Deep } from './deep'
 import type { Raster } from './raster'
+import type { GIFLayerData } from './gif'
 
-export const formatVersion = 14
+export const formatVersion = 21
 export const maxSide = 30_000
 // DocumentLimits.swift: the largest single surface, and the raster one document may hold across its layers, a sixteenth of the
 // device's memory (as the browser reports it, 8 GB at most) between one surface and 800 MP.
@@ -17,8 +18,15 @@ export type BlendMode = typeof blendModes[number]
 // Where the Layers panel's picker draws its dividers, as in Photoshop.
 export const blendModeGroups: BlendMode[][] = [['Normal'], ['Darken', 'Multiply', 'Color Burn', 'Linear Burn'], ['Lighten', 'Screen', 'Color Dodge', 'Linear Dodge (Add)'], ['Overlay', 'Soft Light', 'Hard Light', 'Vivid Light', 'Linear Light', 'Pin Light', 'Hard Mix'], ['Difference', 'Exclusion', 'Subtract', 'Divide'], ['Hue', 'Saturation', 'Color', 'Luminosity']]
 
-export const adjustmentKinds = ['Hue/Saturation', 'Levels', 'Curves', 'Exposure', 'Gradient Map', 'Grain', 'Add Noise', 'Gaussian Blur', 'Motion Blur', 'Invert', 'Black & White', 'Color Balance'] as const
+export const adjustmentKinds = ['Hue/Saturation', 'Levels', 'Curves', 'Exposure', 'Gradient Map', 'Grain', 'Add Noise', 'Gaussian Blur', 'Motion Blur', 'Invert', 'Black & White', 'Color Balance', 'Progressive Blur', 'Bloom / Glow', 'RGB Split', 'Vignette', 'Lens Effects', 'Tonal Contrast', 'Sharpen', 'Reduce Noise'] as const
 export type AdjustmentKind = typeof adjustmentKinds[number]
+// The menus' two groups, each in its menu's order: the Image menu's color adjustments, then the Filter menu's filters.
+export const imageAdjustmentKinds: AdjustmentKind[] = ['Curves', 'Levels', 'Hue/Saturation', 'Black & White', 'Color Balance', 'Exposure', 'Gradient Map', 'Grain', 'Invert']
+export const filterAdjustmentKinds: AdjustmentKind[] = ['Gaussian Blur', 'Motion Blur', 'Progressive Blur', 'Sharpen', 'Reduce Noise', 'Add Noise', 'Vignette', 'Bloom / Glow', 'RGB Split', 'Lens Effects', 'Tonal Contrast']
+// The kinds that came with version 16 and later, whose settings are in `filterLayerSettings` and which the canvas works out from the
+// pixels below off the main thread (editor/filterLayers.ts).
+export const filterLayerKinds: AdjustmentKind[] = ['Progressive Blur', 'Bloom / Glow', 'RGB Split', 'Vignette', 'Lens Effects', 'Tonal Contrast', 'Sharpen', 'Reduce Noise']
+export const kindVersion: Partial<Record<AdjustmentKind, number>> = { 'Progressive Blur': 16, 'Bloom / Glow': 16, 'RGB Split': 16, Vignette: 18, 'Lens Effects': 18, 'Tonal Contrast': 18, Sharpen: 19, 'Reduce Noise': 21 }
 
 export type LevelRange = { black: number; gamma: number; white: number; outputBlack: number; outputWhite: number }
 export type CurvePoint = { x: number; y: number }
@@ -27,6 +35,25 @@ export const colorRanges: ColorRange[] = ['Master', 'Reds', 'Yellows', 'Greens',
 export type RangeAdjustment = { hue: number; saturation: number; lightness: number }
 export type HueBand = { falloffStart: number; rangeStart: number; rangeEnd: number; falloffEnd: number }
 export type RGB = { red: number; green: number; blue: number }
+export type Point = [number, number]
+
+// LayerAdjustment.swift's FilterLayerSettings: positions are document points; Vignette, Tonal Contrast, Lens Effects, Sharpen and
+// Reduce Noise keep theirs in objects of their own, absent from other layers. `lens` is editor/lensEffects.ts's settings.
+export type FilterLayerSettings = {
+  progressiveFrom: number; progressiveTo: number; progressiveStart?: Point; progressiveEnd?: Point; progressiveRadial: boolean; progressiveInverted: boolean
+  bloomAmount: number; bloomRadius: number
+  rgbSplitDistance: number; rgbSplitBlur: number; rgbSplitAngle: number; rgbSplitRadial: boolean; rgbSplitCenter?: Point; rgbSplitReach: number
+  vignette?: { amount: number; color: RGB; midpoint: number; roundness: number; feather: number; highlights: number }
+  tonal?: { amount: number; radius: number; shadows: number; midtones: number; highlights: number }
+  lens?: Record<string, unknown>
+  sharpen?: { amount: number; radius: number }
+  reduceNoise?: { strength: number; details: number; color: number }
+}
+export const defaultFilterLayer = (): FilterLayerSettings => ({ progressiveFrom: 0, progressiveTo: 20, progressiveRadial: false, progressiveInverted: false, bloomAmount: 40, bloomRadius: 24, rgbSplitDistance: 10, rgbSplitBlur: 0, rgbSplitAngle: 0, rgbSplitRadial: false, rgbSplitReach: 1000 })
+export const defaultVignetteLayer = () => ({ amount: 35, color: { red: 0, green: 0, blue: 0 }, midpoint: 50, roundness: 100, feather: 60, highlights: 25 })
+export const defaultTonalLayer = () => ({ amount: 50, radius: 16, shadows: 40, midtones: 60, highlights: 30 })
+export const defaultSharpenLayer = () => ({ amount: 100, radius: 1 })
+export const defaultReduceNoiseLayer = () => ({ strength: 50, details: 50, color: 50 })
 
 // Swift encodes a dictionary keyed by an enum as a flat [key, value, key, value] array; the web keeps it as an object while editing.
 export type HueSaturationSettings = { range: ColorRange; colorize: boolean; invertRange: boolean; adjustments: Partial<Record<ColorRange, RangeAdjustment>>; bands: Partial<Record<ColorRange, HueBand>> }
@@ -45,6 +72,7 @@ export type Adjustment = {
   blurRadius?: number
   motionAngle?: number; motionDistance?: number
   noiseAmount?: number; noiseGaussian?: boolean; noiseMonochromatic?: boolean; noiseSeed?: number
+  filterLayerSettings?: FilterLayerSettings
 }
 
 export type EffectBase = { enabled?: boolean; red: number; green: number; blue: number; opacity: number }
@@ -83,6 +111,8 @@ export type Layer = {
   extra: Record<string, unknown>
   // A 16-bit or HDR layer's pixels at their full depth, `image` being their 8-bit copy (model/deep.ts).
   deep?: Deep
+  // An animated GIF layer's frames (format 17, model/gif.ts); `image` is its selected frame.
+  gif?: GIFLayerData
 }
 
 export type Guide = { id: string; axis: 'horizontal' | 'vertical'; position: number }
@@ -124,7 +154,8 @@ export const defaultBands: Record<ColorRange, HueBand> = {
   Magentas: { falloffStart: 255, rangeStart: 285, rangeEnd: 315, falloffEnd: 345 },
 }
 
-export function newAdjustment(kind: AdjustmentKind): Adjustment {
+// `canvas` is the document's size, where Progressive Blur's line and RGB Split's center start.
+export function newAdjustment(kind: AdjustmentKind, canvas: [number, number] = [1000, 1000]): Adjustment {
   const adjustment: Adjustment = { kind, hue: 0, saturation: 0, lightness: 0, colorize: false, levels: { channel: 'RGB', ranges: [0, 1, 2, 3].map(identityRange) }, curves: { channel: 'RGB', channels: [0, 1, 2, 3].map(identityCurve) } }
   if (kind === 'Hue/Saturation') adjustment.hsvSettings = { range: 'Master', colorize: false, invertRange: false, adjustments: { Master: { hue: 0, saturation: 0, lightness: 0 } }, bands: { ...defaultBands } }
   if (kind === 'Exposure') adjustment.exposureSettings = { exposure: 0, offset: 0, gamma: 1 }
@@ -135,6 +166,16 @@ export function newAdjustment(kind: AdjustmentKind): Adjustment {
   if (kind === 'Gaussian Blur') adjustment.blurRadius = 10
   if (kind === 'Motion Blur') { adjustment.motionAngle = 0; adjustment.motionDistance = 10 }
   if (kind === 'Add Noise') Object.assign(adjustment, { noiseAmount: 10, noiseGaussian: false, noiseMonochromatic: false, noiseSeed: Math.floor(Math.random() * 2 ** 32) })
+  if (filterLayerKinds.includes(kind)) {
+    const [w, h] = canvas, f = adjustment.filterLayerSettings = defaultFilterLayer()
+    if (kind === 'Progressive Blur') { f.progressiveStart = [w / 2, h * 0.35]; f.progressiveEnd = [w / 2, h] }
+    if (kind === 'RGB Split') { f.rgbSplitCenter = [w / 2, h / 2]; f.rgbSplitReach = Math.max(1, Math.hypot(w, h) / 2) }
+    if (kind === 'Vignette') f.vignette = defaultVignetteLayer()
+    if (kind === 'Tonal Contrast') f.tonal = defaultTonalLayer()
+    if (kind === 'Lens Effects') f.lens = {}
+    if (kind === 'Sharpen') f.sharpen = defaultSharpenLayer()
+    if (kind === 'Reduce Noise') f.reduceNoise = defaultReduceNoiseLayer()
+  }
   return adjustment
 }
 

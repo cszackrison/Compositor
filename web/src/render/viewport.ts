@@ -7,8 +7,14 @@ export class Viewport {
   offsetY = 0
   constructor(public width = 1, public height = 1) {}
 
-  fit(docWidth: number, docHeight: number, margin = 48) {
-    this.zoom = Math.min(1, Math.max(0.01, Math.min((this.width - margin * 2) / docWidth, (this.height - margin * 2) / docHeight)))
+  // Opening fits but stops at actual pixels, so a small image shows at its real size; View › Fit Canvas (`enlarging`) may zoom past it.
+  fit(docWidth: number, docHeight: number, enlarging = false, margin = 48) {
+    const fitted = Math.min((this.width - margin * 2) / docWidth, (this.height - margin * 2) / docHeight)
+    this.zoom = Math.min(64, Math.max(0.01, enlarging ? fitted : Math.min(1, fitted)))
+    this.recenter(docWidth, docHeight)
+  }
+  // The canvas back in the middle at the zoom it had, so Canvas Size or Image Size shows as a change of size.
+  recenter(docWidth: number, docHeight: number) {
     this.offsetX = Math.round((this.width - docWidth * this.zoom) / 2)
     this.offsetY = Math.round((this.height - docHeight * this.zoom) / 2)
   }

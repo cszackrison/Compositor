@@ -36,6 +36,10 @@ edited one saves as 8-bit. Text and shape metadata are dropped once their pixels
   - Layer and folder masks: paint them, add one from the selection, apply, disable, link and unlink.
   - Clipping masks.
   - All twelve adjustment layer kinds, with editors. Levels has a histogram and Auto.
+  - Filters as adjustment layers: Progressive Blur, Bloom / Glow, RGB Split, Vignette, Lens Effects, Tonal Contrast, Sharpen and Reduce Noise work on everything under them, from the Filters button in the Layers panel or Layer › New Adjustment Layer.
+  - Search the layers by name, or filter them by kind or to the selected ones.
+  - Align and Distribute (Layer menu, or the Move tool's bar), and Export Layers as PNGs from the layer menu.
+  - Animated GIFs open as GIF layers with a timeline under the canvas: play, a delay for every frame or the GIF's own, duplicate and delete frames. Export As writes GIFs.
   - Layer effects, with a show/hide eye on each effect.
   - Right-click menus on layers and on the canvas.
 - **Transform:**
@@ -47,39 +51,42 @@ edited one saves as 8-bit. Text and shape metadata are dropped once their pixels
   - Marquee, Lasso (Freehand and Polygonal), Magic Wand and Color Range.
   - Expand, Contract and Feather.
   - Load a layer or mask as a selection (⌘-click its thumbnail).
-  - Move the outline, or ⌘-drag to move the selected pixels (⌘⌥-drag duplicates them).
-- **Painting and retouching:** Brush and Eraser, Spot Healing, Clone Stamp, Smear (Liquify, Blur and Smudge), Gradient, and Shape layers that redraw when scaled. Plus right-drag to resize the tip, `[` `]` `{` `}`, and digit keys for opacity.
+  - Move the outline, or ⌘-drag to move the selected pixels (⌘⌥-drag duplicates them). Hold Space while drawing a Marquee to move it.
+  - The status bar shows the selection's size.
+- **Painting and retouching:** Brush and Eraser, Spot Healing, Clone Stamp, Smear (Liquify, Blur and Smudge), Gradient, and Shape layers that redraw when scaled (Lines solid, dotted or dashed, with square or round caps). Plus right-drag to resize the tip, `[` `]` `{` `}`, and digit keys for opacity (the selected layers' with Move and the selection tools).
 - **Image menu:** Curves, Levels, Hue/Saturation, Black & White, Color Balance, Exposure, Gradient Map, Grain and Invert, applied to a layer's pixels. Also Canvas Size, Image Size, Trim, Crop to Selection and Flip Canvas.
-- **Filter menu:** Last Filter, Gaussian Blur, Motion Blur, Progressive Blur, Add Noise, Vignette, Bloom / Glow, Dither (all ten styles), Scanlines, Tonal Contrast and Lens Correction. Edit › Content-Aware Fill (⇧⌫). Each previews live and is limited to the selection.
-- **Canvas aids:** the Crop tool (ratios, ⌥ for symmetric cropping), rulers, guides dragged from them, a layout grid, and a pixel grid at 800% and above.
+- **Filter menu:** Last Filter, Gaussian Blur, Motion Blur, Progressive Blur, Add Noise, Vignette, Bloom / Glow, RGB Split, Lens Effects, Sharpen, Reduce Noise, Dither (all ten styles), Scanlines, Tonal Contrast, Volumetric Light, Rim Light and Lens Correction. Edit › Content-Aware Fill (⇧⌫). Each previews live and is limited to the selection.
+- **Canvas aids:** the Crop tool (grouped ratios and a custom one, ⌥ for symmetric cropping), View › Show Extras (⌘H outside the Move tool hides the selection's outline and the guides), rulers, guides dragged from them, a layout grid, and a pixel grid at 800% and above.
 - **Editing:**
   - Cut, Copy, Copy Merged and Paste (images from other apps too).
   - Layer via Copy, fill and clear.
   - Undo and redo, with named steps.
 - **Photoshop files:** PSD and PSB (RGB at 8, 16 and 32 bits, the deeper ones as 16-bit and HDR layers; CMYK at 8 and 16) open with their layers, folders, masks, clipping, text, shapes and
-  Levels, Curves and Hue/Saturation layers, after a report of what will be converted.
+  Levels, Curves and Hue/Saturation layers, after a report of what will be converted. Artboards open as canvases of their own, one tab each.
 - **Export and settings:**
-  - Export As: JPEG, PNG or a one-page PDF, sized, previewed live (on the checkerboard for PNG) with the file's size. Export PNG saves at once.
+  - Export As: JPEG, PNG, a one-page PDF, GIF, or a Channel Pack (layers packed into a PNG's red, green, blue and alpha, for game textures; RGB Split's Split to Layers turns a layer back into those four), sized, previewed live (on the checkerboard for PNG) with the file's size. Export PNG saves at once.
   - Remappable keyboard shortcuts (Edit › Keyboard Shortcuts).
   - Drag a field's label to scrub its number.
 - **Phones and tablets:**
   - Below 760 px wide: the canvas fills the screen, the tools and their options sit along the bottom, layers come up in a sheet, and the menus are one full-screen list.
   - One finger uses the tool; two fingers pinch to zoom and pan. A long press opens the canvas or layer menu.
   - On-screen Shift, Option and Command keys, and a Set Source button for Clone Stamp.
-  - Optional pen pressure for brush size (off by default, as the Mac app has none).
+  - Optional pen pressure for the brush's size and opacity (off by default, as on the Mac).
   - Add to Home Screen for a full-screen app. Without folder access, Save keeps projects in the browser.
 
+- **PDFs** are drawn with [pdf.js](https://mozilla.github.io/pdf.js/) (Apache-2.0), loaded the first time one is imported: every page its own layer, fitted to an open canvas, or a new canvas at 300 DPI. Fonts a PDF doesn't embed can look slightly different from the Mac's.
 - **HEIC and HEIF** (iPhone photos, cameras' .hif) are read with [libheif](https://github.com/strukturag/libheif) compiled to WebAssembly ([libheif-js](https://github.com/catdad-experiments/libheif-js), LGPL-3.0), loaded the first time one is opened, as browsers other than Safari can't read them. They come in as sRGB through their embedded profile or color description, and 10-bit ones as 16-bit layers.
 - **Camera RAW** files are decoded with [LibRaw](https://www.libraw.org) compiled to WebAssembly ([libraw-wasm](https://github.com/ybouane/LibRaw-Wasm), ISC; LibRaw is LGPL-2.1 or CDDL-1.0), loaded the first time one is opened, then developed in a sheet like the Mac's. The look differs from Apple's RAW engine, and Lens Correction is unavailable.
 - **CMYK** proofing, export and opening CMYK files use [LittleCMS](https://www.littlecms.com) (MIT), from lcms-wasm, vendored in `vendor/lcms`.
 - **Object selection** (the Magic tool's Object mode) uses [SlimSAM-77](https://huggingface.co/Xenova/slimsam-77-uniform) (Apache-2.0), a pruned Segment Anything, through ONNX Runtime Web: 14 MB, downloaded the first time and cached. The Mac uses Apple's Vision, so the outlines differ.
+- **Volumetric Light** finds depth with [Depth Anything V2 Small](https://huggingface.co/onnx-community/depth-anything-v2-small) (Apache-2.0) through ONNX Runtime Web, downloaded the first time (27 MB quantized, 50 MB at half precision with WebGPU) and cached, where the Mac uses Apple's depth model, so its light and shadow fall a little differently.
 - **Select Subject and Remove Background** use [ormbg](https://huggingface.co/onnx-community/ormbg-ONNX) (Apache-2.0) through ONNX Runtime Web instead of Apple's Vision framework. The model downloads from Hugging Face the first time either is used (88 MB with WebGPU, 44 MB without) and is cached by the browser; images never leave the device. The masks differ from the Mac app's, since it's a different model; Remove Background's Refine, Contrast and Shift Edge follow the Mac's arithmetic.
 
 ## Deploying
 
 It's live at [compositor.fyi](https://compositor.fyi). `npm run deploy` builds and uploads `dist/` to the server, where nginx
 serves it as static files over HTTPS (needed for WebGPU, folder access and the clipboard). Before a deploy, raise the web release in
-`package.json`'s version (`1.5.2-1`: the Mac version this follows, then the web release on it), which the About box shows.
+`package.json`'s version (`1.6.2-1`: the Mac version this follows, then the web release on it), which the About box shows.
 
 ## Not yet ported
 

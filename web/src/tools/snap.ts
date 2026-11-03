@@ -1,5 +1,5 @@
 import { store } from '../editor/store'
-import { prefs, gridLines } from '../editor/prefs'
+import { guidesShown, prefs, gridLines } from '../editor/prefs'
 import { drawOrder, effectivelyVisible, transformCorners } from '../render/compositor'
 import { snapLines, view } from '../ui/canvasState'
 
@@ -20,7 +20,7 @@ export function snapTargets(centers: boolean, exclude: Set<string> = new Set()):
     if (centers) { out.x.push(Math.round((x0 + x1) / 2)); out.y.push(Math.round((y0 + y1) / 2)) }
   }
   if (prefs.snapTo.grid && prefs.grid) { out.x.push(...gridLines(doc.width)); out.y.push(...gridLines(doc.height)) }
-  if (prefs.snapTo.guides && prefs.guides) for (const guide of doc.guides) (guide.axis === 'vertical' ? out.x : out.y).push(guide.position)
+  if (prefs.snapTo.guides && guidesShown()) for (const guide of doc.guides) (guide.axis === 'vertical' ? out.x : out.y).push(guide.position)
   return out
 }
 

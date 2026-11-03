@@ -7,7 +7,8 @@ import { ColorSwatch } from './ColorPicker'
 import { canvasDrag, canvasPicker } from './canvasState'
 import { centered, exclude, handleDegrees, include, rangeAt, shiftedHue, toHSB, withHandle } from '../model/hueBands'
 import { isMac } from '../editor/shortcuts'
-import { type Adjustment, type ColorRange, type HueSaturationSettings, type CurvePoint, identityCurve, type EffectKind, type RGB, colorRanges, effectNames, defaultBands } from '../model/types'
+import { type Adjustment, type ColorRange, type HueSaturationSettings, type CurvePoint, identityCurve, type EffectKind, type RGB, colorRanges, effectNames, defaultBands, filterLayerKinds } from '../model/types'
+import { FilterLayerControls } from './FilterLayerEditor'
 import { curveValue } from '../model/adjustments'
 
 export function defaultEffect(kind: EffectKind): any {
@@ -131,6 +132,7 @@ export function CurvesEditor({ adjustment, onChange }: { adjustment: Adjustment;
 
 export function AdjustmentEditor({ adjustment, onChange }: { adjustment: Adjustment; onChange: (a: Adjustment) => void }) {
   const set = (changes: Partial<Adjustment>) => onChange({ ...adjustment, ...changes })
+  if (filterLayerKinds.includes(adjustment.kind)) return <FilterLayerControls kind={adjustment.kind} settings={adjustment.filterLayerSettings} onChange={filterLayerSettings => set({ filterLayerSettings })} />
   switch (adjustment.kind) {
     case 'Levels': {
       const channel = channelNames.indexOf(adjustment.levels.channel), range = adjustment.levels.ranges[channel]

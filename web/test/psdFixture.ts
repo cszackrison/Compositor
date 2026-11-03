@@ -56,7 +56,7 @@ async function layerSection(records: PSDRecord[], large: boolean, additional: Fi
       if (record.isGroup) {
         prepared.push(emptyLayer({ name: '</Layer group>', blendKey: 'norm', section: 3, parentId: parent, large }))
         await emit(record.id)
-        prepared.push(emptyLayer({ name: record.name, blendKey: record.blendKey, section: 1, visible: record.visible, opacity: record.opacity, parentId: record.parentId, id: record.id, mask: record.mask, maskEnabled: record.maskEnabled, large }))
+        prepared.push(emptyLayer({ name: record.name, blendKey: record.blendKey, section: 1, visible: record.visible, opacity: record.opacity, parentId: record.parentId, id: record.id, mask: record.mask, maskEnabled: record.maskEnabled, extras: extras[record.id], large }))
       } else prepared.push(await layer(record, extras[record.id] ?? {}, cmyk, large))
     }
   }
@@ -89,11 +89,11 @@ async function layer(record: PSDRecord, extras: Record<string, Uint8Array>, cmyk
   return { record, isDivider: false, channels, top, left, bottom: top + height, right: left + width, maskTop: top, maskLeft: left, maskBottom: top + (record.mask?.height ?? 0), maskRight: left + (record.mask?.width ?? 0), extras }
 }
 
-function emptyLayer({ name, blendKey, section, visible = true, opacity = 1, parentId, id, mask = null, maskEnabled = true, large }: { name: string; blendKey: string; section: number; visible?: boolean; opacity?: number; parentId: string | null; id?: string; mask?: Raster | null; maskEnabled?: boolean; large: boolean }): Prepared {
+function emptyLayer({ name, blendKey, section, visible = true, opacity = 1, parentId, id, mask = null, maskEnabled = true, extras = {}, large }: { name: string; blendKey: string; section: number; visible?: boolean; opacity?: number; parentId: string | null; id?: string; mask?: Raster | null; maskEnabled?: boolean; extras?: Record<string, Uint8Array>; large: boolean }): Prepared {
   const record = psdRecord({ name, parentId, isGroup: section !== 3, visible, opacity, blendKey, mask, maskEnabled, kind: 'group', ...(id ? { id } : {}) })
   const channels = emptyChannels()
   if (mask) channels.push({ id: -2, payload: channelPayload(mask.data, mask.width, mask.height, large) })
-  return { record, isDivider: section === 3, channels, top: 0, left: 0, bottom: 0, right: 0, maskTop: 0, maskLeft: 0, maskBottom: mask?.height ?? 0, maskRight: mask?.width ?? 0, extras: {} }
+  return { record, isDivider: section === 3, channels, top: 0, left: 0, bottom: 0, right: 0, maskTop: 0, maskLeft: 0, maskBottom: mask?.height ?? 0, maskRight: mask?.width ?? 0, extras }
 }
 
 const emptyChannels = () => [-1, 0, 1, 2].map(id => ({ id, payload: new Uint8Array([0, 0]) }))

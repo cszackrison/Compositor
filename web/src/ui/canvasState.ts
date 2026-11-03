@@ -120,7 +120,7 @@ export async function setProofing(change: Partial<typeof proofing>) {
 if (typeof window !== 'undefined') subscribeProfiles(() => { if (proofing.colors || proofing.gamut) updateProof() })
 
 export function zoomBy(factor: number) { view.zoomAt(factor, view.width / 2, view.height / 2); viewChanged(); requestRender(false) }
-export function fit() { view.fit(store.doc.width, store.doc.height); viewChanged(); requestRender(false) }
+export function fit(enlarging = true) { view.fit(store.doc.width, store.doc.height, enlarging); viewChanged(); requestRender(false) }
 export function actualSize() { view.zoomAt(1 / view.zoom, view.width / 2, view.height / 2); viewChanged(); requestRender(false) }
 
 let renderQueued = false

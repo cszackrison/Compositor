@@ -3,11 +3,12 @@ import { editActiveText, liveText } from '../tools/type'
 import { Fragment, useCallback, useEffect, useRef, useState, useSyncExternalStore, type DragEvent } from 'react'
 import { useEditor } from './hooks'
 import { store } from '../editor/store'
-import { type Layer, adjustmentKinds, blendModeGroups, effectKinds, effectNames, type BlendMode, type EffectKind } from '../model/types'
+import { type Layer, filterAdjustmentKinds, imageAdjustmentKinds, blendModeGroups, effectKinds, effectNames, type BlendMode, type EffectKind } from '../model/types'
 import { subscribeThumbnails, thumbnail, thumbnailsVersion } from './thumbnails'
 import { Icon } from './icons'
 import { NumberField, defaultEffect } from './Inspector'
 import { ContextMenu, type MenuItem } from './Menu'
+import { exportLayers } from '../editor/actions'
 import { isMac } from '../editor/shortcuts'
 import { setDraggedLayers } from './Tabs'
 import { useCoarse } from './layout'
@@ -18,6 +19,20 @@ const commandKey = (e: React.MouseEvent) => isMac ? e.metaKey : e.ctrlKey
 const clipZone = (e: React.MouseEvent, layer: Layer) => { if (layer.isGroup) return false; const box = (e.currentTarget as HTMLElement).getBoundingClientRect(); return e.clientY >= box.bottom - Math.min(10, box.height / 3) }
 
 type Row = { layer: Layer; depth: number; hiddenByParent: boolean }
+
+// The Layers panel's search and type filter (LayerSearchControls.swift): a layer shows when its name has the text and it's of a type
+// chosen, or selected with Selected chosen; a folder that shows brings its contents.
+export const layerTypes = ['Images', 'Shapes', 'Text', 'Folders', 'Adjustments', 'Selected'] as const
+export type LayerType = typeof layerTypes[number]
+const typeOf = (l: Layer): LayerType => l.isGroup ? 'Folders' : l.adjustment ? 'Adjustments' : l.text ? 'Text' : l.shape ? 'Shapes' : 'Images'
+export function filteredRows(list: Row[], layers: Layer[], query: string, types: Set<LayerType>, selected: string[]): Row[] {
+  const q = query.trim().toLowerCase()
+  if (!q && !types.size) return list
+  const matches = (l: Layer) => (!q || l.name.toLowerCase().includes(q)) && (!types.size || types.has(typeOf(l)) || (types.has('Selected') && selected.includes(l.id)))
+  const matched = new Set(layers.filter(matches).map(l => l.id)), parent = new Map(layers.map(l => [l.id, l.parentId]))
+  const insideMatched = (id: string) => { for (let p = parent.get(id), n = 0; p && n < 256; p = parent.get(p), n++) if (matched.has(p)) return true; return false }
+  return list.filter(r => matched.has(r.layer.id) || insideMatched(r.layer.id))
+}
 
 function rows(layers: Layer[], collapsed: Set<string>): Row[] {
   const out: Row[] = []
@@ -73,7 +88,10 @@ export function LayersPanel() {
   const [drop, setDrop] = useState<{ id: string; where: 'above' | 'below' | 'into' } | null>(null)
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
   const closeMenu = useCallback(() => setMenu(null), [])
-  const list = rows(state.doc.layers, collapsed)
+  const [search, setSearch] = useState<string | null>(null)
+  const [types, setTypes] = useState(new Set<LayerType>())
+  const [typeMenu, setTypeMenu] = useState(false)
+  const list = filteredRows(rows(state.doc.layers, collapsed), state.doc.layers, search ?? '', types, state.selectedIds)
   const active = store.layer(state.activeId)
   const listRef = useRef<HTMLDivElement>(null)
   // A newly chosen layer (picked on the canvas, say) opens the folders it's in and scrolls into view, once: collapsing its folder
@@ -151,7 +169,7 @@ export function LayersPanel() {
       { label: 'Rename…', action: () => setRenaming(layer.id), disabled: several },
       { label: store.state.effectSelection ? `Delete ${effectNames[store.state.effectSelection.kind]}` : store.state.editingMask && layer.mask ? 'Delete Mask' : several ? 'Delete Selected Layers' : 'Delete Layer', action: () => store.deleteSelected() },
       'divider',
-      { label: layer.clipTo ? 'Release Clipping Mask' : 'Create Clipping Mask', action: () => store.toggleClip(), disabled: !store.canToggleClip },
+      { label: store.selectedClippingTitle, action: () => store.toggleSelectedClipping(), disabled: !store.canToggleSelectedClipping },
       { label: 'Group Selected Layers', action: () => store.group() },
       ...(layer.isGroup ? [{ label: 'Ungroup Layers', action: () => store.ungroup() }] : []),
       { label: 'Move Out of Folder', action: () => store.moveOutOfFolder(), disabled: !layer.parentId },
@@ -169,7 +187,9 @@ export function LayersPanel() {
       { label: 'Delete Mask', action: () => store.deleteMask(layer.id), disabled: !layer.mask },
       { label: layer.mask && !layer.maskLinked ? 'Link Mask' : 'Unlink Mask', action: () => store.toggleMaskLink(layer.id), disabled: !layer.mask || !plain },
       'divider',
-      { label: layer.visible ? 'Hide Layer' : 'Show Layer', action: () => store.updateLayer(layer.id, { visible: !layer.visible }, layer.visible ? 'Hide Layer' : 'Show Layer') },
+      { label: store.visibilityTitle, action: () => store.toggleSelectedVisibility() },
+      'divider',
+      { label: several ? 'Export Layers as PNGs…' : 'Export Layer as PNG…', action: () => { exportLayers() } },
     ]
   }
 
@@ -219,7 +239,20 @@ export function LayersPanel() {
 
   return (
     <aside className="side">
-      <h2><span>Layers</span><span className="muted">{state.doc.layers.length}</span></h2>
+      <h2 style={{ gap: 6 }}>
+        {search === null ? <span>Layers</span> : <span className="layer-search"><input type="search" placeholder="Search layers" value={search} autoFocus onChange={e => setSearch(e.target.value)} onKeyDown={e => { if (e.key === 'Escape') setSearch(null) }} /><button className="icon" title="Close search" onClick={() => setSearch(null)}>✕</button></span>}
+        <span style={{ display: 'flex', alignItems: 'center', gap: 2, marginLeft: 'auto' }}>
+          {search === null && <button className="icon" title="Search layers by name" onClick={() => setSearch('')}><Icon name="zoom" /></button>}
+          <span className="menu" style={{ position: 'relative' }}>
+            <button className={`icon ${types.size ? 'on' : ''}`} title="Filter by layer type" onClick={() => setTypeMenu(!typeMenu)}>{types.size ? `${types.size}` : '▾'}</button>
+            {typeMenu && <div className="menu-list" style={{ right: 0, left: 'auto' }} onPointerLeave={e => { if (e.pointerType === 'mouse') setTypeMenu(false) }}>
+              {layerTypes.map(t => <button key={t} title={t === 'Selected' ? 'Filter to the selected layers' : `Filter to ${t.toLowerCase()} layers`} onClick={() => setTypes(c => { const next = new Set(c); if (next.has(t)) next.delete(t); else next.add(t); return next })}><span>{types.has(t) ? '✓ ' : ''}{t}</span></button>)}
+              {types.size > 0 && <button onClick={() => { setTypes(new Set()); setTypeMenu(false) }}><span>Show All</span></button>}
+            </div>}
+          </span>
+          <span className="muted">{state.doc.layers.length}</span>
+        </span>
+      </h2>
       <Appearance />
       <div className="layers" ref={listRef} onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDrop(null) }} onMouseDown={e => { if (e.button === 1) e.preventDefault() }}
         onPointerDown={startMiddleScroll} onPointerMove={moveMiddleScroll} onPointerUp={endMiddleScroll} onPointerCancel={endMiddleScroll} onLostPointerCapture={endMiddleScroll}>
@@ -244,6 +277,7 @@ export function LayersPanel() {
               {layer.mask && <img className={`thumb mask ${editingMask ? 'target' : ''} ${layer.maskEnabled ? '' : 'disabled'}`} src={thumbnail(layer.mask, `${layer.id}:mask`)} alt="" title={`Layer mask: click to edit, Shift-click to disable, ${command}-click selects its black areas`} onClick={e => { if (commandKey(e)) store.loadSelection(layer.id, true, e.altKey ? 'subtract' : e.shiftKey ? 'add' : 'replace'); else if (e.shiftKey) store.updateLayer(layer.id, { maskEnabled: !layer.maskEnabled }, layer.maskEnabled ? 'Disable Mask' : 'Enable Mask'); else { store.setActive(layer.id); store.set({ editingMask: true }) } }} />}
               <span className="name">{renaming === layer.id ? <input autoFocus defaultValue={layer.name} onBlur={e => { const name = e.target.value.trim(); if (name && name !== layer.name) store.updateLayer(layer.id, { name }, 'Rename Layer'); setRenaming(null) }} onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); if (e.key === 'Escape') setRenaming(null); e.stopPropagation() }} /> : layer.name}</span>
               {coarse && <span className="grip" title="Drag to move the layer" onPointerDown={e => startReorder(e, layer, selected)} onPointerMove={moveReorder} onPointerUp={endReorder} onPointerCancel={endReorder}>≡</span>}
+              {layer.gif && <span className="badge" title={`An animated GIF, ${layer.gif.source.frameCount} frames`}>GIF</span>}
               {isDeep(layer) && <span className="badge" title={isHDR(layer) ? 'Keeps light brighter than white' : 'Keeps 16 bits a channel'}>{isHDR(layer) ? 'HDR' : '16-Bit'}</span>}
               {layer.effects && Object.values(layer.effects).some(Boolean) && <span className="badge" title="Layer effects">fx</span>}
               {layer.blendMode !== 'Normal' && !layer.isGroup && <span className="badge" title={layer.blendMode}>◐</span>}
@@ -278,7 +312,8 @@ export function LayersPanel() {
           ...(state.selection ? [{ label: 'Reveal Selection', action: () => active && store.addMask(active.id, false, true) }] : []),
           { label: 'Hide All', action: () => active && store.addMask(active.id, true) },
         ]} />
-        <Popup label="New adjustment layer" icon="adjust" disabled={!store.hasDocument} items={adjustmentKinds.map(kind => ({ label: kind, action: () => store.addAdjustment(kind) }))} />
+        <Popup label="New adjustment layer" icon="adjust" disabled={!store.hasDocument} items={imageAdjustmentKinds.map(kind => ({ label: kind, action: () => store.addAdjustment(kind) }))} />
+        <Popup label="New filter layer" icon="filters" disabled={!store.hasDocument} items={filterAdjustmentKinds.map(kind => ({ label: kind, action: () => store.addAdjustment(kind) }))} />
         <Popup label="Layer effects" icon="fx" disabled={!active?.image || active.isGroup} items={effectKinds.map(kind => ({ label: `${effectNames[kind]}…`, action: () => { if (!active) return; const bg = state.background.map(v => v / 255); store.addEffect(active.id, kind, kind === 'stroke' || kind === 'colorOverlay' ? { ...defaultEffect(kind), red: bg[0], green: bg[1], blue: bg[2] } : defaultEffect(kind)) } }))} />
         <span className="spacer" />
         <button className="icon" title={state.effectSelection ? 'Delete selected effect' : 'Delete layer'} disabled={!active} onClick={() => store.deleteSelected()}><Icon name="trash" /></button>

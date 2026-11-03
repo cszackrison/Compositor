@@ -6,6 +6,9 @@ import type { FilterInput, FilterOutput } from './filters'
 import type { Adjustment } from '../model/types'
 import { applyCameraRaw, type CameraRawSettings, type CameraRawView } from '../model/cameraRaw'
 import { channelTables, cubeSize, hueSaturationCube } from '../model/adjustments'
+import { type RimLightSettings, rimLight as rimLightPixels } from './rimLight'
+import { rgbSplit as rgbSplitPixels } from './rgbSplit'
+import { type LensSettings, lensEffect, lensIsIdentity, normalizedLens } from './lensEffects'
 
 const clamp01 = (v: number) => Math.min(1, Math.max(0, v))
 
@@ -183,6 +186,54 @@ export function bloom(input: FilterInput, amount: number, radius: number): Filte
   return { pixels: out, origin: grid.origin }
 }
 
+// Filter › Sharpen, standing in for Core Image's CIUnsharpMask: the difference from a blur of `radius` added back, `amount` percent of
+// it, the layer's edge pixels carried on past the canvas's sides so the picture's border doesn't darken. Same size as the layer.
+export function sharpen(input: FilterInput, amount: number, radius: number, sides: Sides = noSides): FilterOutput {
+  if (amount <= 0) return null
+  const margin = input.isMask ? 0 : Math.ceil(radius * 3 + 2)
+  const grid = margin ? paddedSides(input.pixels, margin, sides) : { pixels: input.pixels, origin: [0, 0] as [number, number] }
+  const blurred = blurFloats(Float32Array.from(grid.pixels.data), grid.pixels.width, grid.pixels.height, 4, radius, input.isMask || anySide(sides))
+  const { pixels } = input, k = amount / 100, float = isFloat(pixels), gw = grid.pixels.width, left = -grid.origin[0], top = -grid.origin[1]
+  const out = like(pixels, pixels.width, pixels.height)
+  for (let y = 0; y < pixels.height; y++) for (let x = 0; x < pixels.width; x++) {
+    const i = (y * pixels.width + x) * 4, j = ((y + top) * gw + x + left) * 4
+    const a = Math.min(255, Math.max(0, pixels.data[i + 3] + k * (pixels.data[i + 3] - blurred[j + 3])))
+    out.data[i + 3] = put(out, a)
+    for (let c = 0; c < 3; c++) out.data[i + c] = put(out, Math.max(0, Math.min(float ? Infinity : a, pixels.data[i + c] + k * (pixels.data[i + c] - blurred[j + c]))))
+  }
+  return out
+}
+
+// Filter › Reduce Noise: Camera Raw's noise reduction on its own (adjust_camera_raw_detail), its contrast and color smoothness at their
+// defaults. `scale` is these pixels per layer pixel, for a reduced preview or the canvas.
+export function reduceNoise(input: FilterInput, strength: number, details: number, color: number, scale = 1): FilterOutput {
+  if (strength <= 0 && color <= 0) return null
+  const { pixels } = input
+  return kernelInPlace(pixels, 'adjust_camera_raw_detail', 0, 0, 0, 0, strength, details, 0, color, 50, 50, scale)
+}
+
+// Filter › Rim Light (RimLight.swift): lights behind the subject, the layer's own alpha its outline.
+export function rimLight(input: FilterInput, s: RimLightSettings): FilterOutput {
+  return rimLightPixels(input.pixels, s)
+}
+
+// Filter › RGB Split (RGBSplit.swift): red, green and blue spread apart along `angle`, or out from `center` (document pixels, the layer's
+// middle when null) sharp there and full at `reach`, with Blur streaking them along the split.
+export function rgbSplit(input: FilterInput, distance: number, blur: number, angle: number, radial: boolean, center: [number, number] | null, reach: number, sides: Sides = noSides): FilterOutput {
+  if (distance <= 0 && blur <= 0) return null
+  const { pixels } = input, toPixel = invert(input.toDocument)
+  const at = center ? apply(toPixel, ...center) as [number, number] : [pixels.width / 2, pixels.height / 2] as [number, number]
+  const edge = center ? apply(toPixel, center[0] + reach, center[1]) : [at[0] + reach, at[1]]
+  return rgbSplitPixels(pixels, { distance, blur, angle, radial, center: at, reach: Math.max(1, Math.hypot(edge[0] - at[0], edge[1] - at[1])) }, sides)
+}
+
+// Filter › Lens Effects (LensEffects.swift): a flare, starburst, mist, prism or bokeh from the picture's lights, sized by `side`, the
+// document's longer side in these pixels.
+export function lensEffects(input: FilterInput, lens: Partial<LensSettings>, side: number): FilterOutput {
+  const s = normalizedLens(lens)
+  return input.isMask || lensIsIdentity(s) ? null : lensEffect(input.pixels, s, side)
+}
+
 export function tonalContrast(input: FilterInput, amount: number, shadows: number, midtones: number, highlights: number, radius: number): FilterOutput {
   if (amount <= 0 || (!shadows && !midtones && !highlights)) return null
   const blurred = blurRaster(input.pixels, radius)
@@ -342,4 +393,21 @@ export function adjustPixels(input: FilterInput, adjustment: Adjustment): Filter
 export function cameraRaw(input: FilterInput, settings: CameraRawSettings, seed: number, scale = 1, view: CameraRawView = {}): FilterOutput {
   const out = applyCameraRaw(input.pixels, settings, seed, scale, view)
   return out === input.pixels ? null : out
+}
+
+export type { FilterInput as FilterKindInput, FilterOutput as FilterKindOutput }
+
+// A filter's result cut back to the grid it was given (`origin` its corner in the given one's pixels): a filter layer's canvas.
+export function onGrid(out: FilterOutput, given: Raster): Raster {
+  if (!out) return given
+  const result = 'pixels' in out ? out.pixels : out, origin = 'pixels' in out ? out.origin : [0, 0]
+  if (result.width === given.width && result.height === given.height && !origin[0] && !origin[1]) return result
+  const made = new Raster(given.width, given.height, 4)
+  for (let y = 0; y < given.height; y++) {
+    const sy = y - origin[1]
+    if (sy < 0 || sy >= result.height) continue
+    const x0 = Math.max(0, origin[0]), x1 = Math.min(given.width, origin[0] + result.width)
+    if (x1 > x0) made.data.set(result.data.subarray((sy * result.width + x0 - origin[0]) * 4, (sy * result.width + x1 - origin[0]) * 4), (y * given.width + x0) * 4)
+  }
+  return made
 }

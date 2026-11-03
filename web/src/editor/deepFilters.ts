@@ -18,9 +18,9 @@ export type DeepPixels = { pixels: Uint16Array; width: number; height: number; h
 export type DeepGrid = { width: number; height: number; x: number; y: number }
 
 // Filters made of blurs, run on floats once rather than through the 8-bit runs.
-export const runsAtFullDepth = new Set(['gaussianBlur', 'motionBlur', 'progressiveBlur', 'bloom'])
+export const runsAtFullDepth = new Set(['gaussianBlur', 'motionBlur', 'progressiveBlur', 'bloom', 'sharpen'])
 // Filters whose output channels each depend on all three input channels: each input channel is stepped on its own, ten runs.
-export const mixesChannels = new Set(['cameraRaw', 'tonalContrast', 'scanlines'])
+export const mixesChannels = new Set(['cameraRaw', 'tonalContrast', 'scanlines', 'reduceNoise'])
 // Filters that make a layer 8-bit: Content-Aware Fill makes new pixels; Dither's result is a few levels by design.
 export const rasterizes = new Set(['contentAwareFill', 'dither'])
 

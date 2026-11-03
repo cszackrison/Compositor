@@ -7,13 +7,26 @@ import { clearSnap, snapMove, snapPoint } from './snap'
 import { dashedPath, type Pointer, type ToolHandler } from './tool'
 
 type Drag =
-  | { kind: 'marquee'; start: [number, number]; current: [number, number]; mode: SelectionMode; square: boolean; center: boolean }
+  | { kind: 'marquee'; start: [number, number]; current: [number, number]; mode: SelectionMode; square: boolean; center: boolean; pointer: [number, number]; moving?: { pointer: [number, number]; start: [number, number]; current: [number, number] } }
   | { kind: 'lasso'; points: [number, number][]; mode: SelectionMode }
   | { kind: 'outline'; start: [number, number]; original: Raster; box: { x: number; y: number; w: number; h: number }; moved: boolean }
   | { kind: 'pixels'; start: [number, number]; move: NonNullable<ReturnType<typeof beginPixelMove>>; moved: boolean }
   | { kind: 'click'; start: [number, number]; mode: SelectionMode }
 let drag: Drag | null = null
 let polygon: { points: [number, number][]; hover: [number, number] | null; mode: SelectionMode } | null = null
+let spaceHeld = false
+// Space held while drawing a Marquee moves the box rather than resizing it, as in Photoshop.
+export function holdSpace(held: boolean) { spaceHeld = held; if (drag?.kind === 'marquee' && !held) drag.moving = undefined }
+const sizes = new WeakMap<Raster, [number, number] | null>()
+
+// The status bar's selection size: the Marquee as it's drawn, else the box around the selection (which is canvas-sized, so already cut to it).
+export function selectionSize(): [number, number] | null {
+  if (drag?.kind === 'marquee') { const b = box(drag.start, drag.current, drag.square, drag.center); return b.w >= 1 && b.h >= 1 ? [Math.round(b.w), Math.round(b.h)] : null }
+  const s = store.state.selection
+  if (!s) return null
+  if (!sizes.has(s)) { const b = bounds(s); sizes.set(s, b && [b.w, b.h]) }
+  return sizes.get(s)!
+}
 
 // Shift adds, Option subtracts (and wins over Shift), both together intersect.
 // Option subtracts and Shift adds (Option wins), otherwise the header's sticky mode applies.
@@ -65,7 +78,7 @@ export const marquee: ToolHandler = {
   down(p) {
     if (startMoves(p)) return
     const start = snapPoint(Math.round(p.point[0]), Math.round(p.point[1]), p.control)
-    drag = { kind: 'marquee', start: [Math.round(start[0]), Math.round(start[1])], current: p.point, mode: modeFor(p), square: false, center: false }
+    drag = { kind: 'marquee', start: [Math.round(start[0]), Math.round(start[1])], current: p.point, mode: modeFor(p), square: false, center: false, pointer: p.point }
   },
   move: p => dragMove(p),
   up: () => dragUp(),
@@ -152,9 +165,17 @@ function dragMove(p: Pointer) {
   const d = drag
   if (!d) return
   if (d.kind === 'marquee') {
-    d.current = snapPoint(p.point[0], p.point[1], p.control)
-    d.square = p.shift && d.mode !== 'add'
-    d.center = p.alt && d.mode !== 'subtract'
+    if (spaceHeld) {
+      const m = d.moving ??= { pointer: d.pointer, start: d.start, current: d.current }, dx = Math.round(p.point[0] - m.pointer[0]), dy = Math.round(p.point[1] - m.pointer[1])
+      d.start = [m.start[0] + dx, m.start[1] + dy]; d.current = [m.current[0] + dx, m.current[1] + dy]
+      clearSnap()
+    } else {
+      d.moving = undefined
+      d.current = snapPoint(p.point[0], p.point[1], p.control)
+      d.square = p.shift && d.mode !== 'add'
+      d.center = p.alt && d.mode !== 'subtract'
+    }
+    d.pointer = p.point
   } else if (d.kind === 'lasso') d.points.push(p.point)
   else if (d.kind === 'outline') {
     const [lx, ly, lock] = axisLock(Math.round(p.point[0] - d.start[0]), Math.round(p.point[1] - d.start[1]), p.shift)

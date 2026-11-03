@@ -49,6 +49,8 @@ export class BrushStroke {
   private carry = 0
   // A pen's pressure (0–1) for the dabs being laid now; it scales the tip, and stays 1 without a pen or with pressure off.
   pressure = 1
+  // And how strongly each dab lays down (0–1), from the pen with Pen Pressure's opacity on.
+  strength = 1
   // The coverage and the pixels live on the GPU when it can take the stroke (see gpuBrush.ts).
   private brush: GPUBrush | null = null
   get gpu() { return this.brush }
@@ -223,10 +225,10 @@ export class BrushStroke {
     const x0 = Math.max(0, Math.floor(cx - radius - 1)), y0 = Math.max(0, Math.floor(cy - radius - 1))
     const x1 = Math.min(width, Math.ceil(cx + radius + 1)), y1 = Math.min(height, Math.ceil(cy + radius + 1))
     if (x0 >= x1 || y0 >= y1) return
-    if (this.gpu) { this.gpu.dab(cx, cy, radius, this.settings.hardness, { x0, y0, x1, y1 }); this.include({ x0, y0, x1, y1 }); return }
+    if (this.gpu) { this.gpu.dab(cx, cy, radius, this.settings.hardness, { x0, y0, x1, y1 }, this.strength); this.include({ x0, y0, x1, y1 }); return }
     const hard = this.settings.hardness >= 1, inner = radius * this.settings.hardness, band = Math.max(1e-6, radius - inner)
     const coverage = this.coverage, outer = radius + 0.5, outer2 = outer * outer, solid = Math.max(0, radius - 0.5), solid2 = solid * solid, inner2 = inner * inner
-    const lutScale = falloffSteps / band
+    const lutScale = falloffSteps / band, strength = Math.max(0, Math.min(1, this.strength))
     for (let y = y0; y < y1; y++) {
       const dy = y + 0.5 - cy, dy2 = dy * dy
       if (dy2 >= outer2) continue
@@ -241,6 +243,7 @@ export class BrushStroke {
           if (d2 >= outer2) continue
           v = d2 <= solid2 ? 1 : radius - Math.sqrt(d2) + 0.5
           if (v > 1) v = 1
+          v *= strength
           if (v <= 0) continue
           const tile = coverage.at(x, y), i = row + (x & 63), c = tile[i]
           if (v > c) tile[i] = v
@@ -248,6 +251,7 @@ export class BrushStroke {
           if (d2 >= radius * radius) continue
           if (d2 <= inner2) v = 1
           else { const t = (Math.sqrt(d2) - inner) * lutScale, j = t | 0; v = falloffTable[j] + (falloffTable[j + 1] - falloffTable[j]) * (t - j) }
+          v *= strength
           if (v <= 0) continue
           const tile = coverage.at(x, y), i = row + (x & 63), c = tile[i]
           tile[i] = c + v - c * v

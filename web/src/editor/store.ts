@@ -3,10 +3,13 @@ import { normalizing } from './deepFilters'
 import { History, type PixelPatch } from '../model/history'
 import { Raster } from '../model/raster'
 import { type Adjustment, type AdjustmentKind, type BlendMode, type Doc, type EffectKind, effectNames, type Layer, type LayerEffects, type Transform, fullTransform, newAdjustment, newLayer, uuid } from '../model/types'
+import { resizeGIF } from '../model/gif'
+import { syncedGIF, withGIF } from '../model/gifLayer'
 import { combine, contractSelection, coverageFromRaster, expandSelection, featherSelection, invertSelection, isEmpty, offsetSelection, type SelectionMode } from '../model/selection'
 import { blurRaster } from '../model/pixels'
 import type { PackageTarget } from '../io/files'
 import type { PSDImport } from '../io/psd'
+import { channelPlanes, packChannels } from '../io/channelPack'
 import type { BrushSettings } from '../tools/brush'
 import { drawOrder, effectivelyVisible, following, pixelToDocument, transformCorners } from '../render/compositor'
 import { apply, invert } from '../render/gl'
@@ -16,6 +19,9 @@ export type Tool = 'move' | 'marquee' | 'lasso' | 'wand' | 'brush' | 'eraser' | 
 export type HealMode = 'Content-Aware' | 'Create Texture' | 'Proximity Match'
 export type SmearMode = 'Liquify' | 'Blur' | 'Smudge'
 export type ShapeKind = 'Rectangle' | 'Ellipse' | 'Line'
+export const lineStyles = ['Solid', 'Dotted', 'Dashed', 'Long Dash'] as const
+export type LineStyle = typeof lineStyles[number]
+export type LineCap = 'Square' | 'Round'
 export type Tip = { diameter: number; hardness: number; opacity: number }
 // Brush and Spot Healing share a tip; Clone Stamp and Smear each keep their own, as in the Mac app.
 export const tipFamily = (tool: Tool) => tool === 'clone' ? 'clone' : tool === 'smear' ? 'smear' : tool === 'brush' || tool === 'eraser' || tool === 'heal' ? 'brush' : null
@@ -39,7 +45,7 @@ export type State = Snapshot & {
   smearMode: SmearMode
   blurRadius: number
   gradient: { shape: 'Linear' | 'Radial'; style: 'Foreground to Transparent' | 'Foreground to Background'; reversed: boolean; opacity: number }
-  shape: { kind: ShapeKind; cornerRadius: number; smoothing: boolean; lineWidth: number }
+  shape: { kind: ShapeKind; cornerRadius: number; smoothing: boolean; lineWidth: number; lineStyle: LineStyle; lineCap: LineCap }
   crop: { ratio: string; rect: { x: number; y: number; w: number; h: number } | null }
   tips: Record<'brush' | 'clone' | 'smear', Tip>
   brush: BrushSettings
@@ -70,7 +76,7 @@ export class Store {
     wand: { tolerance: 32, contiguous: true, sampleAll: false, sampleSize: 0 }, wandMode: 'Magic Wand', objectSelection: { sampleAll: true, edgeOffset: 0 }, selectionMode: 'replace', selectionAntialias: true, modifyAmounts: { expand: 1, contract: 1, feather: 2 },
     brush: { diameter: 40, hardness: 1, opacity: 1, smoothing: 0, erasing: false },
     healMode: 'Content-Aware', clone: { aligned: true, sampleAll: false, source: null, offset: null }, smearMode: 'Liquify', blurRadius: 5,
-    gradient: { shape: 'Linear', style: 'Foreground to Transparent', reversed: false, opacity: 1 }, shape: { kind: 'Rectangle', cornerRadius: 0, smoothing: false, lineWidth: 4 }, crop: { ratio: 'Free', rect: null },
+    gradient: { shape: 'Linear', style: 'Foreground to Transparent', reversed: false, opacity: 1 }, shape: { kind: 'Rectangle', cornerRadius: 0, smoothing: false, lineWidth: 4, lineStyle: 'Solid', lineCap: 'Square' }, crop: { ratio: 'Free', rect: null },
     tips: { brush: { diameter: 40, hardness: 1, opacity: 1 }, clone: { diameter: 40, hardness: 0, opacity: 1 }, smear: { diameter: 40, hardness: 0, opacity: 1 } },
     foreground: [0, 0, 0], background: [255, 255, 255], target: null, saved: true, revision: 0, pixelRevision: 0, message: null, inspector: null, panel: null, effectSelection: null, maskPaintWhite: false,
   }
@@ -214,6 +220,13 @@ export class Store {
     this.commit(name, { doc: this.replaceLayers(this.doc.layers.map(layer => layer.id === id ? { ...layer, ...changes } : layer)) }, { coalesce: coalesce ? `${coalesce}:${id}` : undefined })
   }
 
+  // The number keys with Move or a selection tool: every selected layer's opacity, as one step.
+  setSelectedOpacity(opacity: number) {
+    if (!this.active) return
+    const ids = this.targets
+    this.commit('Opacity', { doc: this.replaceLayers(this.doc.layers.map(l => ids.has(l.id) ? { ...l, opacity } : l)) }, { coalesce: `opacity:${[...ids].join(',')}` })
+  }
+
   updateLayerLive(id: string, changes: Partial<Layer>) {
     this.set({ doc: this.replaceLayers(this.doc.layers.map(layer => layer.id === id ? { ...layer, ...changes } : layer)) })
   }
@@ -284,15 +297,24 @@ export class Store {
   }
 
   // Fitted within the canvas, centered on it or on `at`.
-  addImageLayer(image: Raster, name: string, deep?: Layer['deep'], at?: [number, number]) {
+  addImageLayer(image: Raster, name: string, deep?: Layer['deep'], at?: [number, number], gif?: Layer['gif']) {
     const { width, height } = this.doc
     const fit = Math.min(1, width / image.width, height / image.height)
     const w = image.width * fit, h = image.height * fit, [cx, cy] = at ?? [width / 2, height / 2]
-    this.addLayer(newLayer({ name, transform: fullTransform(w, h, Math.round(cx - w / 2), Math.round(cy - h / 2)), image, deep }), 'Place Image')
+    this.addLayer(newLayer({ name, transform: fullTransform(w, h, Math.round(cx - w / 2), Math.round(cy - h / 2)), image, deep, ...(gif ? { gif } : {}) }), 'Place Image')
+  }
+
+  // Several images placed as addImageLayer places one, the first on top, as one step: a PDF's pages.
+  addImageLayers(images: { image: Raster; name: string }[], at?: [number, number], step = 'Import') {
+    if (!this.hasDocument || !images.length) return
+    const { width, height } = this.doc, [cx, cy] = at ?? [width / 2, height / 2]
+    const layers = images.toReversed().map(({ image, name }) => { const fit = Math.min(1, width / image.width, height / image.height), w = image.width * fit, h = image.height * fit; return newLayer({ name, transform: fullTransform(w, h, Math.round(cx - w / 2), Math.round(cy - h / 2)), image }) })
+    const top = layers.at(-1)!.id
+    this.commit(step, { doc: this.replaceLayers(this.insert(layers)), activeId: top, selectedIds: [top], editingMask: false })
   }
 
   addAdjustment(kind: AdjustmentKind) {
-    const layer = newLayer({ name: kind, transform: fullTransform(this.doc.width, this.doc.height), adjustment: newAdjustment(kind) })
+    const layer = newLayer({ name: kind, transform: fullTransform(this.doc.width, this.doc.height), adjustment: newAdjustment(kind, [this.doc.width, this.doc.height]) })
     this.addLayer(layer, `New ${kind} Layer`)
     this.set({ inspector: layer.id })
   }
@@ -479,6 +501,52 @@ export class Store {
     return !!base && !base.isGroup && !base.adjustment
   }
   get canToggleClip() { return this.canToggleClipFor(this.state.activeId) }
+
+  // The menus' Hide / Show Layer and Create / Release Clipping Mask work on every selected layer, as one step.
+  private get targets() { return new Set([...this.state.selectedIds, ...(this.state.activeId ? [this.state.activeId] : [])]) }
+  get visibilityTitle() { return `${this.active?.visible === false ? 'Show' : 'Hide'} ${this.state.selectedIds.length > 1 ? 'Layers' : 'Layer'}` }
+  toggleSelectedVisibility() {
+    const active = this.active
+    if (!active) return
+    const ids = this.targets, visible = !active.visible
+    this.commit(this.visibilityTitle, { doc: this.replaceLayers(this.doc.layers.map(l => ids.has(l.id) ? { ...l, visible } : l)) })
+  }
+  get releasesSelectedClipping() { const layers = this.doc.layers.filter(l => this.targets.has(l.id)); return layers.length > 0 && layers.every(l => !!l.clipTo) }
+  get selectedClippingTitle() { return this.releasesSelectedClipping ? 'Release Clipping Mask' : 'Create Clipping Mask' }
+  // Each selected layer not yet clipped, from the bottom up, clips to the layer below it or that layer's base, so a run of selected layers
+  // all clip to the layer under the lowest; null when one can't.
+  private clippedSelection(): Layer[] | null {
+    const ids = this.targets, layers = this.doc.layers.map(l => ({ ...l }))
+    if (!ids.size) return null
+    for (let i = 0; i < layers.length; i++) {
+      const layer = layers[i]
+      if (!ids.has(layer.id) || layer.clipTo) continue
+      const below = layers.slice(0, i).reverse().find(l => l.parentId === layer.parentId)
+      if (layer.isGroup || !below || below.isGroup) return null
+      const base = layers.find(l => l.id === (below.clipTo ?? below.id))
+      if (!base || base.isGroup || base.adjustment) return null
+      layer.clipTo = base.id
+    }
+    return layers
+  }
+  get canToggleSelectedClipping() { return this.releasesSelectedClipping || !!this.clippedSelection() }
+  toggleSelectedClipping() {
+    if (this.releasesSelectedClipping) {
+      const released = new Set<string>()
+      for (const id of this.targets) {
+        const layer = this.layer(id)
+        if (!layer?.clipTo) continue
+        const siblings = this.children(layer.parentId), index = siblings.findIndex(l => l.id === id)
+        released.add(id)
+        for (const above of siblings.slice(index + 1)) { if (above.clipTo !== layer.clipTo) break; released.add(above.id) }
+      }
+      this.commit('Release Clipping Mask', { doc: this.replaceLayers(this.doc.layers.map(l => released.has(l.id) ? { ...l, clipTo: null } : l)) })
+      return
+    }
+    const layers = this.clippedSelection()
+    if (!layers) { this.notify('Clipping needs a layer with pixels directly below.'); return }
+    this.commit('Create Clipping Mask', { doc: this.replaceLayers(layers) })
+  }
 
   toggleClip(id = this.state.activeId) {
     const layer = this.layer(id)
@@ -672,10 +740,26 @@ export class Store {
     this.merge([below.id, layer.id], 'Merge Down')
   }
 
+  // Split Channels (SplitChannels.swift): a layer with pixels of its own, alone in the selection, becomes a folder of four grayscale layers,
+  // Red, Green, Blue and Alpha (Red on top), in its place and at its size, the names Export As › Channel Pack fills its channels from. The
+  // layer's mask and effects aren't carried over.
+  get canSplitChannels() {
+    const layer = this.active
+    return this.hasDocument && !this.state.editingMask && this.state.selectedIds.length <= 1 && !!layer?.image && !layer.isGroup && !layer.adjustment
+  }
+  splitChannels() {
+    const layer = this.active
+    if (!layer?.image || !this.canSplitChannels) return
+    const folder = newLayer({ name: layer.name, isGroup: true, transform: fullTransform(this.doc.width, this.doc.height), parentId: layer.parentId })
+    const children = channelPlanes(layer.image).map((image, c) => newLayer({ name: packChannels[c], transform: layer.transform, image, parentId: folder.id })).reverse()
+    const red = children.at(-1)!.id
+    this.commit('Split Channels', { doc: this.replaceLayers(this.releaseBrokenClips(this.doc.layers.flatMap(l => l.id === layer.id ? [folder, ...children] : [l]))), activeId: red, selectedIds: [red], editingMask: false })
+  }
+
   // Convert to 16-Bit / Convert to 8-Bit (DeepLayers.swift): one layer of pixels, or a blank one (not text, an adjustment or a folder).
   get canConvertDepth() {
     const layer = this.active
-    return !!layer && this.state.selectedIds.length <= 1 && !layer.isGroup && !layer.adjustment && layer.text === undefined
+    return !!layer && this.state.selectedIds.length <= 1 && !layer.isGroup && !layer.adjustment && layer.text === undefined && !layer.gif
   }
 
   // To 16 bits the pixels stay exactly as they are and what follows keeps the extra precision (a blank layer gets clear 16-bit pixels
@@ -801,7 +885,9 @@ export class Store {
       const baked = made ? { raster: made.image, transform: resampled!.transform } : bake(l.image, l.transform)
       const mask = l.mask && !l.maskPlacement && !l.mask.isUniform() ? bake(l.mask, l.transform).raster : l.mask
       const maskPlacement = l.maskPlacement ? { ...l.maskPlacement, origin: [l.maskPlacement.origin[0] * sx, l.maskPlacement.origin[1] * sy] as [number, number], size: [l.maskPlacement.size[0] * sx, l.maskPlacement.size[1] * sy] as [number, number] } : null
-      return { ...l, image: baked.raster, deep: made?.deep, transform: baked.transform, mask, maskPlacement, effects: scaleEffects(l.effects), text: undefined, shape: undefined }
+      // A GIF layer's frames all take the new geometry, the one shown becoming its image (GIFAnimation.resizing).
+      const gif = syncedGIF(l), resizedGIF = gif ? withGIF(resizeGIF(gif, l.transform, baked.transform, sx, sy)) : null
+      return { ...l, image: baked.raster, deep: made?.deep, transform: baked.transform, mask, maskPlacement, effects: scaleEffects(l.effects), text: undefined, shape: undefined, ...resizedGIF }
     })
     const guides = doc.guides.map(g => ({ ...g, position: g.position * (g.axis === 'vertical' ? sx : sy) }))
     this.commit('Image Size', { doc: { ...doc, width, height, resolution, layers, guides }, selection: null })

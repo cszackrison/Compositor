@@ -7,10 +7,12 @@ import { useCoarse } from './layout'
 import { closeProject, deleteBrowserProject, openBrowserProject, openRecent, documentName, downloadZip, exportImage, importFolder, importImage, openFiles, openProject, openAnything, placeImages, save } from '../editor/actions'
 import { copy, cut, layerViaCopy, paste } from '../editor/clipboard'
 import { carriesFiles, readDrop, canWriteDirectories } from '../io/files'
-import { adjustmentKinds, blendModes } from '../model/types'
+import { filterAdjustmentKinds, imageAdjustmentKinds, blendModes } from '../model/types'
 import { MenuBar, type MenuItem } from './Menu'
+import { alignLayers, alignments, canAlign, canDistribute, distributeLayers, distributions } from '../editor/align'
 import { Stage, actualSize, documentAt, fit, zoomBy, activeHandler } from './Stage'
 import { LayersPanel } from './LayersPanel'
+import { GIFTimeline } from './GIFTimeline'
 import { Inspector } from './Inspector'
 import { ToolRail, ToolHeader } from './Tools'
 import { TabBar } from './Tabs'
@@ -19,7 +21,7 @@ import { ColorPickerHost } from './ColorPicker'
 import { FilterHost, lastFilterName, repeatLastFilter } from './Filters'
 import { CommandPalette } from './CommandPalette'
 import { Navigator } from './Navigator'
-import { prefs, setPrefs, subscribePrefs } from '../editor/prefs'
+import { guidesShown, prefs, setPrefs, subscribePrefs } from '../editor/prefs'
 import { definitionFor, shortcutText, subscribeShortcuts } from '../editor/shortcuts'
 import { brushKey } from '../tools/paint'
 import { beginTransformSelection } from '../editor/floating'
@@ -56,12 +58,13 @@ const commands: Record<string, { run: () => void; enabled?: () => boolean }> = {
   'Export As': { run: open('Export As'), enabled: has },
   'Export JPEG': { run: open('Export JPEG'), enabled: has },
   'Close Project': { run: () => closeProject(), enabled: has },
-  'Fit Canvas': { run: fit, enabled: has },
+  'Fit Canvas': { run: () => fit(), enabled: has },
   'Search Commands': { run: open('Search Commands') },
   'Actual Pixels': { run: actualSize, enabled: has },
   'Zoom In': { run: () => zoomBy(2), enabled: has },
   'Zoom Out': { run: () => zoomBy(0.5), enabled: has },
-  'Show Transform Controls': { run: () => setPrefs({ transformControls: !prefs.transformControls }) },
+  'Show Transform Controls': { run: () => store.state.tool === 'move' || !store.hasDocument ? setPrefs({ transformControls: !prefs.transformControls }) : setPrefs({ extrasHidden: !prefs.extrasHidden }) },
+  'Show Extras': { run: () => setPrefs({ extrasHidden: !prefs.extrasHidden }), enabled: has },
   Cut: { run: () => cut(), enabled: () => has() && !!store.state.selection },
   Copy: { run: () => copy(), enabled: has },
   'Copy Merged': { run: () => copy(true), enabled: has },
@@ -82,7 +85,7 @@ const commands: Record<string, { run: () => void; enabled?: () => boolean }> = {
   'Image Size': { run: open('Image Size'), enabled: has },
   'Transform Layer / Selection': { run: () => { if (!beginTransformSelection()) store.setTool('move') }, enabled: has },
   'Duplicate / Layer via Copy': { run: layerViaCopy, enabled: () => !!store.active },
-  'Toggle Clipping Mask': { run: () => store.toggleClip(), enabled: () => store.canToggleClip },
+  'Toggle Clipping Mask': { run: () => store.toggleSelectedClipping(), enabled: () => store.canToggleSelectedClipping },
   'Group Layers': { run: () => store.group(), enabled: () => !!store.active },
   'Ungroup Layers': { run: () => store.ungroup(), enabled: () => !!store.active?.isGroup },
   'New Blank Layer': { run: () => store.addBlankLayer(), enabled: has },
@@ -90,7 +93,7 @@ const commands: Record<string, { run: () => void; enabled?: () => boolean }> = {
   'Move Layer Down': { run: () => store.stepLayer(-1), enabled: () => !!store.active },
   'Merge Layers': { run: () => store.mergeDown(), enabled: () => store.canMerge },
   'Show Grid': { run: () => setPrefs({ grid: !prefs.grid }) },
-  'Show Guides': { run: () => setPrefs({ guides: !prefs.guides }) },
+  'Show Guides': { run: () => setPrefs({ guides: !guidesShown() }) },
   'Show Rulers': { run: () => setPrefs({ rulers: !prefs.rulers }) },
   Snap: { run: () => setPrefs({ snap: !prefs.snap }) },
   'Lock Guides': { run: () => setPrefs({ lockGuides: !prefs.lockGuides }) },
@@ -192,7 +195,7 @@ export function App() {
         { label: 'Clear Menu', action: clearRecent, disabled: !recent.length },
       ] },
       ...(!canWriteDirectories ? [{ label: 'Open Saved in Browser', disabled: !saved.length, submenu: saved.map(p => ({ label: p.name, action: () => openBrowserProject(p) })) }] : []),
-      { label: 'Import Images…', action: importImage },
+      { label: 'Import…', action: importImage },
       { label: 'Import Folder…', action: importFolder },
       'divider',
       item(canWriteDirectories ? 'Save' : 'Save in Browser', 'Save'),
@@ -238,31 +241,33 @@ export function App() {
       { label: 'Trim…', action: open('Trim'), disabled: !doc },
       { label: 'Crop to Selection', action: () => store.cropToSelection(), disabled: !state.selection },
       'divider',
-      { label: 'Rotate Canvas 90° Clockwise', action: () => { store.rotateCanvas(true); fit() }, disabled: !doc },
-      { label: 'Rotate Canvas 90° Counterclockwise', action: () => { store.rotateCanvas(false); fit() }, disabled: !doc },
+      { label: 'Rotate Canvas 90° Clockwise', action: () => { store.rotateCanvas(true); fit(false) }, disabled: !doc },
+      { label: 'Rotate Canvas 90° Counterclockwise', action: () => { store.rotateCanvas(false); fit(false) }, disabled: !doc },
       { label: 'Flip Canvas Horizontal', action: () => store.flipCanvas('x'), disabled: !doc },
       { label: 'Flip Canvas Vertical', action: () => store.flipCanvas('y'), disabled: !doc },
     ] },
-    { title: 'Filter', items: [item(lastFilterName() ? `Last Filter: ${lastFilterName()}` : 'Last Filter', 'Last Filter'), 'divider' as const, ...['Gaussian Blur', 'Motion Blur', 'Progressive Blur', 'Add Noise'].map(filter)].concat([
-      { label: 'Vignette…', action: open('Vignette'), disabled: !canVignette() },
-      ...['Bloom / Glow', 'Dither', 'Scanlines', 'Tonal Contrast', 'Lens Correction', 'Camera Raw Filter', 'Remove Background'].map(filter),
-    ]) },
+    // Those that can also be adjustment layers, in that menu's order, then the rest.
+    { title: 'Filter', items: [item(lastFilterName() ? `Last Filter: ${lastFilterName()}` : 'Last Filter', 'Last Filter'), 'divider' as const,
+      ...filterAdjustmentKinds.map(kind => kind === 'Vignette' ? { label: 'Vignette…', action: open('Vignette'), disabled: !canVignette() } : filter(kind)), 'divider' as const,
+      ...['Dither', 'Scanlines', 'Volumetric Light', 'Rim Light', 'Lens Correction', 'Camera Raw Filter', 'Remove Background'].map(filter)] },
     { title: 'Layer', items: [
-      { label: 'New Adjustment Layer', disabled: !doc, submenu: adjustmentKinds.map(kind => ({ label: kind === 'Invert' ? kind : `${kind}…`, action: () => store.addAdjustment(kind) })) },
+      { label: 'New Adjustment Layer', disabled: !doc, submenu: [...imageAdjustmentKinds.map(kind => ({ label: kind === 'Invert' ? kind : `${kind}…`, action: () => store.addAdjustment(kind) })), 'divider' as const, ...filterAdjustmentKinds.map(kind => ({ label: `${kind}…`, action: () => store.addAdjustment(kind) }))] },
       { label: 'Edit Adjustment…', action: () => active && store.set({ inspector: active.id }), disabled: !active?.adjustment },
       'divider',
       item(state.selection ? 'Transform Selection' : 'Transform Layer', 'Transform Layer / Selection'),
       item(state.selection ? 'Layer via Copy' : 'Duplicate Layer', 'Duplicate / Layer via Copy'),
       'divider',
-      item(active?.clipTo ? 'Release Clipping Mask' : 'Create Clipping Mask', 'Toggle Clipping Mask'),
+      item(store.selectedClippingTitle, 'Toggle Clipping Mask'),
       'divider',
       item('Group Selected Layers', 'Group Layers'), item('Ungroup Layers', 'Ungroup Layers'),
       { label: 'Move Out of Folder', action: () => store.moveOutOfFolder(), disabled: !active?.parentId },
       item('New Blank Layer', 'New Blank Layer'),
-      { label: active?.visible === false ? 'Show Layer' : 'Hide Layer', action: () => active && store.updateLayer(active.id, { visible: !active.visible }, active.visible ? 'Hide Layer' : 'Show Layer'), disabled: !active },
+      { label: store.visibilityTitle, action: () => store.toggleSelectedVisibility(), disabled: !active },
       'divider',
       item('Move Layer Up', 'Move Layer Up'), item('Move Layer Down', 'Move Layer Down'), item(store.mergeTitle, 'Merge Layers'),
       'divider',
+      { label: 'Align', disabled: !canAlign(), submenu: alignments.map(a => ({ label: a, action: () => alignLayers(a) })) },
+      { label: 'Distribute', disabled: !canDistribute(), submenu: distributions.map(d => ({ label: d, action: () => distributeLayers(d) })) },
       { label: 'Flip Layer Horizontal', action: () => store.flipLayer('x'), disabled: !active },
       { label: 'Flip Layer Vertical', action: () => store.flipLayer('y'), disabled: !active },
       'divider',
@@ -275,7 +280,8 @@ export function App() {
       item('Fit Canvas', 'Fit Canvas'), item('Actual Pixels', 'Actual Pixels'), item('Zoom In', 'Zoom In'), item('Zoom Out', 'Zoom Out'),
       { label: 'Pixel Grid (800% and above)', checked: prefs.pixelGrid, action: () => setPrefs({ pixelGrid: !prefs.pixelGrid }) },
       { label: 'Navigator (300% and above)', checked: prefs.navigator, action: () => setPrefs({ navigator: !prefs.navigator }) },
-      item('Show Transform Controls', 'Show Transform Controls', { checked: prefs.transformControls }),
+      item('Show Transform Controls', 'Show Transform Controls', { checked: prefs.transformControls, action: () => setPrefs({ transformControls: !prefs.transformControls }), ...(state.tool === 'move' ? {} : { shortcut: undefined }) }),
+      item('Show Extras', 'Show Extras', { checked: !prefs.extrasHidden, ...(state.tool === 'move' ? {} : { shortcut: sc('Show Transform Controls') }) }),
       'divider',
       // Print: the canvas as the chosen CMYK profile will print it, tucked in a submenu as few need it.
       { label: 'CMYK', submenu: [
@@ -286,7 +292,7 @@ export function App() {
       ] },
       'divider',
       item('Grid', 'Show Grid', { checked: prefs.grid }),
-      item('Guides', 'Show Guides', { checked: prefs.guides }),
+      item('Guides', 'Show Guides', { checked: guidesShown() }),
       { label: 'Grid Settings…', action: open('Grid Settings') },
       item('Rulers', 'Show Rulers', { checked: prefs.rulers }),
       'divider',
@@ -363,6 +369,7 @@ export function App() {
         {!doc && <Welcome />}
         {dragging && <div className="drop" />}
       </div>
+      <GIFTimeline />
     </main>
   )
   const panels = <div className="panels"><LayersPanel /><Inspector /></div>
@@ -382,7 +389,7 @@ export function App() {
         <button className="icon" title="Undo" disabled={!commands.Undo.enabled!()} onClick={() => { store.undo(); requestRender(false) }}>↶</button>
         <button className="icon" title="Redo" disabled={!commands.Redo.enabled!()} onClick={() => { store.redo(); requestRender(false) }}>↷</button>
         <span className="doc">{doc ? `${documentName()}${state.saved ? '' : ' •'}` : 'Compositor'}</span>
-        {doc && <button className="icon" title="Fit canvas" onClick={fit}>⤢</button>}
+        {doc && <button className="icon" title="Fit canvas" onClick={() => fit()}>⤢</button>}
         <button className={`icon ${sheet ? 'on' : ''}`} title="Layers" disabled={!doc} onClick={() => setSheet(!sheet)}><Icon name="folder" size={18} /></button>
       </header>
       {canvas}
@@ -422,7 +429,7 @@ function Welcome() {
         <p className="muted">Open a <code>.comp</code> project from the Mac app, start a new canvas, or drop an image here.</p>
         <div className="actions">
           <button className="primary" onClick={open('New Canvas')}>New Canvas…</button>
-          <button onClick={openAnything} title="An image, a Photoshop or camera RAW file, or a zipped project">Open…</button>
+          <button onClick={openAnything} title="An image, a PDF, a Photoshop or camera RAW file, or a zipped project">Open…</button>
           {!coarse && <button onClick={openProject} title="A .comp project folder">Open Project…</button>}
         </div>
         {saved.length > 0 && <div className="actions"><span className="muted">Saved in this browser</span>{saved.slice(0, 5).map(p => <button key={p.id} onClick={() => openBrowserProject(p)}>{p.name} <span className="muted">· {new Date(p.savedAt).toLocaleDateString()}</span></button>)}</div>}

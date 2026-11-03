@@ -193,7 +193,7 @@ export const paint: ToolHandler = {
     }
     stroke.stringLength = settings.smoothing / Math.max(0.01, view.zoom)
     const same = lastEnd && lastEnd.layerId === layer.id && lastEnd.isMask === target.isMask
-    if (prefs.penPressure && p.pressure !== undefined) stroke.pressure = p.pressure
+    if (p.pressure !== undefined) { if (prefs.penPressure) stroke.pressure = p.pressure; if (prefs.penPressureOpacity) stroke.strength = p.pressure }
     if (p.shift && same) { stroke.lineTo(...lastEnd!.point); stroke.lineTo(...p.point) } else stroke.moveTo(...p.point)
     stroke.render()
     current = { stroke, layerId: layer.id, isMask: target.isMask, heal: tool === 'heal', kept, maskKept: maskGrowth?.kept ?? null, axis: null, anchor: p.point, blur }
@@ -215,7 +215,7 @@ export const paint: ToolHandler = {
       if (!current!.axis) { if (Math.hypot(q[0] - ax, q[1] - ay) < 3) return [ax, ay]; current!.axis = Math.abs(q[0] - ax) >= Math.abs(q[1] - ay) ? 'x' : 'y' }
       return current!.axis === 'x' ? [q[0], ay] : [ax, q[1]]
     }
-    if (prefs.penPressure && p.pressure !== undefined) current.stroke.pressure = p.pressure
+    if (p.pressure !== undefined) { if (prefs.penPressure) current.stroke.pressure = p.pressure; if (prefs.penPressureOpacity) current.stroke.strength = p.pressure }
     for (const q of p.coalesced.length ? p.coalesced : [p.point]) current.stroke.moveTo(...lock(q))
     if (p.predicted && !p.shift) current.stroke.predict(p.predicted)
     current.stroke.render()
@@ -281,6 +281,7 @@ export const eyedropper: ToolHandler = { down: p => pickColor(p.point, p.alt), c
 
 // [ and ] resize the tip, { and } step hardness in quarters, digits set opacity (two quick digits for an exact percentage).
 let lastDigit: { value: number; at: number } | null = null
+const layerTools = new Set(['move', 'marquee', 'lasso', 'wand'])
 export function brushKey(event: KeyboardEvent): boolean {
   const tool = store.state.tool
   const brushTool = !!tipFamily(tool)
@@ -299,11 +300,11 @@ export function brushKey(event: KeyboardEvent): boolean {
     return true
   }
   const digit = /^Digit(\d)$/.exec(event.code)
-  if (digit && !event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey && (brushTool || tool === 'gradient' || tool === 'move')) {
+  if (digit && !event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey && (brushTool || tool === 'gradient' || layerTools.has(tool))) {
     const n = +digit[1], now = performance.now()
     let percent = n === 0 ? 100 : n * 10
     if (lastDigit && now - lastDigit.at < 600) { percent = Math.max(1, lastDigit.value * 10 + n); lastDigit = null } else lastDigit = { value: n, at: now }
-    if (tool === 'move') { const layer = store.active; if (layer) store.updateLayer(layer.id, { opacity: percent / 100 }, 'Opacity', 'opacity') }
+    if (layerTools.has(tool)) store.setSelectedOpacity(percent / 100)
     else if (tool === 'gradient') store.set({ gradient: { ...store.state.gradient, opacity: percent / 100 } })
     else store.set({ brush: { ...brush, opacity: percent / 100 } })
     return true

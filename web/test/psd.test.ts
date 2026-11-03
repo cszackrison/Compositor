@@ -3,7 +3,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { Raster } from '../src/model/raster'
 import { Store } from '../src/editor/store'
 import { isPSD } from '../src/io/files'
-import { type PSDDocument, type PSDDrawing, decodeChannel, hueAdjustment, levelsAdjustment, makeImport, maskOnLayerGrid, psdRecord, readPSD } from '../src/io/psd'
+import { type PSDDocument, type PSDDrawing, artboards, decodeChannel, hueAdjustment, levelsAdjustment, makeImport, maskOnLayerGrid, psdRecord, readPSD } from '../src/io/psd'
 import { fauxNote, firstStyleNote, missingFontNote, parseText, rasterizedNote, warpNote } from '../src/io/psdText'
 import { vectorLive, vectorRaster } from '../src/io/psdVector'
 import { fromInks, readProfile, toInks } from '../src/io/cmyk'
@@ -544,5 +544,44 @@ describe.skipIf(!existsSync(cmykPath))('CMYK Photoshop files', () => {
     const profile = (await readProfile('default_cmyk.icc', new Uint8Array(readFileSync(cmykPath))))!
     const document = await read(await psdFixture({ width: 2, height: 2, resolution: 72, cmykProfile: profile, layers: [] }, { composite: Raster.filled(2, 2, 4, [128, 128, 128, 255]) }))
     expect([...document.merged!.data.subarray(0, 3)].every(v => Math.abs(v - 128) <= 4)).toBe(true)
+  })
+})
+
+// PSDArtboardTests.swift: a file with artboards opens as one document per artboard, each in a tab of its own.
+describe('Photoshop artboards', () => {
+  // An `artb` block as Photoshop writes it: a versioned descriptor holding the artboard's rectangle.
+  const artboardBlock = (x: number, y: number, width: number, height: number) => {
+    const rect = new Buffer()
+    rect.string('Objc'); rect.u32(0); rect.id('classFloatRect'); rect.u32(4)
+    for (const [key, value] of [['Top ', y], ['Left', x], ['Btom', y + height], ['Rght', x + width]] as const) { rect.id(key); rect.string('doub'); rect.f64(value) }
+    const b = new Buffer()
+    b.descriptor('null', [['artboardRect', rect.build()]])
+    return b.build()
+  }
+  // Two artboards side by side on a 200 × 100 canvas, a layer in each, and one on the canvas outside both.
+  const file = () => psdFixture(doc(200, 100, [
+    { name: 'Loose', bounds: { x: 0, y: 90, width: 10, height: 10 }, image: colorImage(10, 10, 0, 1, 0) },
+    { id: 'phone', name: 'Phone', isGroup: true },
+    { name: 'Red', parentId: 'phone', bounds: { x: 10, y: 20, width: 30, height: 40 }, image: colorImage(30, 40, 1, 0, 0) },
+    { id: 'tablet', name: 'Tablet', isGroup: true },
+    { name: 'Blue', parentId: 'tablet', bounds: { x: 130, y: 10, width: 20, height: 20 }, image: colorImage(20, 20, 0, 0, 1) },
+  ]), { composite: Raster.filled(200, 100, 4, [255, 255, 255, 255]), extras: { phone: { artb: artboardBlock(0, 0, 80, 60) }, tablet: { artb: artboardBlock(120, 0, 60, 50) } } })
+
+  it('opens each artboard as a document its size, its layers where they sat on it', async () => {
+    const boards = artboards(await read(await file()))!
+    // In the file's order: Phone, then Tablet above it.
+    expect(boards.map(b => b.name)).toEqual(['Phone', 'Tablet'])
+    expect(boards.map(b => [b.document.width, b.document.height])).toEqual([[80, 60], [60, 50]])
+    const [phone, tablet] = await Promise.all(boards.map(async board => { const store = new Store(); store.addPhotoshop(await makeImport(board.document, drawing), board.name); return store }))
+    // No artboard folder around the layers, and the loose layer in neither.
+    expect(phone.doc.layers.map(l => [l.name, l.parentId, ...l.transform.origin])).toEqual([['Red', null, 10, 20]])
+    expect(tablet.doc.layers.map(l => [l.name, l.parentId, ...l.transform.origin])).toEqual([['Blue', null, 10, 10]])
+    expect([tablet.doc.width, tablet.doc.height]).toEqual([60, 50])
+  })
+
+  it('opens a file without artboards as one canvas', async () => {
+    const fill = colorImage(4, 4, 1, 0, 0)
+    expect(artboards(await read(await psdFixture(doc(4, 4, [{ name: 'Only', bounds: { x: 0, y: 0, width: 4, height: 4 }, image: fill }]), { composite: fill })))).toBeNull()
+    expect(artboards(await read(await psdFixture(doc(4, 4, [{ id: 'g', name: 'Folder', isGroup: true }, { name: 'Only', parentId: 'g', bounds: { x: 0, y: 0, width: 4, height: 4 }, image: fill }]), { composite: fill })))).toBeNull()
   })
 })

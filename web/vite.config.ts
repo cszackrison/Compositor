@@ -1,9 +1,9 @@
 import { defineConfig, type Plugin } from 'vite'
-import { readFileSync } from 'node:fs'
+import { cpSync, readFileSync } from 'node:fs'
 import { execSync } from 'node:child_process'
 
 // The files the service worker (public/sw.js) keeps for offline use: the page, its scripts and styles and the app's own data, not the
-// optional parts loaded on first use (HEIC, RAW, the AI runtimes), which it keeps once they're used. The build's version names it.
+// optional parts loaded on first use (HEIC, RAW, PDF, the AI runtimes), which it keeps once they're used. The build's version names it.
 // Files without a hash in their name are asked for with the build's version, so a page never gets another build's copy.
 const build = Date.now().toString(36)
 // What the About box shows: the Mac app's version this port follows (from its Xcode project) and the web release on it, as
@@ -15,12 +15,24 @@ const commit = (() => { try { return execSync('git rev-parse --short HEAD', { st
 const offline = (): Plugin => ({
   name: 'offline-files',
   generateBundle(_, bundle) {
-    const optional = /libheif|libraw|ort-wasm|subjectWorker|objectWorker|worker-/
+    const optional = /libheif|libraw|ort-wasm|subjectWorker|objectWorker|worker-|pdf/
     const built = Object.keys(bundle).filter(name => !optional.test(name) && !name.endsWith('.map'))
     const files = ['./', 'index.html', `kernels.wasm?v=${build}`, `CameraRawTables.bin?v=${build}`, `CameraRawShadows.bin?v=${build}`, 'manifest.webmanifest', 'icon.png', 'icon-192.png', 'icon-512.png', 'apple-touch-icon.png', ...built.filter(n => n !== 'index.html')]
     this.emitFile({ type: 'asset', fileName: 'offline.json', source: JSON.stringify(files) })
   },
 })
 
+// PDF.js's image decoders, standard fonts and character maps beside the build, in a folder named for its version (io/pdfImport.ts), which
+// it fetches from only for a file that needs them (not its JavaScript engine, as scripts in a PDF aren't run). In development they come
+// from node_modules.
+const pdfjsAssets = (): Plugin => ({
+  name: 'pdfjs-assets',
+  apply: 'build',
+  writeBundle({ dir = 'dist' }) {
+    const root = new URL('./node_modules/pdfjs-dist/', import.meta.url), { version } = JSON.parse(readFileSync(new URL('package.json', root), 'utf8')) as { version: string }
+    for (const folder of ['wasm', 'standard_fonts', 'cmaps']) cpSync(new URL(folder, root), `${dir}/pdfjs-${version}/${folder}`, { recursive: true, filter: source => !/quickjs/i.test(source) })
+  },
+})
+
 // libraw-wasm starts its own worker beside itself, which Vite's dependency pre-bundling would move away from it.
-export default defineConfig({ base: './', plugins: [offline()], define: { __BUILD__: JSON.stringify(build), __VERSION__: JSON.stringify(version), __COMMIT__: JSON.stringify(commit), __BUILT__: JSON.stringify(new Date().toISOString().slice(0, 10)) }, esbuild: { jsx: 'automatic' }, build: { target: 'es2022' }, optimizeDeps: { exclude: ['libraw-wasm'] }, worker: { format: 'es' } })
+export default defineConfig({ base: './', plugins: [pdfjsAssets(), offline()], define: { __BUILD__: JSON.stringify(build), __VERSION__: JSON.stringify(version), __COMMIT__: JSON.stringify(commit), __BUILT__: JSON.stringify(new Date().toISOString().slice(0, 10)) }, esbuild: { jsx: 'automatic' }, build: { target: 'es2022' }, optimizeDeps: { exclude: ['libraw-wasm'] }, worker: { format: 'es' } })

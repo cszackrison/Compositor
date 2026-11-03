@@ -1,8 +1,11 @@
-import { type Mat3, type Program, Target, TargetPool, chain, compile, invert, multiply, rotate, scale, setSampling, translate, use, apply, identity } from './gl'
+import { type Mat3, type Program, Target, TargetPool, chain, compile, invert, multiply, rotate, scale, scale as scaleBy, setSampling, translate, use, apply, identity } from './gl'
 import { adjustFragment, adjustMixFragment, blurFragment, clipFragment, copyFragment, deepFlattenFragment, displayFragment, layerFragment, passVertex } from './shaders'
 import { renderEffects, hasVisibleEffects } from './effects'
 import { channelTables, hueSaturationCube, kernelCube, cubeSize } from '../model/adjustments'
-import { type Adjustment, type Doc, type Layer, type Transform, blendModes } from '../model/types'
+import { type Adjustment, type Doc, type Layer, type Transform, blendModes, filterLayerKinds } from '../model/types'
+import { filterLayerJob } from '../editor/filterLayers'
+import * as filterKinds from '../editor/filterKinds'
+import { kernelModule } from '../kernels'
 import { type Deep, deepOf, sixteenToHalf } from '../model/deep'
 import { Raster } from '../model/raster'
 import { layerToMask, maskOnGrid } from '../model/masks'
@@ -321,7 +324,7 @@ export class Compositor {
     }
     for (const { layer } of entries) {
       const visible = !layer.isGroup || !!layer.mask
-      if (layer.adjustment && (layer.adjustment.kind === 'Gaussian Blur' || layer.adjustment.kind === 'Motion Blur') && layer.visible) return 'all'
+      if (layer.adjustment && (layer.adjustment.kind === 'Gaussian Blur' || layer.adjustment.kind === 'Motion Blur' || filterLayerKinds.includes(layer.adjustment.kind)) && layer.visible) return 'all'
       if (layer.image && hasVisibleEffects(layer.effects)) {
         // A new result, or a switch between drawing it as is and drawing a waiting one under the layer, redraws everything; while
         // one waits, the layer's own pixels change in known places like any other layer's.
@@ -352,7 +355,7 @@ export class Compositor {
     const id = (o: object) => { let n = this.ids.get(o); if (!n) { n = this.nextId++; this.ids.set(o, n) } return n }
     const one = (e: Entry): string => {
       const l = e.layer, clip = l.clipTo ? this.byIdForSignature?.get(l.clipTo) : null
-      const effects = l.image && hasVisibleEffects(l.effects) ? `fx${this.effectsCache.get(l.id)?.key}` : ''
+      const effects = l.image && hasVisibleEffects(l.effects) ? `fx${this.effectsCache.get(l.id)?.key}` : l.adjustment && filterLayerKinds.includes(l.adjustment.kind) ? `fl${this.filterResults.get(l.id)?.made}` : ''
       return `${id(l)}:${l.image?.version}:${l.mask?.version}:${e.ancestors.map(a => `${id(a)}.${a.mask?.version}`).join(',')}:${clip ? one(clip) : ''}${effects}`
     }
     return [entry, ...children].map(one).join('|')
@@ -730,11 +733,76 @@ export class Compositor {
     return out
   }
 
-  private applyAdjustment(entry: Entry, target: Target, clip: Target | null) {
+  // Filter adjustment layers (editor/filterLayers.ts): the canvas below read back and run through the filter itself, as the Mac makes
+  // Reduce Noise and Lens Effects layers once from what's under them and places that as the view moves. The live view keeps drawing the
+  // last result, where it was made, while the worker makes the next; exports and merges make it here, so they're current.
+  private filterResults = new Map<string, { key: string; raster: Raster; made: number; origin: [number, number]; scale: number }>()
+  private filterJobs = new Map<string, string>()
+  private filterWorker: Worker | null | undefined
+  private filterIds = new Map<number, { layerId: string; key: string; origin: [number, number]; scale: number }>()
+
+  private filterLayer(layer: Layer, original: Target, below: string): Target | null {
+    const { width, height } = original, scale = this.renderScale, origin: [number, number] = [this.origin[0], this.origin[1]]
+    const doc = this.previous ? [this.previous.doc.width, this.previous.doc.height] : [width / scale, height / scale]
+    const key = `${below}@${width}x${height}:${origin}:${scale}:${JSON.stringify(layer.adjustment)}`
+    let result = this.filterResults.get(layer.id)
+    if (result?.key !== key) {
+      const near = (v: number, edge: number) => Math.abs(v - edge) < 0.5
+      const sides = { left: near(origin[0], 0), top: near(origin[1], 0), right: near(origin[0] + width / scale, doc[0]), bottom: near(origin[1] + height / scale, doc[1]) }
+      const job = filterLayerJob(layer.adjustment!.kind, layer.adjustment!.filterLayerSettings, { scale, side: Math.max(doc[0], doc[1]) * scale, sides })
+      if (!job) return null
+      const toDocument = chain(translate(origin[0], origin[1]), scaleBy(1 / scale))
+      if (!(this.live && this.requestFilter(layer.id, key, job, original, toDocument, origin, scale)) || !result) {
+        if (this.live && this.filterJobs.has(layer.id) && !result) return null
+        const pixels = this.read(original), out = (filterKinds[job.job] as unknown as (input: filterKinds.FilterKindInput, ...args: unknown[]) => filterKinds.FilterKindOutput)({ pixels, isMask: false, toDocument, layerId: layer.id, transform: layer.transform }, ...job.args)
+        if (result) this.forget(result.raster)
+        result = { key, raster: filterKinds.onGrid(out, pixels), made: this.nextId++, origin, scale }
+        this.filterResults.set(layer.id, result)
+      }
+    }
+    const out = this.pool.take(width, height), exact = result.scale === scale && result.origin[0] === origin[0] && result.origin[1] === origin[1] && result.raster.width === width && result.raster.height === height
+    this.draw(out, { texture: this.texture(result.raster), raster: result.raster, width: result.raster.width, height: result.raster.height, unitToDoc: unitToDocument({ origin: result.origin, size: [result.raster.width / result.scale, result.raster.height / result.scale], rotation: 0, flipX: false, flipY: false, sampling: 'Smooth' }), sampling: exact ? 'Exact' : 'Smooth', rotation: 0 }, { opacity: 1, blendMode: 'Normal' })
+    return out
+  }
+  
+  // Starts the filter for `key` in the worker unless it's already being made, or waits for the one running; false when there's no worker.
+  private requestFilter(layerId: string, key: string, job: { job: string; args: unknown[] }, original: Target, toDocument: Mat3, origin: [number, number], scale: number): boolean {
+    if (this.filterWorker === undefined) {
+      try {
+        const module = kernelModule()
+        if (!module) throw new Error()
+        this.filterWorker = new Worker(new URL('./filterLayerWorker.ts', import.meta.url), { type: 'module' })
+        this.filterWorker.postMessage(module)
+        this.filterWorker.onmessage = (event: MessageEvent<{ id: number; width?: number; height?: number; data?: Uint8Array; error?: string }>) => this.filterDone(event.data)
+        this.filterWorker.onerror = () => { this.filterWorker = null; this.filterJobs.clear() }
+      } catch { this.filterWorker = null }
+    }
+    if (!this.filterWorker) return false
+    if (this.filterJobs.has(layerId)) return true
+    const id = this.nextId++, pixels = this.read(original)
+    this.filterJobs.set(layerId, key)
+    this.filterIds.set(id, { layerId, key, origin, scale })
+    this.filterWorker.postMessage({ id, name: job.job, args: job.args, toDocument, pixels: { width: pixels.width, height: pixels.height, data: pixels.data } }, [pixels.data.buffer])
+    return true
+  }
+
+  private filterDone({ id, width, height, data, error }: { id: number; width?: number; height?: number; data?: Uint8Array; error?: string }) {
+    const job = this.filterIds.get(id)
+    this.filterIds.delete(id)
+    if (!job) return
+    this.filterJobs.delete(job.layerId)
+    if (error || !data) { console.warn(error); return }
+    const cached = this.filterResults.get(job.layerId)
+    if (cached) this.forget(cached.raster)
+    this.filterResults.set(job.layerId, { key: job.key, raster: new Raster(width!, height!, 4, data), made: id, origin: job.origin, scale: job.scale })
+    this.onStale?.()
+  }
+
+  private applyAdjustment(entry: Entry, target: Target, clip: Target | null, below = '') {
     const { layer } = entry
     const original = this.pool.take(target.width, target.height)
     this.copy(target, original)
-    const adjusted = this.adjusted(layer.adjustment!, original)
+    const adjusted = filterLayerKinds.includes(layer.adjustment!.kind) ? this.filterLayer(layer, original, below) : this.adjusted(layer.adjustment!, original)
     if (adjusted) {
       const hasMask = !!(layer.mask && layer.maskEnabled)
       if (hasMask) { this.texture(layer.mask!); setSampling(this.gl, layer.transform.sampling === 'Nearest' ? this.gl.NEAREST : this.gl.LINEAR) }
@@ -766,12 +834,12 @@ export class Compositor {
   // they are. The caller disposes of the target. `live` draws effects still being redone as the live view does, from the last result.
   // The target is half-float when the region's document has deep layers (and the GPU renders floats), whatever the live view's is.
   renderRegion(doc: Doc, x: number, y: number, w: number, h: number, renderScale = 1, live = false): Target {
-    const saved = { output: this.output, width: this.width, height: this.height, renderScale: this.renderScale, origin: this.origin, prefix: this.prefix, previous: this.previous, lastSignatures: this.lastSignatures, live: this.live, clipCache: this.clipCache, gpuChanges: this.gpuChanges, hdr: this.hdr, pool: this.pool, drawnEffects: this.drawnEffects, drawnStale: this.drawnStale }
+    const saved = { output: this.output, width: this.width, height: this.height, renderScale: this.renderScale, origin: this.origin, prefix: this.prefix, previous: this.previous, lastSignatures: this.lastSignatures, live: this.live, clipCache: this.clipCache, gpuChanges: this.gpuChanges, hdr: this.hdr, pool: this.pool, drawnEffects: this.drawnEffects, drawnStale: this.drawnStale, filterResults: this.filterResults }
     const hdr = this.floatTargets && doc.layers.some(l => !!l.deep), ownPool = hdr !== this.hdr
     this.hdr = hdr
     if (ownPool) this.pool = new TargetPool(this.gl, this.format)
     const width = Math.max(1, Math.round(w * renderScale)), height = Math.max(1, Math.round(h * renderScale)), target = new Target(this.gl, width, height, this.format, true)
-    Object.assign(this, { output: target, width, height, renderScale, origin: [x, y], prefix: null, previous: null, lastSignatures: [], live, clipCache: new Map(), gpuChanges: new Map(), regionParts: new Map(), drawnEffects: new Map(), drawnStale: new Map() })
+    Object.assign(this, { output: target, width, height, renderScale, origin: [x, y], prefix: null, previous: null, lastSignatures: [], live, clipCache: new Map(), gpuChanges: new Map(), regionParts: new Map(), drawnEffects: new Map(), drawnStale: new Map(), filterResults: new Map() })
     try { this.compose(doc, target, width, height) } finally {
       this.clipCache.forEach(t => t.dispose())
       this.regionParts!.forEach(part => this.gl.deleteTexture(part.texture))
@@ -861,7 +929,7 @@ export class Compositor {
       if (i === keep) this.keepPrefix(canvas, signatures.slice(0, i))
       const entry = units[i], { layer } = entry
       const clip = this.folderClip(entry.ancestors, used)
-      if (layer.adjustment) { if (!layer.clipTo) this.applyAdjustment(entry, canvas, clip); continue }
+      if (layer.adjustment) { if (!layer.clipTo) this.applyAdjustment(entry, canvas, clip, signatures.slice(0, i).join('|')); continue }
       const children = stacks.get(layer.id)
       if (children) { this.drawStack(entry, children, canvas, clip); continue }
       this.drawOwn(entry, canvas, { clip, coverage: layer.clipTo ? coverage(layer.clipTo) : null })
@@ -870,6 +938,7 @@ export class Compositor {
     for (const [key, target] of this.clipCache) if (!used.has(key)) { target.dispose(); this.clipCache.delete(key) }
     // Only the live frame drops effects for layers gone: a region may draw some layers alone (a copy, a sample).
     if (!this.regionParts) for (const id of this.effectsCache.keys()) if (!byId.has(id)) this.effectsCache.delete(id)
+    if (!this.regionParts) for (const id of this.filterResults.keys()) if (!byId.has(id)) this.filterResults.delete(id)
     this.region = null
     gl.disable(gl.SCISSOR_TEST)
     gl.bindTexture(gl.TEXTURE_2D, canvas.texture)
@@ -895,8 +964,8 @@ export class Compositor {
     const alpha = this.pool.take(width, height)
     this.copy(group, alpha)
     this.pass(group, this.copyProgram, { source: { texture: alpha.texture, unit: 0 }, mode: 1, hdr: this.hdr ? 1 : 0 })
-    for (const child of children) {
-      if (child.layer.adjustment) this.applyAdjustment(child, group, null)
+    for (const [k, child] of children.entries()) {
+      if (child.layer.adjustment) this.applyAdjustment(child, group, null, `stack:${this.signature(base, children.slice(0, k))}`)
       else this.drawOwn(child, group, {})
     }
     const restored = this.pool.take(width, height)

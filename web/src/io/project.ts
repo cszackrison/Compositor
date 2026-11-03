@@ -1,9 +1,11 @@
 import { decodeLayerImage, decodePNG, encodePNG } from '../model/raster'
 import { deepFile, deepOf } from '../model/deep'
-import { type Adjustment, type BlendMode, type ColorRange, type Doc, type Layer, type Transform, blendModes, formatVersion, maxSide, adjustmentKinds, uuid } from '../model/types'
+import { type Adjustment, type BlendMode, type ColorRange, type Doc, type Layer, type Transform, blendModes, formatVersion, maxSide, adjustmentKinds, kindVersion, uuid } from '../model/types'
 import type { PackageFiles } from './files'
+import { frameSize, readGIF, writeGIF } from '../model/gif'
+import { showing, syncedGIF } from '../model/gifLayer'
 
-const known = new Set(['id', 'name', 'isVisible', 'transform', 'imageFile', 'parentID', 'isGroup', 'opacity', 'blendMode', 'maskFile', 'maskEnabled', 'maskSourceID', 'adjustment', 'maskPlacement', 'maskLinked', 'shape', 'effects', 'text'])
+const known = new Set(['id', 'name', 'isVisible', 'transform', 'imageFile', 'parentID', 'isGroup', 'opacity', 'blendMode', 'maskFile', 'maskEnabled', 'maskSourceID', 'adjustment', 'maskPlacement', 'maskLinked', 'shape', 'effects', 'text', 'gif'])
 const knownTop = new Set(['format', 'version', 'colorSpace', 'resolution', 'documentID', 'width', 'height', 'activeLayerID', 'layers', 'guides'])
 
 function fail(message: string): never { throw new Error(`This is not a valid Compositor project: ${message}.`) }
@@ -21,8 +23,14 @@ function fromPairs<T>(value: unknown): Partial<Record<ColorRange, T>> {
 }
 const toPairs = (value: object) => Object.entries(value).flat()
 
-function readAdjustment(raw: any): Adjustment {
+// Every version a release has written, and 27 from the Mac's GIF branch builds (ProjectManifest.supported).
+export const supportedVersion = (version: number) => Number.isInteger(version) && ((version >= 1 && version <= formatVersion) || version === 27)
+
+function readAdjustment(raw: any, version: number): Adjustment {
   if (!adjustmentKinds.includes(raw.kind)) fail(`unknown adjustment kind "${raw.kind}"`)
+  const since = kindVersion[raw.kind as Adjustment['kind']] ?? 1
+  if (version < since) fail(`the ${raw.kind} layer needs format version ${since}`)
+  if (raw.filterLayerSettings && version < 16) fail('filter layer settings need format version 16')
   const adjustment = structuredClone(raw) as Adjustment
   if (raw.hsvSettings) adjustment.hsvSettings = { ...raw.hsvSettings, adjustments: fromPairs(raw.hsvSettings.adjustments), bands: fromPairs(raw.hsvSettings.bands) }
   return adjustment
@@ -44,7 +52,7 @@ export async function readProject(files: PackageFiles): Promise<{ doc: Doc; acti
   let manifest: any
   try { manifest = JSON.parse(new TextDecoder().decode(bytes)) } catch { fail('manifest.json is not valid JSON') }
   if (manifest.format !== 'com.compositor.project') fail('the manifest is not a Compositor manifest')
-  if (!Number.isInteger(manifest.version) || manifest.version < 1 || manifest.version > formatVersion) throw new Error(`This project uses format version ${manifest.version}. This app supports versions 1–${formatVersion}.`)
+  if (!supportedVersion(manifest.version)) throw new Error(`This project uses format version ${manifest.version}. This app supports versions 1–${formatVersion} and 27.`)
   if (!(manifest.width >= 1 && manifest.width <= maxSide && manifest.height >= 1 && manifest.height <= maxSide)) fail('the canvas size is out of range')
   const records: any[] = manifest.layers ?? []
   const ids = new Set<string>()
@@ -61,7 +69,16 @@ export async function readProject(files: PackageFiles): Promise<{ doc: Doc; acti
     const exr = !!image && String(record.imageFile).endsWith('.exr')
     if (exr && manifest.version < 13) fail(`the image for "${record.name}" is OpenEXR, which needs format version 13`)
     if (record.shape?.smoothing === true && manifest.version < 14) fail(`the shape "${record.name}" has smooth corners, which need format version 14`)
+    if ((record.shape?.lineStyle !== undefined || record.shape?.lineCap !== undefined) && (manifest.version < 15 || record.shape?.kind !== 'Line')) fail(`the shape "${record.name}" has a line style, which needs format version 15 and a line`)
     const decoded = image ? await decodeLayerImage(image, exr) : null
+    let gif: Layer['gif']
+    if (record.gif) {
+      if (manifest.version < 17 || !decoded || record.isGroup || record.adjustment || record.text || record.shape || decoded.deep) fail(`layer "${record.name}" can't be animated`)
+      gif = readGIF(record.gif, files, id)
+      const size = frameSize(gif)
+      if (decoded.image.width !== size.width || decoded.image.height !== size.height) fail(`the frame shown for "${record.name}" is the wrong size`)
+      showing(gif, decoded.image)
+    }
     const blendMode = (record.blendMode ?? 'Normal') as BlendMode
     if (!blendModes.includes(blendMode)) fail(`unknown blend mode "${record.blendMode}"`)
     const extra = Object.fromEntries(Object.entries(record).filter(([key]) => !known.has(key)))
@@ -71,8 +88,8 @@ export async function readProject(files: PackageFiles): Promise<{ doc: Doc; acti
       image: decoded?.image ?? null, mask: mask ? decodePNG(mask, 1) : null, maskEnabled: record.maskEnabled !== false, maskLinked: record.maskLinked !== false,
       maskPlacement: record.maskPlacement && validTransform(record.maskPlacement) ? record.maskPlacement : null,
       clipTo: record.maskSourceID ? String(record.maskSourceID).toUpperCase() : null,
-      adjustment: record.adjustment ? readAdjustment(record.adjustment) : null, effects: record.effects ?? null, text: record.text, shape: record.shape, extra,
-      ...(decoded?.deep ? { deep: decoded.deep } : {}),
+      adjustment: record.adjustment ? readAdjustment(record.adjustment, manifest.version) : null, effects: record.effects ?? null, text: record.text, shape: record.shape, extra,
+      ...(decoded?.deep ? { deep: decoded.deep } : {}), ...(gif ? { gif } : {}),
     })
     await Promise.resolve()
   }
@@ -125,6 +142,12 @@ export function writeProject(doc: Doc, activeId: string | null): PackageFiles {
     if (layer.effects && Object.keys(layer.effects).length) record.effects = layer.effects
     if (layer.text !== undefined && record.imageFile) record.text = layer.text
     if (layer.shape !== undefined && record.imageFile) record.shape = layer.shape
+    const gif = record.imageFile && !layer.deep ? syncedGIF(layer) : undefined
+    if (gif) {
+      const written = writeGIF(gif, layer.id)
+      record.gif = written.gif
+      written.files.forEach((bytes, path) => files.set(path, bytes))
+    }
     return record
   })
   const manifest: any = { ...doc.extra, format: 'com.compositor.project', version: formatVersion, colorSpace: 'sRGB', resolution: doc.resolution, documentID: doc.id, width: doc.width, height: doc.height, layers }

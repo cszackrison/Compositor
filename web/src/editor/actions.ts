@@ -6,7 +6,7 @@ import { commitFloating } from './floating'
 import { Store, activateTab, closeTab, store, tabForOpening, tabs } from './store'
 import { forgetRecent, noteRecent, type Recent } from '../io/recent'
 import { deleteFromBrowser, readFromBrowser, saveToBrowser, type BrowserProject } from '../io/browserProjects'
-import { canWriteDirectories, download, filesInHandle, isPSD, imagesIn, projectFolder, readDirectoryHandle, readFileList, rootedAtManifest, unzipPackage, writeDirectory, zipPackage, type PackageFiles, type PackageTarget } from '../io/files'
+import { canWriteDirectories, download, filesInHandle, isPDF, isPSD, imagesIn, projectFolder, readDirectoryHandle, readFileList, rootedAtManifest, unzipPackage, writeDirectory, zipPackage, type PackageFiles, type PackageTarget } from '../io/files'
 import { readProject, writeProject } from '../io/project'
 import { pdfOfImage } from '../io/pdf'
 import { encodeEXR } from '../io/exr'
@@ -15,8 +15,12 @@ import { encodeCMYKJPEG } from '../io/jpeg'
 import { flatten, fromInks, toInks, type CMYKProfile } from '../io/cmyk'
 import { type LinearImage, Raster, decodeLayerFile, encodePNG, resizeLinear } from '../model/raster'
 import { type Doc, type Layer, documentPixelBudget, fullTransform, newLayer, uuid, maxSide } from '../model/types'
-import type { PSDConversion, PSDImport } from '../io/psd'
+import type { PSDConversion, PSDDocument, PSDImport } from '../io/psd'
 import { renderFull } from '../ui/Stage'
+import { frameDelays, frameRaster, frameReferences, openGIF } from '../model/gif'
+import { encodeGIF, exportSchedule, framePositionAt } from '../io/gif'
+import { type ChannelSource, channelPack, isolatingChannel } from '../io/channelPack'
+import { syncedGIF, withGIF } from '../model/gifLayer'
 
 function guard<T extends unknown[]>(body: (...args: T) => Promise<void> | void) {
   return async (...args: T) => {
@@ -95,7 +99,8 @@ export const openProject = guard(async () => {
 // A browser without folder access (Brave, Firefox, Safari) opens a project read only, said once a session as one is opened.
 let toldReadOnly = false
 
-// Opens an image as a new document when nothing is open, or places it as a layer. A Photoshop file brings its layers. Dropped on the
+// Opens an image as a new document when nothing is open, or places it as a layer. A Photoshop file brings its layers, a PDF its pages
+// (a Photoshop file's artboards open as documents of their own). Dropped on the
 // canvas, each is centered where it was dropped (`at`, in document pixels).
 export const placeImages = guard(async (files: File[], at?: [number, number]) => {
   // A RAW brought in with Camera Raw…: the Camera Raw Filter opens on its layer once everything is in, as Photoshop opens a RAW in
@@ -104,9 +109,15 @@ export const placeImages = guard(async (files: File[], at?: [number, number]) =>
   for (const file of files) {
     const name = file.name.replace(/\.[^.]+$/, '')
     if (isPSD(new Uint8Array(await file.slice(0, 4).arrayBuffer()))) { await placePhotoshop(file, name, at); continue }
+    if (isPDF(file)) { await placePDF(file, name, at); continue }
     // A camera RAW is developed first, in its sheet; cancelled, it's skipped.
     const developed = isRAW(file.name) ? await (await import('../ui/RawDevelop')).developRaw(file) : null
     if (isRAW(file.name) && !developed) continue
+    // An animated GIF comes in as a GIF layer, its first frame showing.
+    if (/\.gif$/i.test(file.name) || file.type === 'image/gif') {
+      const gif = openGIF(new Uint8Array(await file.arrayBuffer()))
+      if (gif.source.frameCount > 1) { const shown = withGIF(gif); await placeImage(shown.image!, name, undefined, null, at, shown.gif); continue }
+    }
     const { image, deep, profile }: Awaited<ReturnType<typeof decodeLayerFile>> = developed ?? await decodeLayerFile(file, store.hasDocument ? store.state.doc : undefined)
     await placeImage(image, name, deep, profile, at)
     if (developed?.cameraRaw) cameraRawOn = store.state.activeId
@@ -114,14 +125,27 @@ export const placeImages = guard(async (files: File[], at?: [number, number]) =>
   if (cameraRawOn && store.layer(cameraRawOn)) { store.setActive(cameraRawOn); store.set({ panel: 'Camera Raw Filter' }) }
 })
 
-async function placeImage(image: Raster, name: string, deep?: Layer['deep'], profile?: CMYKProfile | null, at?: [number, number]) {
+async function placeImage(image: Raster, name: string, deep?: Layer['deep'], profile?: CMYKProfile | null, at?: [number, number], gif?: Layer['gif']) {
   if (!store.hasDocument) {
     // A CMYK file starting a project: its profile is kept and chosen, so proofing and CMYK export go back to the inks it was made for.
     if (profile) await (await import('../io/cmyk')).adoptProfile(profile)
-    const layer = newLayer({ name, transform: fullTransform(image.width, image.height), image, deep })
+    const layer = newLayer({ name, transform: fullTransform(image.width, image.height), image, deep, ...(gif ? { gif } : {}) })
     store.open({ id: uuid(), width: image.width, height: image.height, resolution: 72, layers: [layer], guides: [], extra: {} }, layer.id, null)
     store.set({ target: { kind: 'download', name } })
-  } else store.addImageLayer(image, name, deep, at)
+  } else store.addImageLayer(image, name, deep, at, gif)
+}
+
+// A PDF's pages, each its own layer with page 1 on top, fitted to the canvas as an SVG is. With none open, the first page at 300 DPI
+// makes a new canvas, so it keeps the page's print size.
+async function placePDF(file: File, name: string, at?: [number, number]) {
+  const { decodePDF, pdfResolution } = await import('../io/pdfImport')
+  const used = store.hasDocument ? store.doc.layers.reduce((total, layer) => total + (layer.image ? layer.image.width * layer.image.height : 0), 0) : 0
+  const pages = await decodePDF(file, name, store.hasDocument ? store.doc : undefined, documentPixelBudget - used)
+  if (store.hasDocument) { store.addImageLayers(pages, at); return }
+  const { width, height } = pages[0].image
+  const layers = pages.toReversed().map(({ image, name }) => { const fit = Math.min(1, width / image.width, height / image.height), w = image.width * fit, h = image.height * fit; return newLayer({ name, transform: fullTransform(w, h, Math.round((width - w) / 2), Math.round((height - h) / 2)), image }) })
+  store.open({ id: uuid(), width, height, resolution: pdfResolution, layers, guides: [], extra: {} }, layers.at(-1)!.id, null)
+  store.set({ target: { kind: 'download', name } })
 }
 
 // The Photoshop conversion report (PSDConversionSheet.swift): up while the file is read, so a big one doesn't leave the click unanswered,
@@ -167,19 +191,42 @@ export function answerConversion(confirmed: boolean) {
 // A Photoshop file's layers (EditorSession.drainImports), after the conversion report; one with no layer records comes in as its
 // merged image, like any other picture.
 async function placePhotoshop(file: File, name: string, at?: [number, number]) {
-  const { readPSD, makeImport } = await import('../io/psd'), { canvasDrawing } = await import('../io/psdDrawing')
+  const { readPSD, makeImport, artboards } = await import('../io/psd'), { canvasDrawing } = await import('../io/psdDrawing')
   const used = store.hasDocument ? store.doc.layers.reduce((total, layer) => total + (layer.image ? layer.image.width * layer.image.height : 0), 0) : 0
   beginPSDReading(`Open “${file.name}”?`)
   let parsed: Awaited<ReturnType<typeof readPSD>>, imported: PSDImport
   try {
     parsed = await readPSD(new Uint8Array(await file.arrayBuffer()), canvasDrawing, documentPixelBudget - used)
     if (parsed.merged) { endPSDReading(); await placeImage(parsed.merged, name, parsed.mergedDeep, parsed.cmykProfile, at); return }
+    const boards = artboards(parsed)
+    if (boards?.length) { endPSDReading(); await openArtboards(boards); return }
     imported = await makeImport(parsed, canvasDrawing)
   } catch (error) { endPSDReading(); throw error }
   if (!(await finishPSDReading(imported.conversions))) return
   // A CMYK file making a new document: its profile is kept and chosen, for proofing and for CMYK export when it's asked for.
   if (!store.hasDocument && parsed.cmykProfile) await (await import('../io/cmyk')).adoptProfile(parsed.cmykProfile)
   store.addPhotoshop(imported, name, at)
+}
+
+// A Photoshop file's artboards (EditorSession.importArtboard), each a document of its own in a tab named for it, after its conversion
+// report: the first in this tab while it's still empty, the rest in new ones. One that can't be read is reported, and the rest open.
+async function openArtboards(boards: { name: string; document: PSDDocument }[]) {
+  const { makeImport } = await import('../io/psd'), { canvasDrawing } = await import('../io/psdDrawing')
+  for (const { name, document } of boards) {
+    const reused = !store.hasDocument, tab = tabForOpening()
+    let failed = ''
+    try {
+      beginPSDReading(`Open “${name}”?`)
+      let imported: PSDImport
+      try { imported = await makeImport(document, canvasDrawing) } catch (error) { endPSDReading(); throw error }
+      if (await finishPSDReading(imported.conversions)) {
+        if (!tab.hasDocument && document.cmykProfile) await (await import('../io/cmyk')).adoptProfile(document.cmykProfile)
+        tab.addPhotoshop(imported, name)
+      }
+    } catch (error) { console.error(error); failed = `${name}: ${(error as Error).message || String(error)}` }
+    if (!reused && !tab.hasDocument) closeTab(tab)
+    if (failed) store.notify(failed)
+  }
 }
 
 // File › Import Folder…: the images directly inside a folder, as layers, in name order.
@@ -202,15 +249,16 @@ export const importFolder = guard(async () => {
   input.click()
 })
 
-const imageTypes = 'image/*,.hif,.heif,.heic,.tif,.tiff,.svg,.exr,.hdr,.psd,.psb,.dng,.cr2,.cr3,.nef,.nrw,.arw,.raf,.orf,.rw2,.pef,.srw,.3fr,.iiq,.erf,.kdc,.mos,.mrw,.raw,.rwl,.x3f'
+const imageTypes = 'image/*,application/pdf,.pdf,.hif,.heif,.heic,.tif,.tiff,.svg,.exr,.hdr,.psd,.psb,.dng,.cr2,.cr3,.nef,.nrw,.arw,.raf,.orf,.rw2,.pef,.srw,.3fr,.iiq,.erf,.kdc,.mos,.mrw,.raw,.rwl,.x3f'
 
+// File › Import…: images, PDFs, Photoshop and RAW files (a folder has Import Folder…, as a file picker can't take both).
 export const importImage = guard(async () => {
   const input = Object.assign(document.createElement('input'), { type: 'file', accept: imageTypes, multiple: true })
   input.onchange = () => input.files?.length && placeImages([...input.files])
   input.click()
 })
 
-// Open…: any file the app reads, as a drop would take it: a zipped project opens in a tab of its own, images and Photoshop and RAW
+// Open…: any file the app reads, as a drop would take it: a zipped project opens in a tab of its own, images, PDFs, Photoshop and RAW
 // files open (the first as the canvas, when none is open) or come in as layers. A project folder can't be picked with files, so it
 // keeps its own command.
 export const openAnything = guard(async () => {
@@ -291,6 +339,63 @@ export const exportImage = guard(async () => {
   await saveFile(`${documentName()}.png`, new Blob([encodePNG(renderFull(store.state.doc)) as Uint8Array<ArrayBuffer>], { type: 'image/png' }))
 })
 
+// The layer `id` alone, as it looks in the document: it (shown even if hidden), what's inside it, the layers clipped to those, and the
+// folders it's in, so their opacity and masks still apply (ProjectController.isolating).
+export function isolating(doc: Doc, id: string): Doc {
+  const parent = new Map(doc.layers.map(l => [l.id, l.parentId])), folders = new Set<string>()
+  for (let p = parent.get(id); p && !folders.has(p); p = parent.get(p)) folders.add(p)
+  const inside = (layer: string) => { const seen = new Set<string>(); for (let p = parent.get(layer); p && !seen.has(p); p = parent.get(p)) { if (p === id) return true; seen.add(p) } return false }
+  const kept = new Set(doc.layers.filter(l => l.id === id || inside(l.id)).map(l => l.id))
+  return { ...doc, layers: doc.layers.map(l => l.id === id || folders.has(l.id) ? { ...l, visible: true } : kept.has(l.id) || (l.clipTo && kept.has(l.clipTo)) ? l : { ...l, visible: false }) }
+}
+
+function trimmed(pixels: Raster): Raster | null {
+  const { width, height, data } = pixels
+  let x0 = width, y0 = height, x1 = -1, y1 = -1
+  for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) if (data[(y * width + x) * 4 + 3]) { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; y1 = y }
+  return x1 < 0 ? null : new Raster(x1 - x0 + 1, y1 - y0 + 1, 4, pixels.read(x0, y0, x1 - x0 + 1, y1 - y0 + 1))
+}
+
+// The layer list's Export Layers as PNGs…: each selected layer on its own, trimmed to its pixels and named after it. One layer goes to a
+// save dialog; several to a folder where the browser can pick one, otherwise each downloads.
+export const exportLayers = guard(async () => {
+  if (!store.hasDocument) return
+  commitFloating()
+  const doc = store.state.doc, selected = new Set(store.state.selectedIds.length ? store.state.selectedIds : store.state.activeId ? [store.state.activeId] : [])
+  const used = new Set<string>(), files: { name: string; blob: Blob }[] = []
+  for (const layer of [...doc.layers].reverse().filter(l => selected.has(l.id))) {
+    const pixels = trimmed(renderFull(isolating(doc, layer.id)))
+    if (!pixels) continue
+    const base = layer.name.replace(/[\\/:*?"<>|]/g, '-').trim() || 'Layer'
+    let name = base, n = 2
+    while (used.has(name.toLowerCase())) name = `${base} ${n++}`
+    used.add(name.toLowerCase())
+    files.push({ name: `${name}.png`, blob: new Blob([encodePNG(pixels) as Uint8Array<ArrayBuffer>], { type: 'image/png' }) })
+  }
+  if (!files.length) { store.notify('The selected layers have no pixels to export.', 'info'); return }
+  if (files.length === 1) { await saveFile(files[0].name, files[0].blob); return }
+  if ('showDirectoryPicker' in window) {
+    let folder: FileSystemDirectoryHandle
+    try { folder = await (window as any).showDirectoryPicker({ mode: 'readwrite' }) } catch (error) { if ((error as Error).name === 'AbortError') return; throw error }
+    for (const file of files) { const writable = await (await folder.getFileHandle(file.name, { create: true })).createWritable(); await writable.write(file.blob); await writable.close() }
+    return
+  }
+  for (const file of files) download(file.name, file.blob)
+})
+
+// Export As › GIF's frames: the document flattened once for each moment any GIF layer changes frame, each layer on its own delays
+// (GIFExportSchedule.swift); a document with none is one frame.
+export function renderGIFFrames(doc: Doc): { image: Raster; delay: number }[] {
+  const animated = doc.layers.filter(l => l.gif && !l.isGroup)
+  if (!animated.length) return [{ image: renderFull(doc), delay: 0.1 }]
+  const gifs = animated.map(l => syncedGIF(l) ?? l.gif!), references = gifs.map(frameReferences)
+  const { frames, starts } = exportSchedule(gifs.map(frameDelays))
+  return frames.map(frame => {
+    const shown = new Map(animated.map((l, t) => [l.id, frameRaster(gifs[t], references[t][framePositionAt(starts[t], frame.sample)].index)]))
+    return { image: renderFull({ ...doc, layers: doc.layers.map(l => shown.has(l.id) ? { ...l, image: shown.get(l.id)! } : l) }), delay: frame.duration }
+  })
+}
+
 // Premultiplied pixels to straight RGBA ImageData, laid over `background` when given (JPEG and PDF have no transparency).
 function imageData(pixels: Raster, background?: [number, number, number]) {
   const out = new ImageData(pixels.width, pixels.height), d = out.data, p = pixels.data
@@ -308,6 +413,30 @@ function imageData(pixels: Raster, background?: [number, number, number]) {
 export type ExportOptions = { quality: number; background: [number, number, number]; resolution: number; linear?: LinearImage | null; cmyk?: CMYKProfile | null; deep?: Float32Array | null }
 // The flattened pixels as JPEG, PNG, TIFF, PDF or EXR, resized first. With `cmyk`, JPEG, TIFF and PDF are written in the profile's inks
 // over the background, the profile embedded, and previewed as they'll print.
+export function sizedPixels(pixels: Raster, width: number, height: number): Raster {
+  if (width === pixels.width && height === pixels.height) return pixels
+  const source = new OffscreenCanvas(pixels.width, pixels.height), target = new OffscreenCanvas(width, height), context = target.getContext('2d')!
+  source.getContext('2d')!.putImageData(imageData(pixels), 0, 0)
+  context.imageSmoothingQuality = 'high'
+  context.drawImage(source, 0, 0, width, height)
+  const data = new Uint8Array(context.getImageData(0, 0, width, height).data.buffer)
+  for (let i = 0; i < data.length; i += 4) { const a = data[i + 3]; for (let c = 0; c < 3; c++) data[i + c] = Math.round(data[i + c] * a / 255) }
+  return new Raster(width, height, 4, data)
+}
+
+// Export As › GIF: every frame at the export's size, looping forever or once, transparency kept or laid over `background`.
+export function encodeGIFExport(frames: { image: Raster; delay: number }[], width: number, height: number, loops: boolean, transparent: boolean, background: [number, number, number]): Blob {
+  const bytes = encodeGIF(frames.map(f => ({ image: sizedPixels(f.image, width, height), delay: f.delay })), { loopsForever: loops, keepsTransparency: transparent, background: { red: background[0] / 255, green: background[1] / 255, blue: background[2] / 255 } })
+  return new Blob([bytes as Uint8Array<ArrayBuffer>], { type: 'image/gif' })
+}
+
+// Export As › Channel Pack: each source layer rendered on its own once while the sheet is open (kept in `rendered`), then packed.
+export function encodeChannelPack(doc: Doc, sources: ChannelSource[], width: number, height: number, rendered: Map<string, Raster>): { blob: Blob; preview: Blob } {
+  const pixelsOf = (id: string) => rendered.get(id) ?? rendered.set(id, renderFull(isolatingChannel(doc, id))).get(id)!
+  const { png, preview } = channelPack(sources, width, height, doc.resolution || 72, pixelsOf, sizedPixels)
+  return { blob: new Blob([png], { type: 'image/png' }), preview: new Blob([encodePNG(preview) as Uint8Array<ArrayBuffer>], { type: 'image/png' }) }
+}
+
 export async function encodeExport(pixels: Raster, format: 'JPEG' | 'PNG' | 'TIFF' | 'PDF' | 'EXR', width: number, height: number, { quality, background, resolution, linear = null, cmyk = null, deep = null }: ExportOptions): Promise<{ blob: Blob; preview: Blob }> {
   let sized = pixels
   if (width !== pixels.width || height !== pixels.height) {

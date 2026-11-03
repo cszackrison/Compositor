@@ -40,7 +40,7 @@ describe('project format', () => {
     const doc = sampleDoc()
     const files = writeProject(doc, doc.layers[1].id)
     const manifest = JSON.parse(new TextDecoder().decode(files.get('manifest.json')))
-    expect(manifest.version).toBe(14)
+    expect(manifest.version).toBe(21)
     expect(Object.keys(manifest)).toEqual([...Object.keys(manifest)].sort())
     const record = manifest.layers[1]
     expect(record.imageFile).toBe(`${record.id}.png`)
@@ -63,9 +63,9 @@ describe('project format', () => {
   it('rejects a newer format version', async () => {
     const files = writeProject(sampleDoc(), null)
     const manifest = JSON.parse(new TextDecoder().decode(files.get('manifest.json')))
-    manifest.version = 15
+    manifest.version = 22
     files.set('manifest.json', new TextEncoder().encode(JSON.stringify(manifest)))
-    await expect(readProject(files)).rejects.toThrow(/version 15/)
+    await expect(readProject(files)).rejects.toThrow(/version 22/)
   })
 
   it('keeps a shape\'s smooth corners, which need format version 14', async () => {

@@ -5,13 +5,24 @@ import { clearSnap, snapPoint } from './snap'
 import type { ToolHandler } from './tool'
 
 type Rect = { x: number; y: number; w: number; h: number }
-export const cropRatios = ['Free', 'Original', '1:1', '4:3', '3:4', '16:9', '9:16']
+// Grouped by shape: free and the canvas's own proportions, square, wide, tall (CropControls.swift).
+export const cropRatioGroups = [['Free', 'Canvas'], ['1:1'], ['4:3', '16:9', '2.39:1'], ['3:4', '9:16']]
+export const cropRatios = cropRatioGroups.flat()
+
+// A typed width:height (a comma for the decimal point too), within the document's size limits; null otherwise.
+export function parseRatio(text: string): number | null {
+  const parts = text.split(':')
+  if (parts.length !== 2) return null
+  const [w, h] = parts.map(p => Number(p.trim().replace(',', '.')))
+  const ratio = w / h
+  return w > 0 && h > 0 && Number.isFinite(ratio) && ratio >= 1 / 30_000 && ratio <= 30_000 ? ratio : null
+}
+export const tidyRatio = (text: string) => text.split(':').map(p => p.trim().replace(',', '.')).join(':')
 
 export function ratioValue(name = store.state.crop.ratio): number | null {
   if (name === 'Free') return null
-  if (name === 'Original') return store.doc.width / store.doc.height
-  const [a, b] = name.split(':').map(Number)
-  return a / b
+  if (name === 'Canvas' || name === 'Original') return store.doc.width / store.doc.height
+  return parseRatio(name)
 }
 
 // Selecting the tool starts the frame at the selection's bounds on the canvas, or at the whole canvas.

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useReducer, useRef, useState, useSyncExternalStore } from 'react'
 import { useEditor } from './hooks'
 import { Store, store, type Tool } from '../editor/store'
-import { prefs, subscribePrefs, gridLines } from '../editor/prefs'
+import { prefs, subscribePrefs, gridLines, guidesShown } from '../editor/prefs'
 import { Compositor } from '../render/compositor'
 import { outline } from '../model/selection'
 import { Raster } from '../model/raster'
@@ -15,7 +15,7 @@ import { useCoarse } from './layout'
 import type { Pointer, ToolHandler } from '../tools/tool'
 import { eyedropper, paint } from '../tools/paint'
 import { smear } from '../tools/smear'
-import { lasso, magic, marquee } from '../tools/select'
+import { holdSpace, lasso, magic, marquee, selectionSize } from '../tools/select'
 import { move } from '../tools/move'
 import { gradient } from '../tools/gradient'
 import { shapeTool } from '../tools/shape'
@@ -32,6 +32,7 @@ export const handlers: Record<Tool, ToolHandler> = {
   move, marquee, lasso, wand: magic, brush: paint, eraser: paint, heal: paint, clone: paint, smear, gradient, shape: shapeTool, type: typeTool, crop, eyedropper, hand: idle, zoom: zoomTool,
 }
 export const activeHandler = () => handlers[store.state.tool]
+const statusText = (where: string) => { const s = selectionSize(); return `${where}${s ? `  ·  Selection ${s[0]} × ${s[1]} px` : ''}  ·  ${Math.round(view.zoom * 100)}%` }
 const brushTools = new Set<Tool>(['brush', 'eraser', 'heal', 'clone', 'smear'])
 
 let stageCanvas: HTMLCanvasElement | null = null
@@ -127,7 +128,7 @@ export function drawOverlay() {
     }
     c.setLineDash([])
   }
-  if (prefs.guides) {
+  if (guidesShown()) {
     c.strokeStyle = 'rgba(0,255,255,0.9)'; c.lineWidth = 1 / dpr; c.beginPath()
     for (const guide of doc.guides) {
       if (guide.axis === 'vertical') { const x = px(view.toScreen(guide.position, 0)[0]); c.moveTo(x, 0); c.lineTo(x, view.height) }
@@ -141,7 +142,7 @@ export function drawOverlay() {
     for (const y of snapLines.y) { const sy = px(view.toScreen(0, y)[1]); c.moveTo(docX0, sy); c.lineTo(docX1, sy) }
     c.stroke()
   }
-  if (selection) {
+  if (selection && !prefs.extrasHidden) {
     if (antsFor.selection !== selection) antsFor = { selection, loops: outline(selection) }
     c.beginPath()
     if (antsFor.loops) for (const loop of antsFor.loops) for (let i = 0; i < loop.length; i += 2) {
@@ -285,7 +286,7 @@ export function Stage() {
   }, [])
 
   // Each tab keeps its own view: switching away saves it, coming back restores it, a newly opened project is fitted.
-  const shown = useRef<{ tab: Store; id: string } | null>(null)
+  const shown = useRef<{ tab: Store; id: string; size: string } | null>(null)
   useEffect(() => {
     const previous = shown.current
     if (previous?.tab !== store || previous.id !== state.doc.id) {
@@ -293,8 +294,8 @@ export function Stage() {
       if (store.view && previous?.tab !== store) Object.assign(view, store.view)
       else if (store.hasDocument) view.fit(state.doc.width, state.doc.height)
       viewChanged()
-    }
-    shown.current = { tab: store, id: state.doc.id }
+    } else if (previous.size !== `${state.doc.width}x${state.doc.height}`) { view.recenter(state.doc.width, state.doc.height); viewChanged() }
+    shown.current = { tab: store, id: state.doc.id, size: `${state.doc.width}x${state.doc.height}` }
     requestRender()
   }, [state.doc, state.pixelRevision])
   useEffect(() => requestRender(false), [state.selection, state.activeId, state.selectedIds, state.editingMask, state.crop, state.brush])
@@ -398,7 +399,7 @@ export function Stage() {
     const p = pointerFrom(event, true)
     lastPointer.current = p
     // Straight to the DOM: re-rendering the canvas component on every pointer move just for this costs more than it shows.
-    if (statusRef.current) statusRef.current.textContent = `${Math.floor(p.point[0])}, ${Math.floor(p.point[1])}  ·  ${Math.round(view.zoom * 100)}%`
+    if (statusRef.current) statusRef.current.textContent = statusText(`${Math.floor(p.point[0])}, ${Math.floor(p.point[1])}`)
     if (middleZoom.current) {
       const m = middleZoom.current, factor = Math.pow(2, (m.y - event.clientY) / 100)
       view.zoomAt(m.zoom * factor / view.zoom, ...m.screen)
@@ -409,7 +410,7 @@ export function Stage() {
     if (guideGesture.current) { moveGuideDrag(p); return }
     if (gesturing.current) { canvasGesture.current?.move(p.point, p.shift); requestRender(false); return }
     if (canvasDrag.current && event.buttons) { canvasDrag.current.move(event.clientX - canvasDrag.startX, p.command); return }
-    if (event.buttons) activeHandler().move?.(p)
+    if (event.buttons) { activeHandler().move?.(p); if (statusRef.current) statusRef.current.textContent = statusText(`${Math.floor(p.point[0])}, ${Math.floor(p.point[1])}`) }
     else { activeHandler().hover?.(p); updateCursor() }
   }
 
@@ -433,6 +434,7 @@ export function Stage() {
     if (canvasDrag.current) { canvasDrag.current.up(); return }
     if (canvasPicker.current) return
     activeHandler().up?.(p)
+    if (statusRef.current) statusRef.current.textContent = statusText(`${Math.floor(p.point[0])}, ${Math.floor(p.point[1])}`)
   }
 
   useEffect(() => {
@@ -455,12 +457,12 @@ export function Stage() {
     const typing = (event: KeyboardEvent) => event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement || event.target instanceof HTMLSelectElement
     const down = (event: KeyboardEvent) => {
       if (typing(event)) return
-      if (event.code === 'Space') { setSpace(true); event.preventDefault() }
+      if (event.code === 'Space') { setSpace(true); holdSpace(true); event.preventDefault() }
       if (event.key === 'Escape' && guideDrag()) { cancelGuideDrag(); guideGesture.current = false; event.preventDefault() }
       if (event.key === 'Alt' && lastPointer.current) { activeHandler().hover?.({ ...lastPointer.current, alt: true }); updateCursor() }
     }
     const up = (event: KeyboardEvent) => {
-      if (event.code === 'Space') setSpace(false)
+      if (event.code === 'Space') { setSpace(false); holdSpace(false) }
       if (event.key === 'Alt' && lastPointer.current) { activeHandler().hover?.({ ...lastPointer.current, alt: false }); updateCursor() }
     }
     window.addEventListener('keydown', down)
@@ -469,11 +471,11 @@ export function Stage() {
   }, [])
 
   const handler = activeHandler()
-  const cursorFor = () => middleZoom.current ? (middleZoom.current.out ? 'zoom-out' : 'zoom-in') : pan.current ? 'grabbing' : space || store.state.tool === 'hand' ? 'grab' : canvasPicker.current || canvasGesture.current ? 'crosshair' : activeHandler().cursor?.(lastPointer.current) ?? 'default'
+  const cursorFor = () => middleZoom.current ? (middleZoom.current.out ? 'zoom-out' : 'zoom-in') : pan.current ? 'grabbing' : (space && !activeHandler().busy?.()) || store.state.tool === 'hand' ? 'grab' : canvasPicker.current || canvasGesture.current ? 'crosshair' : activeHandler().cursor?.(lastPointer.current) ?? 'default'
   useLayoutEffect(updateCursor)
   return (
     <div ref={ref} className="stage" tabIndex={0} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerUp}
-      onPointerLeave={() => { lastPointer.current = null; activeHandler().leave?.(); if (statusRef.current) statusRef.current.textContent = `${state.doc.width} × ${state.doc.height}  ·  ${Math.round(view.zoom * 100)}%`; requestRender(false) }}
+      onPointerLeave={() => { lastPointer.current = null; activeHandler().leave?.(); if (statusRef.current) statusRef.current.textContent = statusText(`${state.doc.width} × ${state.doc.height}`); requestRender(false) }}
       onDragOver={e => { if (draggedFromOtherProject()) { e.preventDefault(); e.stopPropagation() } }}
       onDrop={e => {
         if (!draggedFromOtherProject()) return
@@ -485,7 +487,7 @@ export function Stage() {
       <canvas ref={canvasRef} />
       <canvas ref={overlayRef} style={{ pointerEvents: 'none' }} />
       {store.hasDocument && <ProofPills />}
-      {store.hasDocument && <div ref={statusRef} className="status">{`${state.doc.width} × ${state.doc.height}  ·  ${Math.round(view.zoom * 100)}%`}</div>}
+      {store.hasDocument && <div ref={statusRef} className="status">{statusText(`${state.doc.width} × ${state.doc.height}`)}</div>}
       {menu && <ContextMenu x={menu.x} y={menu.y} items={menu.items} onClose={closeMenu} />}
       {coarse && store.hasDocument && <ModifierPad />}
       {error && <div className="welcome"><div className="card"><h1>Can’t start the canvas</h1><p className="muted">{error}</p></div></div>}

@@ -16,6 +16,7 @@ const paths: Record<string, string> = {
   folder: 'M1 4h5l1 1h8v8H1zM10 7v4M8 9h4',
   mask: 'M2 2h12v12H2zM8 5a3 3 0 1 0 0.01 0',
   adjust: 'M8 2a6 6 0 1 0 0.01 0M8 2v12',
+  filters: 'M8 1.5a6.5 6.5 0 1 0 0.01 0M8 4a4 4 0 1 0 0.01 0M5.2 5.2h2.8v2.8H5.2zM8 8h2.8v2.8H8z',
   fx: 'M8 1l1.5 4.5L14 7l-4.5 1.5L8 13l-1.5-4.5L2 7l4.5-1.5z',
   trash: 'M3 4h10M6 4V2h4v2M4 4l1 10h6l1-10',
   chevronRight: 'M6 4l4 4-4 4',

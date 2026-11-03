@@ -1,4 +1,4 @@
-import { store, type ShapeKind } from '../editor/store'
+import { store, type LineCap, type LineStyle, type ShapeKind } from '../editor/store'
 import { Raster, premultiply } from '../model/raster'
 import { fullTransform, newLayer, type Layer, type Transform } from '../model/types'
 import { requestOverlay, view } from '../ui/canvasState'
@@ -6,8 +6,59 @@ import { clearSnap, snapPoint } from './snap'
 import type { ToolHandler } from './tool'
 
 // A shape layer's style, as LayerShapeStyle saves it: colors 0–1, the corner radius and line width in document pixels, smooth
-// corners on a rectangle (format 14), and a line's ends as fractions of the layer box.
-export type ShapeStyle = { kind: ShapeKind; red: number; green: number; blue: number; cornerRadius: number; smoothing?: boolean; lineWidth?: number; start?: [number, number]; end?: [number, number] }
+// corners on a rectangle (format 14), a line's ends as fractions of the layer box, and its dashes and caps (format 15; missing is solid
+// with round caps, as every line was before).
+export type ShapeStyle = { kind: ShapeKind; red: number; green: number; blue: number; cornerRadius: number; smoothing?: boolean; lineWidth?: number; start?: [number, number]; end?: [number, number]; lineStyle?: LineStyle; lineCap?: LineCap }
+
+// Dash and gap lengths in multiples of the line's width, as they look with their caps on: a dot is as long as the line is wide.
+const linePattern: Record<LineStyle, number[]> = { Solid: [], Dashed: [3, 2], 'Long Dash': [7, 2], Dotted: [1, 1] }
+
+// A square cap reaches half the width every way, and its corners further on a slanted line; in whole pixels, so a 1-pixel line stays
+// one crisp row (ShapeLineCap.reach).
+export function lineReach(start: [number, number], end: [number, number], width: number, cap: LineCap) {
+  const length = Math.hypot(end[0] - start[0], end[1] - start[1])
+  if (cap !== 'Square' || !(length > 0)) return width / 2
+  const corner = width / 2 * (Math.abs(end[0] - start[0]) + Math.abs(end[1] - start[1])) / length
+  return width / 2 + Math.ceil(corner - width / 2 - 0.0001)
+}
+
+// Half a pixel for an odd width, so the line's edges land on pixel edges (lineGridShift).
+export const lineGridShift = (width: number) => width / 2 - Math.floor(width / 2)
+
+// Strokes a line in the context's colors (strokeShapeLine): a square cap is a flat-ended line half the width past each end, cut into
+// full-length dashes; with round caps each dash is its own stroke and each dot a circle.
+export function strokeLine(context: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D, start: [number, number], end: [number, number], width: number, style: LineStyle, cap: LineCap) {
+  context.lineWidth = width
+  context.setLineDash([])
+  const length = Math.hypot(end[0] - start[0], end[1] - start[1]), dir = length > 0 ? [(end[0] - start[0]) / length, (end[1] - start[1]) / length] : [1, 0]
+  const along = (d: number): [number, number] => [start[0] + dir[0] * (d - width / 2), start[1] + dir[1] * (d - width / 2)]
+  const total = length + width, pattern = linePattern[style].map(v => v * width)
+  if (cap === 'Square') {
+    context.lineCap = 'butt'
+    context.setLineDash(pattern)
+    context.beginPath(); context.moveTo(...along(0)); context.lineTo(...along(total)); context.stroke()
+    context.setLineDash([])
+    return
+  }
+  context.lineCap = 'round'
+  if (!pattern.length) {
+    context.beginPath()
+    if (length > 0) { context.moveTo(...start); context.lineTo(...end); context.stroke() } else { context.arc(start[0], start[1], width / 2, 0, Math.PI * 2); context.fill() }
+    return
+  }
+  const dashes = new Path2D(), dots = new Path2D()
+  for (let distance = 0, index = 0; distance < total; index++) {
+    const next = Math.min(total, distance + pattern[index % pattern.length])
+    if (index % 2 === 0) {
+      const a = distance + width / 2, b = next - width / 2
+      if (b - a > 0.001) { dashes.moveTo(...along(a)); dashes.lineTo(...along(b)) }
+      else { const m = along((distance + next) / 2); dots.moveTo(m[0] + width / 2, m[1]); dots.arc(m[0], m[1], width / 2, 0, Math.PI * 2) }
+    }
+    distance = next
+  }
+  context.stroke(dashes)
+  context.fill(dots)
+}
 
 // A rectangle's outline into `path`, its corners rounded by `radius` (at most half the shorter side). Smooth corners are Figma's
 // cubic–arc–cubic construction at 60% smoothing (the iOS squircle), backing off where the corners run out of room
@@ -39,8 +90,7 @@ export function rasterizeShape(style: ShapeStyle, width: number, height: number)
   if (style.kind === 'Line') {
     const t = Math.max(1, style.lineWidth ?? 4)
     const [s, e] = style.start && style.end ? [style.start, style.end] : [[Math.min(t, width) / 2 / width, Math.min(t, height) / 2 / height], [1 - Math.min(t, width) / 2 / width, 1 - Math.min(t, height) / 2 / height]]
-    context.lineWidth = t; context.lineCap = 'round'
-    context.beginPath(); context.moveTo(s[0] * width, s[1] * height); context.lineTo(e[0] * width, e[1] * height); context.stroke()
+    strokeLine(context, [s[0] * width, s[1] * height], [e[0] * width, e[1] * height], t, style.lineStyle ?? 'Solid', style.lineCap ?? 'Round')
   } else if (style.kind === 'Ellipse') {
     context.beginPath(); context.ellipse(width / 2, height / 2, width / 2, height / 2, 0, 0, Math.PI * 2); context.fill()
   } else {
@@ -70,10 +120,11 @@ function rect(d: NonNullable<typeof draft>) {
   return d.center ? { x: d.anchor[0] - Math.abs(dx), y: d.anchor[1] - Math.abs(dy), w: 2 * Math.abs(dx), h: 2 * Math.abs(dy) } : { x: Math.min(d.anchor[0], d.anchor[0] + dx), y: Math.min(d.anchor[1], d.anchor[1] + dy), w: Math.abs(dx), h: Math.abs(dy) }
 }
 
+// Whole pixels, like the anchor; a 45° line rounds both ways alike, so it stays at 45°.
 function lineEnd(d: NonNullable<typeof draft>, shift: boolean): [number, number] {
-  if (!shift) return d.point
+  if (!shift) return [Math.round(d.point[0]), Math.round(d.point[1])]
   const dx = d.point[0] - d.anchor[0], dy = d.point[1] - d.anchor[1], length = Math.hypot(dx, dy), angle = Math.round(Math.atan2(dy, dx) / (Math.PI / 4)) * Math.PI / 4
-  return [d.anchor[0] + Math.cos(angle) * length, d.anchor[1] + Math.sin(angle) * length]
+  return [Math.round(d.anchor[0] + Math.cos(angle) * length), Math.round(d.anchor[1] + Math.sin(angle) * length)]
 }
 
 let shiftHeld = false
@@ -95,15 +146,16 @@ export const shapeTool: ToolHandler = {
     draft = null
     clearSnap()
     if (!d) return
-    const { kind, lineWidth } = store.state.shape
+    const { kind, lineWidth, lineStyle, lineCap } = store.state.shape
     const [r, g, b] = store.state.foreground.map(v => v / 255)
     let box: { x: number; y: number; w: number; h: number }, style: ShapeStyle
     if (kind === 'Line') {
-      const end = lineEnd(d, shiftHeld), t = lineWidth
-      const x0 = Math.min(d.anchor[0], end[0]) - t / 2, y0 = Math.min(d.anchor[1], end[1]) - t / 2
-      box = { x: x0, y: y0, w: Math.abs(end[0] - d.anchor[0]) + t, h: Math.abs(end[1] - d.anchor[1]) + t }
-      if (Math.hypot(end[0] - d.anchor[0], end[1] - d.anchor[1]) < 1) return
-      style = { kind, red: r, green: g, blue: b, cornerRadius: 0, lineWidth: t, start: [(d.anchor[0] - x0) / box.w, (d.anchor[1] - y0) / box.h], end: [(end[0] - x0) / box.w, (end[1] - y0) / box.h] }
+      const t = lineWidth, shift = lineGridShift(t), dragged = lineEnd(d, shiftHeld)
+      const from: [number, number] = [d.anchor[0] + shift, d.anchor[1] + shift], end: [number, number] = [dragged[0] + shift, dragged[1] + shift], reach = lineReach(from, end, t, lineCap)
+      const x0 = Math.min(from[0], end[0]) - reach, y0 = Math.min(from[1], end[1]) - reach
+      box = { x: x0, y: y0, w: Math.abs(end[0] - from[0]) + reach * 2, h: Math.abs(end[1] - from[1]) + reach * 2 }
+      if (Math.hypot(end[0] - from[0], end[1] - from[1]) < 1) return
+      style = { kind, red: r, green: g, blue: b, cornerRadius: 0, lineWidth: t, start: [(from[0] - x0) / box.w, (from[1] - y0) / box.h], end: [(end[0] - x0) / box.w, (end[1] - y0) / box.h], ...(lineStyle !== 'Solid' ? { lineStyle } : {}), ...(lineCap !== 'Round' ? { lineCap } : {}) }
     } else {
       box = rect(d)
       style = { kind, red: r, green: g, blue: b, cornerRadius: kind === 'Rectangle' ? d.radius : 0, ...(d.smoothing ? { smoothing: true } : {}) }
@@ -133,10 +185,11 @@ export const shapeTool: ToolHandler = {
     context.lineWidth = 1
     context.beginPath()
     if (kind === 'Line') {
-      const [x0, y0] = view.toScreen(...draft.anchor), [x1, y1] = view.toScreen(...lineEnd(draft, shiftHeld))
-      context.moveTo(x0, y0); context.lineTo(x1, y1)
-      context.lineWidth = Math.max(1, store.state.shape.lineWidth * view.zoom); context.lineCap = 'round'
-      context.strokeStyle = `rgba(${store.state.foreground.join(',')},0.6)`; context.stroke(); context.lineCap = 'butt'
+      const { lineWidth, lineStyle, lineCap } = store.state.shape, shift = lineGridShift(lineWidth), end = lineEnd(draft, shiftHeld)
+      const a = view.toScreen(draft.anchor[0] + shift, draft.anchor[1] + shift), b = view.toScreen(end[0] + shift, end[1] + shift)
+      context.fillStyle = context.strokeStyle = `rgba(${store.state.foreground.join(',')},0.6)`
+      strokeLine(context, a, b, Math.max(1, lineWidth * view.zoom), lineStyle, lineCap)
+      context.lineCap = 'butt'
       return
     }
     const box = rect(draft), [x, y] = view.toScreen(box.x, box.y), w = box.w * view.zoom, h = box.h * view.zoom

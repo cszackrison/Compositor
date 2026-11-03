@@ -4,7 +4,7 @@ import { store } from '../editor/store'
 
 // A filter's sheet: controls on the left of OK/Cancel, the canvas previewing every change live on the layer itself. `docked` stands it
 // at the window's right, full height, as Camera Raw's column.
-export function FilterDialog<P>({ title, initial, run, onClose, onCommit, children, preview = true, trim = false, masks = false, growEmpty = false, docked = false, final }: { title: string; initial: P; run: (params: P) => FilterRun | FilterJob; onClose: () => void; onCommit?: (params: P) => void; children: (params: P, set: (changes: Partial<P>) => void) => ReactNode; preview?: boolean; trim?: boolean; masks?: boolean; growEmpty?: boolean; docked?: boolean; final?: (params: P) => FilterRun | FilterJob | undefined }) {
+export function FilterDialog<P>({ title, initial, run, onClose, onCommit, children, preview = true, trim = false, masks = false, growEmpty = false, docked = false, final, buttons }: { title: string; initial: P; run: (params: P) => FilterRun | FilterJob; onClose: () => void; onCommit?: (params: P) => void; children: (params: P, set: (changes: Partial<P>) => void) => ReactNode; preview?: boolean; trim?: boolean; masks?: boolean; growEmpty?: boolean; docked?: boolean; final?: (params: P) => FilterRun | FilterJob | undefined; buttons?: (cancel: () => void) => ReactNode }) {
   const session = useRef<FilterSession | null>(null)
   const [params, setParams] = useState(initial)
   const [live, setLive] = useState(preview)
@@ -58,6 +58,7 @@ export function FilterDialog<P>({ title, initial, run, onClose, onCommit, childr
         {(busy || finishing) && !error && <span className="muted">Working…</span>}
         <div className="buttons">
           <label style={{ marginRight: 'auto' }}><input type="checkbox" checked={live} onChange={e => setLive(e.target.checked)} /> Preview</label>
+          {buttons?.(() => finish(false))}
           <button type="button" onClick={() => finish(false)}>Cancel</button>
           <button type="submit" className="primary" autoFocus={!docked} disabled={finishing}>OK</button>
         </div>

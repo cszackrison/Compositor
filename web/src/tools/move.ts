@@ -1,5 +1,5 @@
 import { Store, store } from '../editor/store'
-import { prefs } from '../editor/prefs'
+import { guidesShown, prefs } from '../editor/prefs'
 import { apply } from '../render/gl'
 import { drawOrder, effectivelyVisible, following, transformCorners, unitToDocument } from '../render/compositor'
 import { Raster } from '../model/raster'
@@ -267,7 +267,7 @@ function snapshot() { return new Map(store.doc.layers.map(l => [l.id, l])) }
 
 export const move: ToolHandler = {
   down(p) {
-    if (!distort && prefs.guides && !prefs.lockGuides) {
+    if (!distort && guidesShown() && !prefs.lockGuides) {
       const guide = guideAt(p.screen)
       if (guide) { startGuideDrag(guide.axis, guide.id, p); return }
     }
@@ -362,7 +362,7 @@ export const move: ToolHandler = {
   },
   hover(p) {
     const handle = hitHandle(p.screen)
-    hoverCursor = handle === 'rotate' ? 'alias' : !handle || handle === 'body' ? (guideAt(p.screen) && prefs.guides && !prefs.lockGuides ? (guideAt(p.screen)!.axis === 'vertical' ? 'col-resize' : 'row-resize') : 'default') : distort ? 'move' : ['n', 's'].includes(handle) ? 'ns-resize' : ['e', 'w'].includes(handle) ? 'ew-resize' : ['nw', 'se'].includes(handle) ? 'nwse-resize' : 'nesw-resize'
+    hoverCursor = handle === 'rotate' ? 'alias' : !handle || handle === 'body' ? (guideAt(p.screen) && guidesShown() && !prefs.lockGuides ? (guideAt(p.screen)!.axis === 'vertical' ? 'col-resize' : 'row-resize') : 'default') : distort ? 'move' : ['n', 's'].includes(handle) ? 'ns-resize' : ['e', 'w'].includes(handle) ? 'ew-resize' : ['nw', 'se'].includes(handle) ? 'nwse-resize' : 'nesw-resize'
   },
   key(event) {
     if (distort && event.key === 'Enter') { applyDistort(); if (isFloating()) commitFloating(); return true }

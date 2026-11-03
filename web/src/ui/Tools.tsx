@@ -1,13 +1,14 @@
 import { useEffect, useState, useSyncExternalStore } from 'react'
 import { useEditor } from './hooks'
 import { ColorSwatch, openColorPicker } from './ColorPicker'
-import { store, type HealMode, type ShapeKind, type SmearMode, type Tool } from '../editor/store'
+import { store, lineStyles, type HealMode, type LineCap, type LineStyle, type ShapeKind, type SmearMode, type Tool } from '../editor/store'
 import { Icon } from './icons'
 import { NumberField, Scrub } from './Inspector'
 import { isMac, shortcutText } from '../editor/shortcuts'
 import { applyGradient, cancelGradient, refreshGradient } from '../tools/gradient'
-import { applyCrop, cancelCrop, cropRatios, setCropRatio } from '../tools/crop'
+import { applyCrop, cancelCrop, cropRatioGroups, cropRatios, parseRatio, setCropRatio, tidyRatio } from '../tools/crop'
 import { applyDistort, cancelDistort, isDistorting, maskAlone } from '../tools/move'
+import { alignLayers, alignments, canAlign, canDistribute, distributeLayers, distributions } from '../editor/align'
 import { armModifier, subscribeModifiers, touchModifiers } from './canvasState'
 import { useCoarse } from './layout'
 import { prefs, setPrefs, subscribePrefs } from '../editor/prefs'
@@ -73,9 +74,10 @@ export function ToolRail() {
   )
 }
 
-function Range({ label, value, min, max, step = 1, suffix = '', sensitivity = 1, onChange }: { label: string; value: number; min: number; max: number; step?: number; suffix?: string; sensitivity?: number; onChange: (v: number) => void }) {
-  const clamp = (v: number) => Math.min(max, Math.max(min, v))
-  return <label><Scrub label={label} value={value} min={min} max={max} step={step} sensitivity={sensitivity} onChange={v => onChange(clamp(v))} /><input type="range" min={min} max={max} step={step} value={value} onChange={e => onChange(+e.target.value)} /><NumberField min={min} max={max} step={step} digits={step < 1 ? String(step).split('.')[1]?.length ?? 0 : 0} value={value} onChange={onChange} />{suffix}</label>
+// `fieldMax`: how far typing or scrubbing may go past the slider's end.
+function Range({ label, value, min, max, fieldMax = max, step = 1, suffix = '', sensitivity = 1, onChange }: { label: string; value: number; min: number; max: number; fieldMax?: number; step?: number; suffix?: string; sensitivity?: number; onChange: (v: number) => void }) {
+  const clamp = (v: number) => Math.min(fieldMax, Math.max(min, v))
+  return <label><Scrub label={label} value={value} min={min} max={fieldMax} step={step} sensitivity={sensitivity} onChange={v => onChange(clamp(v))} /><input type="range" min={min} max={max} step={step} value={value} onChange={e => onChange(+e.target.value)} /><NumberField min={min} max={fieldMax} step={step} digits={step < 1 ? String(step).split('.')[1]?.length ?? 0 : 0} value={value} onChange={onChange} />{suffix}</label>
 }
 
 function Choice<T extends string>({ value, options, onChange }: { value: T; options: readonly T[]; onChange: (v: T) => void }) {
@@ -108,7 +110,7 @@ export function ToolHeader() {
         <Choice value={state.tool === 'brush' ? 'Paint' : 'Erase'} options={['Paint', 'Erase'] as const} onChange={v => store.setTool(v === 'Paint' ? 'brush' : 'eraser')} />
         <TipControls />
         <Range label="Smoothing" value={state.brush.smoothing} min={0} max={100} onChange={smoothing => store.set({ brush: { ...state.brush, smoothing } })} />
-        <label title="A pen's pressure sets the brush size"><input type="checkbox" checked={prefs.penPressure} onChange={e => setPrefs({ penPressure: e.target.checked })} /> Pen Pressure</label>
+        <span className="muted">Pen Pressure</span><label title="A pen's pressure sets the brush size"><input type="checkbox" checked={prefs.penPressure} onChange={e => setPrefs({ penPressure: e.target.checked })} /> Size</label><label title="A pen's pressure sets how strongly the brush lays down"><input type="checkbox" checked={prefs.penPressureOpacity} onChange={e => setPrefs({ penPressureOpacity: e.target.checked })} /> Opacity</label>
         {target && <span className="muted">On {mask ? `${target.name}’s mask` : target.name}</span>}
       </>}
       {state.tool === 'heal' && <>
@@ -141,12 +143,16 @@ export function ToolHeader() {
           <Range label="Corner Radius" value={state.shape.cornerRadius} min={0} max={200} onChange={cornerRadius => store.set({ shape: { ...state.shape, cornerRadius } })} suffix="px" />
           <label title={state.shape.cornerRadius > 0 ? 'Smooth squircle corners at 60% smoothing, matching Figma\'s iOS setting' : 'Set a radius above 0 to use smooth corners.'}><input type="checkbox" disabled={state.shape.cornerRadius <= 0} checked={state.shape.smoothing} onChange={e => store.set({ shape: { ...state.shape, smoothing: e.target.checked } })} /> Smooth Corners</label>
         </>}
-        {state.shape.kind === 'Line' && <Range label="Line Width" value={state.shape.lineWidth} min={1} max={100} onChange={lineWidth => store.set({ shape: { ...state.shape, lineWidth } })} suffix="px" />}
+        {state.shape.kind === 'Line' && <>
+          <Range label="Line Width" value={state.shape.lineWidth} min={1} max={50} fieldMax={5000} onChange={lineWidth => store.set({ shape: { ...state.shape, lineWidth } })} suffix="px" />
+          <select title="Line style" value={state.shape.lineStyle} onChange={e => store.set({ shape: { ...state.shape, lineStyle: e.target.value as LineStyle } })}>{lineStyles.map(s => <option key={s}>{s}</option>)}</select>
+          <select title="How the line's ends, and each dash, are finished" value={state.shape.lineCap} onChange={e => store.set({ shape: { ...state.shape, lineCap: e.target.value as LineCap } })}><option>Square</option><option>Round</option></select>
+        </>}
         <span className="muted">Fills with the foreground color. Shift for squares and 45° lines, {option} from the center</span>
       </>}
       {state.tool === 'type' && <TypeBar />}
       {state.tool === 'crop' && <>
-        <select value={state.crop.ratio} onChange={e => setCropRatio(e.target.value)}>{cropRatios.map(r => <option key={r}>{r}</option>)}</select>
+        <CropRatio />
         {state.crop.rect && <span className="muted">{state.crop.rect.w} × {state.crop.rect.h} px</span>}
         <button className="primary" onClick={applyCrop}>Apply Crop</button><button onClick={cancelCrop}>Cancel</button>
         <span className="muted">{option} crops symmetrically · Return applies</span>
@@ -220,6 +226,39 @@ function SelectionHeader() {
   </>
 }
 
+// The crop ratio, and Custom… for a typed width:height.
+function CropRatio() {
+  const state = useEditor()
+  const [custom, setCustom] = useState<string | null>(null)
+  const ratio = state.crop.ratio, apply = () => { if (custom && parseRatio(custom)) { setCropRatio(tidyRatio(custom)); setCustom(null) } }
+  return <>
+    <select value={custom !== null ? 'Custom' : ratio} onChange={e => e.target.value === 'Custom' ? setCustom(parseRatio(ratio) ? ratio : '4:5') : (setCustom(null), setCropRatio(e.target.value))}>
+      {cropRatioGroups.map((group, i) => <optgroup key={i} label={i ? '──────' : ''}>{group.map(r => <option key={r}>{r}</option>)}</optgroup>)}
+      {!cropRatios.includes(ratio) && <option>{ratio}</option>}
+      <option value="Custom">Custom…</option>
+    </select>
+    {custom !== null && <><input type="text" style={{ width: 70 }} title="Width:height, such as 4:5 or 3:2" value={custom} autoFocus onChange={e => setCustom(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') apply(); if (e.key === 'Escape') setCustom(null) }} /><button disabled={!parseRatio(custom)} onClick={apply}>Apply</button></>}
+  </>
+}
+
+// Align and Distribute in one panel, horizontal over vertical (LayerAlign.swift).
+function AlignButton() {
+  const [open, setOpen] = useState(false)
+  useEditor()
+  const glyphs: Record<string, string> = { 'Left Edges': '⇤', 'Horizontal Centers': '⇹', 'Right Edges': '⇥', 'Top Edges': '⤒', 'Vertical Centers': '⇳', 'Bottom Edges': '⤓' }
+  const run = (f: () => void) => { setOpen(false); f() }
+  return <span className="menu" style={{ position: 'relative' }}>
+    <button disabled={!canAlign()} onClick={() => setOpen(!open)}>Align</button>
+    {open && <div className="menu-list" style={{ padding: 6, minWidth: 0 }} onPointerLeave={e => { if (e.pointerType === 'mouse') setOpen(false) }}>
+      <span className="muted">Align</span>
+      <div style={{ display: 'flex', gap: 2 }}>{alignments.slice(0, 3).map(a => <button key={a} className="icon" title={`Align ${a}`} onClick={() => run(() => alignLayers(a))}>{glyphs[a]}</button>)}</div>
+      <div style={{ display: 'flex', gap: 2 }}>{alignments.slice(3).map(a => <button key={a} className="icon" title={`Align ${a}`} onClick={() => run(() => alignLayers(a))}>{glyphs[a]}</button>)}</div>
+      <span className="muted">Distribute</span>
+      {distributions.map(d => <button key={d} disabled={!canDistribute()} onClick={() => run(() => distributeLayers(d))}><span>{d}</span></button>)}
+    </div>}
+  </span>
+}
+
 function MoveHeader() {
   const state = useEditor()
   const target = store.active
@@ -233,7 +272,7 @@ function MoveHeader() {
       <label><span className="muted">Angle</span><input type="number" step={0.1} value={+target.transform.rotation.toFixed(1)} onChange={e => store.setTransform(target.id, { ...target.transform, rotation: +e.target.value }, 'Rotate', 'rotation')} />°</label>
       <select value={target.transform.sampling} onChange={e => store.setTransform(target.id, { ...target.transform, sampling: e.target.value as typeof target.transform.sampling }, 'Sampling')}><option>High quality</option><option>Smooth</option><option>Nearest</option></select>
     </>}
-    {target && <><button onClick={() => store.flipLayer('x')}>Flip H</button><button onClick={() => store.flipLayer('y')}>Flip V</button></>}
+    {target && <><button onClick={() => store.flipLayer('x')}>Flip H</button><button onClick={() => store.flipLayer('y')}>Flip V</button><AlignButton /></>}
     {distorting && <><button className="primary" onClick={applyDistort}>Apply</button><button onClick={cancelDistort}>Cancel</button></>}
     <span className="muted">Shift frees the ratio, {option} scales from the center, {command}-drag a handle distorts, {option}-drag duplicates, {command}-click picks a layer</span>
   </>

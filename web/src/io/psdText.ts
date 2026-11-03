@@ -67,6 +67,13 @@ export function parseText(extra: Map<string, Uint8Array>): PSDTextSource | null 
 
 // Where the drawn text goes: its anchor (the frame's corner inside the padding, or the first baseline where the alignment puts it) on
 // the document anchor, flipped then turned clockwise about the image's center, as BrushRaster.pixelToDocument does.
+// An artboard folder's rectangle on the canvas, in pixels (its `artb` descriptor, or the older `artd` or `abdd`); null for an ordinary
+// folder.
+export function artboardRect(extra: Map<string, Uint8Array>) {
+  const data = extra.get('artb') ?? extra.get('artd') ?? extra.get('abdd'), descriptor = data && new Reader(data).descriptor(true), box = descriptor && rect(descriptor, 'artboardRect')
+  return box && box.width >= 1 && box.height >= 1 ? box : null
+}
+
 export function textTransform(source: PSDTextSource, width: number, height: number, baseline: number): Transform {
   const { style } = source
   const anchorX = source.anchorIsFrame ? textPadding : style.alignment === 'Center' ? width / 2 : style.alignment === 'Right' ? width - textPadding : textPadding
