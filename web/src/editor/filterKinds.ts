@@ -170,18 +170,22 @@ export function bloom(input: FilterInput, amount: number, radius: number): Filte
   if (!amount) return null
   const margin = input.isMask ? 0 : Math.ceil(radius * 3 + 2)
   const grid = margin ? padded(input.pixels, margin) : { pixels: input.pixels, origin: [0, 0] as [number, number] }
-  const source = grid.pixels, intensity = amount / 50
-  const blurred = blurFloats(Float32Array.from(source.data), source.width, source.height, 4, radius)
-  // At full depth an HDR layer's highlights glow past white rather than stopping there.
-  const out = like(source, source.width, source.height), float = isFloat(source), limit = (v: number) => float ? Math.max(0, v) : clamp01(v)
-  for (let i = 0; i < out.data.length; i += 4) {
-    const glowA = clamp01(blurred[i + 3] / 255 * intensity), a = source.data[i + 3] / 255
-    const outA = a + glowA * (1 - a)
-    out.data[i + 3] = put(out, outA * 255)
-    for (let c = 0; c < 3; c++) {
-      const base = source.data[i + c] / 255, glow = limit(blurred[i + c] / 255 * intensity)
-      out.data[i + c] = put(out, (float ? Math.max(0, base + glow - Math.min(1, base) * Math.min(1, glow)) : clamp01(Math.min(outA, base + glow - base * glow))) * 255)
+  const source = grid.pixels, src = source.data, intensity = amount / 50
+  const blurred = blurFloats(new Float32Array(src), source.width, source.height, 4, radius, false, true)
+  // Bytes clamp with comparisons, quicker than Math.min and Math.max and the same for these finite values, and round as the store drops the half added.
+  const out = like(source, source.width, source.height), dst = out.data, float = isFloat(source), unit = (v: number) => v < 0 ? 0 : v > 1 ? 1 : v
+  for (let i = 0; i < dst.length; i += 4) {
+    const a = src[i + 3] / 255, glowA = blurred[i + 3] / 255 * intensity
+    // At full depth an HDR layer's highlights glow past white rather than stopping there.
+    if (float) {
+      const outA = a + clamp01(glowA) * (1 - a)
+      dst[i + 3] = outA * 255
+      for (let c = i; c < i + 3; c++) { const base = src[c] / 255, glow = Math.max(0, blurred[c] / 255 * intensity); dst[c] = Math.max(0, base + glow - Math.min(1, base) * Math.min(1, glow)) * 255 }
+      continue
     }
+    const outA = a + unit(glowA) * (1 - a)
+    dst[i + 3] = outA * 255 + 0.5
+    for (let c = i; c < i + 3; c++) { const base = src[c] / 255, glow = unit(blurred[c] / 255 * intensity), lit = base + glow - base * glow; dst[c] = unit(outA < lit ? outA : lit) * 255 + 0.5 }
   }
   return { pixels: out, origin: grid.origin }
 }
@@ -190,16 +194,18 @@ export function bloom(input: FilterInput, amount: number, radius: number): Filte
 // it, the layer's edge pixels carried on past the canvas's sides so the picture's border doesn't darken. Same size as the layer.
 export function sharpen(input: FilterInput, amount: number, radius: number, sides: Sides = noSides): FilterOutput {
   if (amount <= 0) return null
-  const margin = input.isMask ? 0 : Math.ceil(radius * 3 + 2)
+  // With every side at the canvas's edge there's nothing to pad, so the layer blurs as it is.
+  const margin = input.isMask || (sides.left && sides.right && sides.top && sides.bottom) ? 0 : Math.ceil(radius * 3 + 2)
   const grid = margin ? paddedSides(input.pixels, margin, sides) : { pixels: input.pixels, origin: [0, 0] as [number, number] }
-  const blurred = blurFloats(Float32Array.from(grid.pixels.data), grid.pixels.width, grid.pixels.height, 4, radius, input.isMask || anySide(sides))
-  const { pixels } = input, k = amount / 100, float = isFloat(pixels), gw = grid.pixels.width, left = -grid.origin[0], top = -grid.origin[1]
-  const out = like(pixels, pixels.width, pixels.height)
-  for (let y = 0; y < pixels.height; y++) for (let x = 0; x < pixels.width; x++) {
-    const i = (y * pixels.width + x) * 4, j = ((y + top) * gw + x + left) * 4
-    const a = Math.min(255, Math.max(0, pixels.data[i + 3] + k * (pixels.data[i + 3] - blurred[j + 3])))
-    out.data[i + 3] = put(out, a)
-    for (let c = 0; c < 3; c++) out.data[i + c] = put(out, Math.max(0, Math.min(float ? Infinity : a, pixels.data[i + c] + k * (pixels.data[i + c] - blurred[j + c]))))
+  const blurred = blurFloats(new Float32Array(grid.pixels.data), grid.pixels.width, grid.pixels.height, 4, radius, input.isMask || anySide(sides), true)
+  const { pixels } = input, src = pixels.data, k = amount / 100, float = isFloat(pixels), gw = grid.pixels.width, left = -grid.origin[0], top = -grid.origin[1]
+  const out = like(pixels, pixels.width, pixels.height), dst = out.data
+  for (let y = 0, i = 0; y < pixels.height; y++) for (let x = 0, j = ((y + top) * gw + left) * 4; x < pixels.width; x++, i += 4, j += 4) {
+    const s0 = src[i], s1 = src[i + 1], s2 = src[i + 2], s3 = src[i + 3], a = Math.min(255, Math.max(0, s3 + k * (s3 - blurred[j + 3])))
+    if (float) { dst[i] = Math.max(0, s0 + k * (s0 - blurred[j])); dst[i + 1] = Math.max(0, s1 + k * (s1 - blurred[j + 1])); dst[i + 2] = Math.max(0, s2 + k * (s2 - blurred[j + 2])); dst[i + 3] = a; continue }
+    // Bytes round as the store drops the half added.
+    dst[i] = Math.max(0, Math.min(a, s0 + k * (s0 - blurred[j]))) + 0.5; dst[i + 1] = Math.max(0, Math.min(a, s1 + k * (s1 - blurred[j + 1]))) + 0.5
+    dst[i + 2] = Math.max(0, Math.min(a, s2 + k * (s2 - blurred[j + 2]))) + 0.5; dst[i + 3] = a + 0.5
   }
   return out
 }

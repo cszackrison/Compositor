@@ -41,8 +41,30 @@ function blur(data: Float32Array, width: number, height: number, sigma: number) 
   const f = Math.floor(sigma / 8)
   if (f < 2) return blurFloats(data, width, height, 1, sigma, true)
   const w = Math.max(1, Math.round(width / f)), h = Math.max(1, Math.round(height / f))
-  return resize(blurFloats(resize(data, width, height, w, h), w, h, 1, sigma * w / width, true), w, h, width, height)
+  return enlarge(blurFloats(resize(data, width, height, w, h), w, h, 1, sigma * w / width, true), w, h, width, height)
 }
+// matte.resize's enlargement, the same sums, each source row blended across once for all the rows of the output between it and the next.
+function enlarge(source: Float32Array, width: number, height: number, toWidth: number, toHeight: number) {
+  if (width === toWidth && height === toHeight) return source
+  const out = new Float32Array(toWidth * toHeight), sx = width / toWidth, sy = height / toHeight, x0 = new Int32Array(toWidth), x1 = new Int32Array(toWidth), tx = new Float64Array(toWidth)
+  for (let x = 0; x < toWidth; x++) { const fx = Math.min(width - 1, Math.max(0, (x + 0.5) * sx - 0.5)); x0[x] = Math.floor(fx); x1[x] = Math.min(width - 1, x0[x] + 1); tx[x] = fx - x0[x] }
+  const rows = [new Float64Array(toWidth), new Float64Array(toWidth)], held = [-1, -1]
+  const row = (y: number, keep: number) => {
+    let k = held[0] === y ? 0 : held[1] === y ? 1 : -1
+    if (k >= 0) return rows[k]
+    k = held[0] === keep ? 1 : 0; held[k] = y
+    const r = rows[k], from = y * width
+    for (let x = 0; x < toWidth; x++) r[x] = source[from + x0[x]] * (1 - tx[x]) + source[from + x1[x]] * tx[x]
+    return r
+  }
+  for (let y = 0, o = 0; y < toHeight; y++, o += toWidth) {
+    const fy = Math.min(height - 1, Math.max(0, (y + 0.5) * sy - 0.5)), y0 = Math.floor(fy), y1 = Math.min(height - 1, y0 + 1), ty = fy - y0, top = row(y0, y1), bottom = row(y1, y0)
+    for (let x = 0; x < toWidth; x++) out[o + x] = top[x] * (1 - ty) + bottom[x] * ty
+  }
+  return out
+}
+// Each 8-bit value unpremultiplied by each alpha, value + alpha × 256, as the haze works it out per pixel.
+const unpremultiplied = Float64Array.from({ length: 65536 }, (_, i) => Math.max(0, (i & 255) / 255 / ((i >> 8) / 255)))
 const linear = (v: number) => v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4)
 const workSize = (width: number, height: number, limit: number) => { const k = Math.min(1, limit / Math.max(width, height)); return [Math.max(1, Math.round(width * k)), Math.max(1, Math.round(height * k))] }
 const unit = (bytes: Uint8Array) => { const out = new Float32Array(bytes.length); for (let i = 0; i < out.length; i++) out[i] = bytes[i] / 255; return out }
@@ -55,6 +77,7 @@ function axis(from: number, to: number) {
   return { lo, hi, t }
 }
 const bilerp = (p: Float32Array, a: number, b: number, c: number, d: number, tx: number, ty: number) => (p[a] * (1 - tx) + p[b] * tx) * (1 - ty) + (p[c] * (1 - tx) + p[d] * tx) * ty
+const at = (p: Float32Array, direct: boolean, a: number, b: number, c: number, d: number, tx: number, ty: number) => direct ? p[a] : bilerp(p, a, b, c, d, tx, ty)
 
 // `pixels` (premultiplied RGBA) with the light at `center`, in its pixels (rows down). `depth`: width × height, 1 nearest and 0
 // farthest, as the Mac's DepthMap (null guesses from where each pixel sits, as the Mac does without its model); `subject`: 0–255 over
@@ -69,27 +92,29 @@ export function volumetricLight(pixels: Raster, depth: Float32Array | null, subj
   const [start, rampEnd] = ramp(s.distance, composed?.distances ?? null), end = Math.max(rampEnd, start + 0.01)
   const tint = s.color.map(c => linear(clamp01(c / 255))), strength = s.intensity / 100 * fullIntensity, haze = s.haze / 100 * fullHaze
   const sx = axis(sw, width), sy = axis(sh, height), bx = beams && axis(beams.width, width), by = beams && axis(beams.height, height)
-  const out = new Raster(width, height, 4), dst = out.data
+  // A scene worked out at the photo's size is read straight, as the lookups would land on its pixels.
+  const out = new Raster(width, height, 4), dst = out.data, direct = sw === width && sh === height, { near, glows, ambient } = scene, depthAt = composed?.composed
+  const fogs = [0, 1].map(r => 1 - Math.exp(-3 * haze * (0.12 + 0.88 * r))), radius = side * 0.35
   for (let y = 0, i = 0; y < height; y++) {
-    const down = (y + 0.5) / height, r0 = sy.lo[y] * sw, r1 = sy.hi[y] * sw, ty = sy.t[y]
+    const down = (y + 0.5) / height, r0 = sy.lo[y] * sw, r1 = sy.hi[y] * sw, ty = sy.t[y], dy = y + 0.5 - center[1]
+    const q0 = by ? by.lo[y] * beams!.width : 0, q1 = by ? by.hi[y] * beams!.width : 0, bty = by ? by.t[y] : 0
     for (let x = 0; x < width; x++, i++) {
       const o = i * 4, alpha = src[o + 3]
       if (alpha === 0) { dst[o] = src[o]; dst[o + 1] = src[o + 1]; dst[o + 2] = src[o + 2]; continue }
-      const a = alpha / 255, ia = r0 + sx.lo[x], ib = r0 + sx.hi[x], ic = r1 + sx.lo[x], id = r1 + sx.hi[x], tx = sx.t[x]
-      const front = clamp01(bilerp(scene.near, ia, ib, ic, id, tx, ty))
-      let beam = 0
-      if (beams && bx && by) { const w = beams.width, q0 = by.lo[y] * w, q1 = by.hi[y] * w; beam = bilerp(beams.data, q0 + bx.lo[x], q0 + bx.hi[x], q1 + bx.lo[x], q1 + bx.hi[x], bx.t[x], by.t[y]) }
-      const far = composed ? 1 - clamp01(bilerp(composed.composed, ia, ib, ic, id, tx, ty)) : (1 - smoothstep(0.45, 1.05, down)) * (1 - 0.8 * front)
-      const glow = Math.exp(-Math.hypot(x + 0.5 - center[0], y + 0.5 - center[1]) / (side * 0.35))
+      const ia = direct ? i : r0 + sx.lo[x], ib = r0 + sx.hi[x], ic = r1 + sx.lo[x], id = r1 + sx.hi[x], tx = sx.t[x]
+      const front = clamp01(at(near, direct, ia, ib, ic, id, tx, ty))
+      const beam = beams && bx ? bilerp(beams.data, q0 + bx.lo[x], q0 + bx.hi[x], q1 + bx.lo[x], q1 + bx.hi[x], bx.t[x], bty) : 0
+      const far = depthAt ? 1 - clamp01(at(depthAt, direct, ia, ib, ic, id, tx, ty)) : (1 - smoothstep(0.45, 1.05, down)) * (1 - 0.8 * front)
+      const dx = x + 0.5 - center[0], glow = Math.exp(-Math.sqrt(dx * dx + dy * dy) / radius)
       // Clear nearer than where Distance starts the haze, building to full over a gentle stretch beyond; a little even in front.
-      const r = smoothstep(start, end, far), fog = 1 - Math.exp(-3 * haze * (0.12 + 0.88 * r)), shade = 1 - 0.92 * front
+      const r = smoothstep(start, end, far), fog = r === 0 ? fogs[0] : r === 1 ? fogs[1] : 1 - Math.exp(-3 * haze * (0.12 + 0.88 * r)), shade = 1 - 0.92 * front
       for (let c = 0; c < 3; c++) {
-        const t = tint[c], air = Math.max(0, bilerp(scene.ambient[c], ia, ib, ic, id, tx, ty)), bloom = Math.max(0, bilerp(scene.glows[c], ia, ib, ic, id, tx, ty))
-        const fogColor = air * (1 + (t - 1) * 0.6) * 0.9 + t * glow * 0.45, base = Math.max(0, src[o + c] / 255 / a)
+        const t = tint[c], air = Math.max(0, at(ambient[c], direct, ia, ib, ic, id, tx, ty)), bloom = Math.max(0, at(glows[c], direct, ia, ib, ic, id, tx, ty))
+        const fogColor = air * (1 + (t - 1) * 0.6) * 0.9 + t * glow * 0.45, base = unpremultiplied[alpha << 8 | src[o + c]]
         const veiled = base + (fogColor - base) * fog + bloom * haze * 1.6 * (0.3 + 0.7 * r)
-        // The beams screened over, rolling off into the light's color and white rather than clipping.
+        // The beams screened over, rolling off into the light's color and white rather than clipping; the store rounds it, never negative.
         const lit = 1 - (1 - Math.min(veiled, 1)) * Math.exp(-t * strength * beam * 0.5 * shade)
-        dst[o + c] = Math.round(clamp01(lit) * alpha)
+        dst[o + c] = clamp01(lit) * alpha + 0.5
       }
       dst[o + 3] = alpha
     }
@@ -113,10 +138,11 @@ function makeScene(pixels: Raster, subject: Uint8Array | null): Scene {
   return { width, height, subject: mask, near: mask ? blur(mask, width, height, Math.max(1, side * 0.003)) : new Float32Array(width * height), glows, ambient }
 }
 
-// Smooth noise around the light, one value per `cells` around the circle.
-function around(angle: number, cells: number, seed: number) {
-  const u = (angle / 6.2831853 + 0.5) * cells, i = Math.floor(u), f0 = u - i, f = f0 * f0 * (3 - 2 * f0), a = hash((i % cells) + seed)
-  return a + (hash(((i + 1) % cells) + seed) - a) * f
+// Smooth noise around the light, one value per `cells` around the circle, the noise at each cell looked up from `noise(cells, seed)`.
+const noise = (cells: number, seed: number) => Float64Array.from({ length: cells + 1 }, (_, m) => hash(m - 1 + seed))
+function around(angle: number, cells: number, values: Float64Array) {
+  const u = (angle / 6.2831853 + 0.5) * cells, i = Math.floor(u), f0 = u - i, f = f0 * f0 * (3 - 2 * f0), a = values[(i % cells) + 1]
+  return a + (values[((i + 1) % cells) + 1] - a) * f
 }
 
 // The beams (volumetricBeams), worked out at half size as on the Mac, at most `beamSide` across. What gives off light at each pixel:
@@ -134,26 +160,34 @@ function makeBeams(pixels: Raster, subject: Uint8Array | null, center: [number, 
   for (const v of blur(resize(channel(pixels, 1), width, height, pw, ph), pw, ph, 2 * pw / width)) if (v > peak) peak = v
   const brightest = Math.max(0.05, peak), small = resize(luma, width, height, bw, bh), blocked = subject ? resize(unit(subject), width, height, bw, bh) : null
   const bside = side * scale, size = Math.max(1, bside * (0.02 + s.size / 100 * 0.4)), shafts = s.shafts / 100, lx = center[0] * scale, ly = center[1] * scale
-  const emission = new Float32Array(bw * bh)
+  // Kept at float precision, in doubles, which the gathering below reads quicker.
+  const emission = new Float64Array(bw * bh), fine = noise(97, 3.1), broad = noise(251, 7.7)
   for (let y = 0, i = 0; y < bh; y++) for (let x = 0; x < bw; x++, i++) {
     const bright = clamp01(small[i] / brightest), dx = x + 0.5 - lx, dy = y + 0.5 - ly, d = Math.hypot(dx, dy)
     const open = clamp01((bright - 0.08) / 0.3), disc = Math.exp(-2 * (d / size) * (d / size)), openings = clamp01((bright - 0.45) / 0.45) * Math.exp(-d / (bside * 0.5))
-    const angle = Math.atan2(dy, dx), wave = 0.6 * around(angle, 97, 3.1) + 0.4 * around(angle, 251, 7.7)
-    emission[i] = (disc * (0.25 + 0.75 * open) + openings) * (1 - (blocked ? blocked[i] : 0)) * (1 - shafts + shafts * wave * wave * 1.8)
+    const angle = shafts ? Math.atan2(dy, dx) : 0, wave = shafts ? 0.6 * around(angle, 97, fine) + 0.4 * around(angle, 251, broad) : 0
+    emission[i] = Math.fround((disc * (0.25 + 0.75 * open) + openings) * (1 - (blocked ? blocked[i] : 0)) * (1 - shafts + shafts * wave * wave * 1.8))
   }
-  const samples = 96, length = s.length / 100, gathered = new Float32Array(bw * bh)
+  const samples = 96, length = s.length / 100, gathered = new Float32Array(bw * bh), weight = new Float64Array(samples)
   const sample = (px: number, py: number) => {
     const fx = Math.min(bw - 1, Math.max(0, px - 0.5)), fy = Math.min(bh - 1, Math.max(0, py - 0.5)), x0 = Math.floor(fx), y0 = Math.floor(fy)
-    return bilerp(emission, y0 * bw + x0, y0 * bw + Math.min(bw - 1, x0 + 1), Math.min(bh - 1, y0 + 1) * bw + x0, Math.min(bh - 1, y0 + 1) * bw + Math.min(bw - 1, x0 + 1), fx - x0, fy - y0)
+    const a = y0 * bw + x0, b = y0 * bw + Math.min(bw - 1, x0 + 1), c = Math.min(bh - 1, y0 + 1) * bw + x0, d = Math.min(bh - 1, y0 + 1) * bw + Math.min(bw - 1, x0 + 1), tx = fx - x0, ty = fy - y0
+    return (emission[a] * (1 - tx) + emission[b] * tx) * (1 - ty) + (emission[c] * (1 - tx) + emission[d] * tx) * ty
   }
+  const within = (px: number, py: number) => px - 0.5 >= 0 && px - 0.5 < bw - 1 && py - 0.5 >= 0 && py - 0.5 < bh - 1
   let weights = 0
-  for (let k = 0, w = 1; k < samples; k++, w *= 0.985) weights += w
+  for (let k = 0, w = 1; k < samples; k++, w *= 0.985) { weight[k] = w; weights += w }
   for (let y = 0, i = 0; y < bh; y++) for (let x = 0; x < bw; x++, i++) {
     // With no Length every sample lands on the pixel itself.
     if (length === 0) { gathered[i] = emission[i] * weights / samples * 4; continue }
     const hx = x + 0.5, hy = y + 0.5, stepX = (lx - hx) * length / samples, stepY = (ly - hy) * length / samples, jitter = hash(x * 0.618 + y * 1.414)
-    let sum = 0, w = 1
-    for (let k = 0; k < samples; k++, w *= 0.985) sum += sample(hx + stepX * (k + jitter), hy + stepY * (k + jitter)) * w
+    let sum = 0
+    // The samples run in a line, so when both ends need no clamping none between do, and they're read straight.
+    if (within(hx + stepX * jitter, hy + stepY * jitter) && within(hx + stepX * (samples - 1 + jitter), hy + stepY * (samples - 1 + jitter))) for (let k = 0; k < samples; k++) {
+      const t = k + jitter, fx = hx + stepX * t - 0.5, fy = hy + stepY * t - 0.5, x0 = fx | 0, y0 = fy | 0, j = y0 * bw + x0, tx = fx - x0, ty = fy - y0
+      sum += ((emission[j] * (1 - tx) + emission[j + 1] * tx) * (1 - ty) + (emission[j + bw] * (1 - tx) + emission[j + bw + 1] * tx) * ty) * weight[k]
+    }
+    else for (let k = 0; k < samples; k++) sum += sample(hx + stepX * (k + jitter), hy + stepY * (k + jitter)) * weight[k]
     gathered[i] = sum / samples * 4
   }
   return { data: blur(gathered, bw, bh, scale * 2), width: bw, height: bh }

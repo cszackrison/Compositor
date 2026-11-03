@@ -10,46 +10,89 @@ function boxes(sigma: number, n = 3) {
   return Array.from({ length: n }, (_, i) => i < m ? lower : upper)
 }
 
-// One running-sum box pass over `channels`-interleaved floats, along rows (horizontal) or columns. `clamp` repeats the edge,
-// otherwise past the edge is transparent zero. Straight indexing, no per-sample calls: this runs for every pixel of every blur.
-function boxPass(source: Float32Array, out: Float32Array, width: number, height: number, channels: number, radius: number, horizontal: boolean, clamp: boolean) {
-  const length = horizontal ? width : height, lines = horizontal ? height : width
-  const step = (horizontal ? 1 : width) * channels, lineStep = (horizontal ? width : 1) * channels
-  const scale = 1 / (radius * 2 + 1), last = (length - 1) * step
-  for (let line = 0; line < lines; line++) {
-    const base = line * lineStep
-    for (let c = 0; c < channels; c++) {
-      const first = source[base + c], end = source[base + last + c]
-      let sum = 0
-      for (let i = -radius; i <= radius; i++) sum += i < 0 ? (clamp ? first : 0) : i >= length ? (clamp ? end : 0) : source[base + i * step + c]
-      let o = base + c, add = base + (radius + 1) * step + c, sub = base - radius * step + c
-      for (let i = 0; i < length; i++, o += step, add += step, sub += step) {
-        out[o] = sum * scale
-        const incoming = i + radius + 1 < length ? source[add] : clamp ? end : 0
-        const outgoing = i - radius >= 0 ? source[sub] : clamp ? first : 0
-        sum += incoming - outgoing
-      }
+// Running-sum box passes over `channels`-interleaved floats. `clamp` repeats the edge, otherwise past the edge is transparent zero.
+// Along rows the edges are worked apart, so the middle needs no checks; down the columns every column's sum is kept in `sums` and the
+// image is read a row at a time, in order. Each step adds `incoming - outgoing` as one, so the sums round as they always have.
+function rowPass(source: Float32Array, out: Float32Array, width: number, height: number, channels: number, radius: number, clamp: boolean) {
+  const scale = 1 / (radius * 2 + 1), lo = Math.min(radius, width), hi = Math.max(lo, width - radius - 1)
+  if (channels === 4) return rowPass4(source, out, width, height, radius, clamp, scale, lo, hi, (radius + 1) * 4, radius * 4)
+  if (channels === 1) for (let y = 0; y < height; y += 2) lanes(source, out, y * width, Math.min(y + 1, height - 1) * width, 1, width, radius, clamp, scale, lo, hi)
+  else for (let base = 0; base < height * width * channels; base += width * channels) for (let c = 0; c < channels; c += 2) lanes(source, out, base + c, base + Math.min(c + 1, channels - 1), channels, width, radius, clamp, scale, lo, hi)
+}
+
+// Two of rowPass's sums run side by side, one along `p`, one along `q`, each `step` apart: two rows of one channel, or two channels of
+// a row. A lane on its own runs as both.
+function lanes(source: Float32Array, out: Float32Array, p: number, q: number, step: number, width: number, radius: number, clamp: boolean, scale: number, lo: number, hi: number) {
+  const reach = (radius + 1) * step, back = radius * step, d = q - p, last = (width - 1) * step
+  const fp = clamp ? source[p] : 0, ep = clamp ? source[p + last] : 0, fq = clamp ? source[q] : 0, eq = clamp ? source[q + last] : 0
+  let sp = 0, sq = 0, i = 0, o = p
+  for (let k = -radius; k <= radius; k++) { sp += k < 0 ? fp : k >= width ? ep : source[p + k * step]; sq += k < 0 ? fq : k >= width ? eq : source[q + k * step] }
+  for (; i < lo; i++, o += step) { const inside = i + radius + 1 < width; out[o] = sp * scale; out[o + d] = sq * scale; sp += (inside ? source[o + reach] : ep) - fp; sq += (inside ? source[o + d + reach] : eq) - fq }
+  for (; i < hi; i++, o += step) { const r = o + d; out[o] = sp * scale; out[r] = sq * scale; sp += source[o + reach] - source[o - back]; sq += source[r + reach] - source[r - back] }
+  for (; i < width; i++, o += step) { const inside = i >= radius; out[o] = sp * scale; out[o + d] = sq * scale; sp += ep - (inside ? source[o - back] : fp); sq += eq - (inside ? source[o + d - back] : fq) }
+}
+
+// rowPass for RGBA, the four sums side by side in one sweep.
+function rowPass4(source: Float32Array, out: Float32Array, width: number, height: number, radius: number, clamp: boolean, scale: number, lo: number, hi: number, reach: number, back: number) {
+  for (let base = 0; base < height * width * 4; base += width * 4) {
+    const e = base + width * 4 - 4, f0 = clamp ? source[base] : 0, f1 = clamp ? source[base + 1] : 0, f2 = clamp ? source[base + 2] : 0, f3 = clamp ? source[base + 3] : 0
+    const e0 = clamp ? source[e] : 0, e1 = clamp ? source[e + 1] : 0, e2 = clamp ? source[e + 2] : 0, e3 = clamp ? source[e + 3] : 0
+    let s0 = 0, s1 = 0, s2 = 0, s3 = 0, i = 0, o = base
+    for (let k = -radius; k <= radius; k++) {
+      if (k < 0) { s0 += f0; s1 += f1; s2 += f2; s3 += f3 } else if (k >= width) { s0 += e0; s1 += e1; s2 += e2; s3 += e3 } else { const j = base + k * 4; s0 += source[j]; s1 += source[j + 1]; s2 += source[j + 2]; s3 += source[j + 3] }
+    }
+    for (; i < lo; i++, o += 4) {
+      out[o] = s0 * scale; out[o + 1] = s1 * scale; out[o + 2] = s2 * scale; out[o + 3] = s3 * scale
+      if (i + radius + 1 < width) { const a = o + reach; s0 += source[a] - f0; s1 += source[a + 1] - f1; s2 += source[a + 2] - f2; s3 += source[a + 3] - f3 } else { s0 += e0 - f0; s1 += e1 - f1; s2 += e2 - f2; s3 += e3 - f3 }
+    }
+    for (; i < hi; i++, o += 4) {
+      const a = o + reach, b = o - back
+      out[o] = s0 * scale; out[o + 1] = s1 * scale; out[o + 2] = s2 * scale; out[o + 3] = s3 * scale
+      s0 += source[a] - source[b]; s1 += source[a + 1] - source[b + 1]; s2 += source[a + 2] - source[b + 2]; s3 += source[a + 3] - source[b + 3]
+    }
+    for (; i < width; i++, o += 4) {
+      out[o] = s0 * scale; out[o + 1] = s1 * scale; out[o + 2] = s2 * scale; out[o + 3] = s3 * scale
+      if (i >= radius) { const b = o - back; s0 += e0 - source[b]; s1 += e1 - source[b + 1]; s2 += e2 - source[b + 2]; s3 += e3 - source[b + 3] } else { s0 += e0 - f0; s1 += e1 - f1; s2 += e2 - f2; s3 += e3 - f3 }
     }
   }
 }
 
-export function blurFloats(data: Float32Array, width: number, height: number, channels: number, sigma: number, clamp = false) {
+function columnPass(source: Float32Array, out: Float32Array, width: number, height: number, channels: number, radius: number, clamp: boolean, sums: Float64Array) {
+  const scale = 1 / (radius * 2 + 1), n = width * channels, last = (height - 1) * n
+  const row = (k: number) => k < 0 ? (clamp ? 0 : -1) : k >= height ? (clamp ? last : -1) : k * n
+  sums.fill(0)
+  for (let k = -radius; k <= radius; k++) { const r = row(k); if (r >= 0) for (let x = 0; x < n; x++) sums[x] += source[r + x] }
+  for (let y = 0, o = 0; y < height; y++, o += n) {
+    const add = row(y + radius + 1), sub = row(y - radius)
+    if (add >= 0 && sub >= 0) for (let x = 0; x < n; x++) { const v = sums[x]; out[o + x] = v * scale; sums[x] = v + (source[add + x] - source[sub + x]) }
+    else if (add >= 0) for (let x = 0; x < n; x++) { const v = sums[x]; out[o + x] = v * scale; sums[x] = v + source[add + x] }
+    else if (sub >= 0) for (let x = 0; x < n; x++) { const v = sums[x]; out[o + x] = v * scale; sums[x] = v - source[sub + x] }
+    else for (let x = 0; x < n; x++) out[o + x] = sums[x] * scale
+  }
+}
+
+// `data` is left as it is, unless `overwrite`, for a copy the caller has no more use for, which the blur then works in and returns.
+export function blurFloats(data: Float32Array, width: number, height: number, channels: number, sigma: number, clamp = false, overwrite = false) {
   if (sigma < 0.3) return data
-  let a = data.slice(), b = new Float32Array(data.length)
-  for (const size of boxes(sigma)) {
-    const radius = (size - 1) / 2
-    boxPass(a, b, width, height, channels, radius, true, clamp)
-    boxPass(b, a, width, height, channels, radius, false, clamp)
+  // A one-pixel box leaves the image as it is, so it's skipped.
+  const radii = boxes(sigma).map(size => (size - 1) / 2).filter(radius => radius > 0)
+  if (!radii.length) return overwrite ? data : data.slice()
+  const a = overwrite ? data : new Float32Array(data.length), b = new Float32Array(data.length), sums = new Float64Array(width * channels)
+  let from = data
+  for (const radius of radii) {
+    rowPass(from, b, width, height, channels, radius, clamp)
+    columnPass(b, a, width, height, channels, radius, clamp, sums)
+    from = a
   }
   return a
 }
 
 // A Gaussian blur of premultiplied pixels; `clamp` extends the edge pixels, otherwise outside is transparent.
 export function blurRaster(raster: Raster, sigma: number, clamp = false): Raster {
-  const floatsIn = Float32Array.from(raster.data)
-  const blurred = blurFloats(floatsIn, raster.width, raster.height, raster.channels, sigma, clamp)
-  const out = new Raster(raster.width, raster.height, raster.channels)
-  for (let i = 0; i < out.data.length; i++) out.data[i] = Math.round(blurred[i])
+  const blurred = blurFloats(new Float32Array(raster.data), raster.width, raster.height, raster.channels, sigma, clamp, true)
+  const out = new Raster(raster.width, raster.height, raster.channels), data = out.data
+  // A float's half added and the fraction dropped by the store rounds it as Math.round does (a blur never dips to −½), and quicker.
+  for (let i = 0; i < data.length; i++) data[i] = blurred[i] + 0.5
   return out
 }
 
@@ -66,7 +109,7 @@ export function lazyBlur(raster: Raster, sigma: number, clamp = false) {
     const region = new Float32Array(w * h * channels)
     for (let y = 0; y < h; y++) { const from = ((y + y0) * width + x0) * channels; for (let i = 0; i < w * channels; i++) region[y * w * channels + i] = raster.data[from + i] }
     // Region edges inside the image sit a full reach from the tile, so how they're treated never reaches it.
-    const entry = { data: blurFloats(region, w, h, channels, sigma, clamp), x0, y0, w }
+    const entry = { data: blurFloats(region, w, h, channels, sigma, clamp, true), x0, y0, w }
     tiles.set(ty * across + tx, entry)
     return entry
   }

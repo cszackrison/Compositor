@@ -1,4 +1,5 @@
 import { Raster } from '../model/raster'
+import { blurFloats } from '../model/pixels'
 
 // Filter › Rim Light (RimLight.swift, MetalRimLight.swift): up to three lights behind the subject that catch its edges, lit the way
 // games light flat sprites. The outline is rounded into a surface that faces sideways at the edge and the camera a light's Width in,
@@ -31,6 +32,8 @@ const fullStrength = 10, fullGlow = 4
 const decode = (v: number) => v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4)
 const encode = (v: number) => v <= 0.0031308 ? v * 12.92 : 1.055 * Math.pow(v, 1 / 2.4) - 0.055
 const lumaWeights = [0.2126, 0.7152, 0.0722], toLinear = Float32Array.from({ length: 256 }, (_, i) => decode(i / 255))
+// Each 8-bit value unpremultiplied by each alpha, value + alpha × 256.
+const straight = Uint8Array.from({ length: 65536 }, (_, i) => i >> 8 ? Math.min(255, Math.round((i & 255) * 255 / (i >> 8))) : 0)
 const smoothstep = (e0: number, e1: number, x: number) => { const t = Math.min(1, Math.max(0, (x - e0) / (e1 - e0))); return t * t * (3 - 2 * t) }
 
 // The inverse of the error function (Giles's approximation), for how far into a blurred edge a level lies.
@@ -48,52 +51,37 @@ function inverseError(x: number) {
   return p * x
 }
 
-// Box sizes whose three passes approximate a Gaussian of `sigma` (Kovesi), as in model/pixels.ts.
-function boxes(sigma: number, n = 3) {
-  const ideal = Math.sqrt(12 * sigma * sigma / n + 1)
-  let lower = Math.floor(ideal); if (lower % 2 === 0) lower--
-  const m = Math.round((12 * sigma * sigma - n * lower * lower - 4 * n * lower - 3 * n) / (-4 * lower - 4))
-  return Array.from({ length: n }, (_, i) => i < m ? lower : lower + 2)
-}
-
-// One box pass of radius `r` along the rows and one down the columns, edges repeated, the columns worked a row at a time so memory is
-// read in order: one channel, much quicker than an interleaved blur's column pass.
-function boxPasses(a: Float32Array, b: Float32Array, w: number, h: number, r: number) {
-  const scale = 1 / (2 * r + 1), sums = new Float64Array(w)
-  for (let y = 0, row = 0; y < h; y++, row += w) {
-    let sum = 0
-    for (let k = -r; k <= r; k++) sum += a[row + Math.min(w - 1, Math.max(0, k))]
-    for (let x = 0; x < w; x++) { b[row + x] = sum * scale; sum += a[row + Math.min(w - 1, x + r + 1)] - a[row + Math.max(0, x - r)] }
-  }
-  for (let k = -r; k <= r; k++) { const row = Math.min(h - 1, Math.max(0, k)) * w; for (let x = 0; x < w; x++) sums[x] += b[row + x] }
-  for (let y = 0, o = 0; y < h; y++, o += w) {
-    const add = Math.min(h - 1, y + r + 1) * w, sub = Math.max(0, y - r) * w
-    for (let x = 0; x < w; x++) { a[o + x] = sums[x] * scale; sums[x] += b[add + x] - b[sub + x] }
-  }
-}
-
 // A Gaussian blur of one channel with clamped edges, as Core Image's `clampedToExtent` blur. A wide one runs on a copy reduced by a
 // fifth of its sigma and is enlarged again smoothly, which it can't tell from the full-size blur.
 function blur(data: Float32Array, w: number, h: number, sigma: number): Float32Array {
   if (sigma < 0.3) return data
   const f = sigma >= 10 ? Math.floor(sigma / 5) : 1
-  if (f === 1) {
-    const a = data.slice(), b = new Float32Array(data.length)
-    for (const size of boxes(sigma)) boxPasses(a, b, w, h, (size - 1) / 2)
-    return a
-  }
+  if (f === 1) return blurFloats(data, w, h, 1, sigma, true)
   const sw = Math.ceil(w / f), sh = Math.ceil(h / f), small = new Float32Array(sw * sh)
-  for (let y = 0; y < h; y++) for (let x = 0, row = y * w, to = ((y / f) | 0) * sw; x < w; x++) small[to + ((x / f) | 0)] += data[row + x]
+  // Each cell summed a row at a time, left to right, at the float precision it's kept in.
+  for (let y = 0; y < h; y++) for (let X = 0, row = y * w, to = ((y / f) | 0) * sw; X < sw; X++) {
+    let sum = small[to + X]
+    for (let x = X * f, end = Math.min(w, x + f); x < end; x++) sum = Math.fround(sum + data[row + x])
+    small[to + X] = sum
+  }
   for (let Y = 0; Y < sh; Y++) for (let X = 0; X < sw; X++) small[Y * sw + X] /= (Math.min(w, (X + 1) * f) - X * f) * (Math.min(h, (Y + 1) * f) - Y * f)
   const blurred = blur(small, sw, sh, Math.sqrt(Math.max(0.09, sigma * sigma - f * f / 6)) / f), out = new Float32Array(w * h)
   const x0 = new Int32Array(w), x1 = new Int32Array(w), tx = new Float32Array(w)
   for (let x = 0; x < w; x++) { const fx = Math.min(sw - 1, Math.max(0, (x + 0.5) / f - 0.5)); x0[x] = Math.floor(fx); x1[x] = Math.min(sw - 1, x0[x] + 1); tx[x] = fx - x0[x] }
+  // Each reduced row blended across once, for all the rows between it and the next.
+  const rows = [new Float64Array(w), new Float64Array(w)], held = [-1, -1]
+  const across = (r: number, keep: number) => {
+    let k = held[0] === r ? 0 : held[1] === r ? 1 : -1
+    if (k >= 0) return rows[k]
+    k = held[0] === keep ? 1 : 0; held[k] = r
+    const line = rows[k]
+    for (let x = 0; x < w; x++) line[x] = blurred[r + x0[x]] + (blurred[r + x1[x]] - blurred[r + x0[x]]) * tx[x]
+    return line
+  }
   for (let y = 0; y < h; y++) {
     const fy = Math.min(sh - 1, Math.max(0, (y + 0.5) / f - 0.5)), y0 = Math.floor(fy), ty = fy - y0, r0 = y0 * sw, r1 = Math.min(sh - 1, y0 + 1) * sw
-    for (let x = 0, o = y * w; x < w; x++) {
-      const top = blurred[r0 + x0[x]] + (blurred[r0 + x1[x]] - blurred[r0 + x0[x]]) * tx[x], bottom = blurred[r1 + x0[x]] + (blurred[r1 + x1[x]] - blurred[r1 + x0[x]]) * tx[x]
-      out[o + x] = top + (bottom - top) * ty
-    }
+    const top = across(r0, r1), bottom = across(r1, r0)
+    for (let x = 0, o = y * w; x < w; x++) out[o + x] = top[x] + (bottom[x] - top[x]) * ty
   }
   return out
 }
@@ -113,7 +101,7 @@ export function rimLight(pixels: Raster, settings: RimLightSettings, subject?: R
     outline[i] = Math.min(1, Math.max(0, coverage[i] * 1.6 - 0.3))
     if (!a) continue
     let luma = 0
-    for (let c = 0; c < 3; c++) { const v = Math.min(255, Math.round(src[i * 4 + c] * 255 / a)); albedo[c][i] = toLinear[v]; luma += lumaWeights[c] * v / 255 }
+    for (let c = 0; c < 3; c++) { const v = straight[a << 8 | src[i * 4 + c]]; albedo[c][i] = toLinear[v]; luma += lumaWeights[c] * v / 255 }
     gray[i] = luma
   }
   const fine = blurred(gray, 1), coarse = blurred(gray, Math.max(2, side / 400)), detail = new Float32Array(n)
