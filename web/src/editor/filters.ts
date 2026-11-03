@@ -10,7 +10,8 @@ import { call, kernelModule, withBuffers } from '../kernels'
 import { pixelToDocument } from '../render/compositor'
 import * as kinds from './filterKinds'
 
-export type FilterInput = { pixels: Raster; isMask: boolean; toDocument: Mat3; layerId: string; transform: Transform }
+// `band`, when the pixels are rows of a larger picture worked in bands (bands.ts): where they start in it, and its size.
+export type FilterInput = { pixels: Raster; isMask: boolean; toDocument: Mat3; layerId: string; transform: Transform; band?: { offset: [number, number]; size: [number, number] } }
 // A filter's result: pixels on the layer's own grid, or on a grown one whose top-left sits at `origin` in the original's pixels.
 export type FilterOutput = Raster | { pixels: Raster; origin: [number, number] } | null
 // Works on premultiplied RGBA (a mask arrives as opaque gray) and returns the result.

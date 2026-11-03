@@ -10,6 +10,9 @@ function boxes(sigma: number, n = 3) {
   return Array.from({ length: n }, (_, i) => i < m ? lower : upper)
 }
 
+// How far blurFloats reaches from a pixel: its boxes' radii together.
+export const blurReach = (sigma: number) => sigma < 0.3 ? 0 : boxes(sigma).reduce((sum, size) => sum + (size - 1) / 2, 0)
+
 // Running-sum box passes over `channels`-interleaved floats. `clamp` repeats the edge, otherwise past the edge is transparent zero.
 // Along rows the edges are worked apart, so the middle needs no checks; down the columns every column's sum is kept in `sums` and the
 // image is read a row at a time, in order. Each step adds `incoming - outgoing` as one, so the sums round as they always have.

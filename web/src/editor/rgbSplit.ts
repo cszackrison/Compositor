@@ -66,13 +66,15 @@ const levels = 64
 // Pixels are worked through in strips this wide, top to bottom, so their samples, spread over many rows, stay in the cache.
 const strip = 64
 const levelAt = (x: number, y: number) => Math.floor(jitterAt(x, y) * levels)
-// Every pixel's jitter step from the corner, kept for the next run (a slider drag redraws the same layer over and over).
-let jitter = { w: 0, h: 0, levels: new Uint8Array(0) }
+// Every pixel's jitter step from the corner, kept for the next run (a slider drag redraws the same layer over and over). A band of a
+// larger picture takes the steps of its place in it (`shift`), so the bands put together match the picture worked whole.
+let jitter = { w: 0, h: 0, ox: 0, oy: 0, levels: new Uint8Array(0) }, shift: [number, number] = [0, 0]
 function levelMap(w: number, h: number) {
-  if (jitter.w >= w && jitter.h >= h) return jitter
-  const cw = Math.max(w, jitter.w), ch = Math.max(h, jitter.h), map = new Uint8Array(cw * ch)
-  for (let y = 0; y < ch; y++) for (let x = 0; x < cw; x++) map[y * cw + x] = levelAt(x, y)
-  return jitter = { w: cw, h: ch, levels: map }
+  const [ox, oy] = shift, same = jitter.ox === ox && jitter.oy === oy
+  if (same && jitter.w >= w && jitter.h >= h) return jitter
+  const cw = same ? Math.max(w, jitter.w) : w, ch = same ? Math.max(h, jitter.h) : h, map = new Uint8Array(cw * ch)
+  for (let y = 0; y < ch; y++) for (let x = 0; x < cw; x++) map[y * cw + x] = levelAt(x + ox, y + oy)
+  return jitter = { w: cw, h: ch, ox, oy, levels: map }
 }
 
 // One pass's samples: read bilinearly from `input` (16-bit levels, its first texel's corner at `origin`, `sides` carrying its edges on),
@@ -236,9 +238,11 @@ function spectrumOut(data: Uint8Array, o: number, acc: Float64Array, count: numb
 
 // Pixels are premultiplied 8-bit RGBA; returns a new raster the same size. `sides` are the layer's sides at the canvas's edge, which
 // carry its edge pixels on rather than going clear.
-export function rgbSplit(pixels: Raster, s: RGBSplitSettings, sides?: Sides): Raster {
-  const { width: w, height: h } = pixels
+// With `band`, the pixels are rows of a larger picture starting at `offset` in it, worked as that picture would be.
+export function rgbSplit(pixels: Raster, s: RGBSplitSettings, sides?: Sides, band?: { offset: [number, number]; size: [number, number] }): Raster {
+  const { width: w, height: h } = pixels, [ox, oy] = band?.offset ?? [0, 0], [fw, fh] = band?.size ?? [w, h]
   if (!(s.distance > 0 || s.blur > 0) || !w || !h) return pixels.clone()
+  shift = [ox, oy]
   const { spectral: n, smear: m } = rgbSplitTaps(s), edges = sideBits(sides)
   const [cx, cy] = s.center, reach = Math.max(s.reach, 1), radial = s.radial, distance = s.distance, blur = s.blur
   // A split along a row or column is kept exactly along it, so its samples fall between two texels rather than four.
@@ -246,9 +250,9 @@ export function rgbSplit(pixels: Raster, s: RGBSplitSettings, sides?: Sides): Ra
   // With blur, the streaks first, into a copy padded by the spectrum's reach; then the spectrum read from that.
   let pad = 0, capped = false
   if (m > 1) {
-    pad = Math.ceil(rgbSplitSpread(s, 0, 0, w, h)) + 2
-    const most = Math.max(maxPadded, w * h * 4)
-    if ((w + pad * 2) * (h + pad * 2) > most) { pad = Math.floor((Math.sqrt((w - h) ** 2 + 4 * most) - w - h) / 4); capped = true }
+    pad = Math.ceil(rgbSplitSpread(s, -ox, -oy, fw - ox, fh - oy)) + 2
+    const most = Math.max(maxPadded, fw * fh * 4)
+    if ((fw + pad * 2) * (fh + pad * 2) > most) { pad = Math.floor((Math.sqrt((fw - fh) ** 2 + 4 * most) - fw - fh) / 4); capped = true }
   }
   // The pixels and the streaks are read as 16-bit levels, 256 to each 8-bit one: half the memory of floats, which the samples spread
   // over many rows of, and finer than the half floats the Mac keeps the streaks in. With every side carried on (a layer filling the
@@ -290,12 +294,12 @@ export function rgbSplit(pixels: Raster, s: RGBSplitSettings, sides?: Sides): Ra
   const taps: Taps = { input, iw, ih, origin, sides: inputSides, opaque: source.opaque && (m === 1 || source.sides === 15), unit: false, reds, blues, n, along, tints, totals }
   // Past a padded copy that stopped growing, the streaks where the sample lands, each sample placed and read one at a time.
   const slow = !capped ? null : (x: number, y: number, acc: Float64Array, ai: number) => {
-    const ax = x + 0.5, ay = y + 0.5, level = levelAt(x, y), px = (radial ? (ax - cx) / reach : dx) * distance, py = (radial ? (ay - cy) / reach : dy) * distance
+    const ax = x + 0.5, ay = y + 0.5, level = levelAt(x + ox, y + oy), px = (radial ? (ax - cx) / reach : dx) * distance, py = (radial ? (ay - cy) / reach : dy) * distance
     let cr = 0, cg = 0, cb = 0, ar = 0, ag = 0, ab = 0
     for (let k = level * n, end = k + n; k < end; k++) {
       const qx = ax - px * along[k], qy = ay - py * along[k], wr = tints[k * 3], wg = tints[k * 3 + 1], wb = tints[k * 3 + 2]
       if (qx < origin || qy < origin || qx > w - origin || qy > h - origin) {
-        smearAt(qx, qy, levelAt(Math.floor(qx - origin), Math.floor(qy - origin)), beyond, 0)
+        smearAt(qx, qy, levelAt(Math.floor(qx - origin) + ox, Math.floor(qy - origin) + oy), beyond, 0)
         sample[0] = beyond[0]; sample[1] = beyond[1]; sample[2] = beyond[2]; sample[3] = beyond[3]
       } else tap(input, iw, ih, origin, origin, inputSides, qx, qy, sample)
       cr += wr * sample[0]; cg += wg * sample[1]; cb += wb * sample[2]

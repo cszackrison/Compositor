@@ -1,3 +1,4 @@
+#include <stdint.h>
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -230,9 +231,54 @@ static void side(const Means *m, int right, float *scratch) {
     }
 }
 
+// AdjustPixels.c's `noise_sigma`, the same sums in the same order.
+static double noise_sigma(const float *luma, const float *coverage, size_t width, size_t height) {
+    if (width < 3 || height < 3) return 0;
+    double sum = 0;
+    size_t count = 0;
+    for (size_t y = 1; y + 1 < height; ++y) {
+        const float *up = luma + (y - 1) * width, *row = luma + y * width, *down = luma + (y + 1) * width;
+        for (size_t x = 1; x + 1 < width; ++x) {
+            if (coverage[y * width + x] < 0.5f) continue;
+            double laplacian = up[x - 1] - 2 * up[x] + up[x + 1] - 2 * row[x - 1] + 4 * row[x] - 2 * row[x + 1]
+                + down[x - 1] - 2 * down[x] + down[x + 1];
+            sum += fabs(laplacian);
+            count++;
+        }
+    }
+    return count ? sqrt(M_PI / 2) * sum / (6.0 * count) : 0;
+}
+
+// The noise adjust_camera_raw_detail measures in a whole picture, so a band of it can be smoothed as the whole would be
+// (`web_use_noise_sigma`, 0 for its own), the brightness and coverage worked out as it works them out.
+__attribute__((export_name("web_noise_sigma"))) double web_noise_sigma(const uint8_t *rgba, size_t width, size_t height, size_t stride) {
+    size_t count = width * height;
+    float *luma = malloc(count * sizeof(float)), *coverage = malloc(count * sizeof(float));
+    double sigma = 0;
+    if (luma && coverage) {
+        for (size_t y = 0; y < height; ++y) {
+            const uint8_t *row = rgba + y * stride;
+            for (size_t x = 0; x < width; ++x) {
+                const uint8_t *p = row + x * 4;
+                double alpha = p[3];
+                coverage[y * width + x] = p[3] / 255.0f;
+                if (!alpha) { luma[y * width + x] = 0; continue; }
+                double r = fmin(1.0, p[0] / alpha), g = fmin(1.0, p[1] / alpha), b = fmin(1.0, p[2] / alpha);
+                luma[y * width + x] = (float)(0.2126 * r + 0.7152 * g + 0.0722 * b);
+            }
+        }
+        sigma = fmax(0.5 / 255.0, noise_sigma(luma, coverage, width, height));
+    }
+    free(luma); free(coverage);
+    return sigma;
+}
+static double sigma_override = 0;
+__attribute__((export_name("web_use_noise_sigma"))) void web_use_noise_sigma(double sigma) { sigma_override = sigma; }
+
 static int nonlocal_means_simd(const float *luma, const float *coverage, float *out, size_t width, size_t height,
                                int search, int patch, double h, double sigma) {
     if (patch < 1 || patch > 2 || search < 1 || width < 2 * (size_t)(search + patch) + 16 || height < 2 * (size_t)(search + patch) + 16) return 0;
+    if (sigma_override > 0) { double k = sigma_override / fmax(0.5 / 255.0, noise_sigma(luma, coverage, width, height)); h *= k; sigma *= k; }
     Means m = { luma, coverage, out, (long)width, (long)height, search, patch, (float)(2 * sigma * sigma), (float)(steps / (6.0 * h * h)),
                 (float)((2 * patch + 1) * (2 * patch + 1)) };
     const long top = patch, bottom = m.height - patch, left = patch, right = m.width - patch;

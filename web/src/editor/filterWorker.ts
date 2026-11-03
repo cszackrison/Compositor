@@ -1,4 +1,5 @@
 import { loadKernels } from '../kernels'
+import { runBanded, setBandKernels } from './bandPool'
 import * as kinds from './filterKinds'
 import { Raster } from '../model/raster'
 import type { FilterInput, FilterOutput } from './filters'
@@ -18,7 +19,7 @@ let ready: Promise<void> | undefined
 let reduced: { source: number; pixels: Raster } | null = null
 
 self.onmessage = async (event: MessageEvent<Request | DeepRequest | WebAssembly.Module | { assetBase: string }>) => {
-  if (event.data instanceof WebAssembly.Module) { ready = loadKernels(event.data); return }
+  if (event.data instanceof WebAssembly.Module) { ready = loadKernels(event.data); setBandKernels(event.data); return }
   if ('assetBase' in event.data) { setAssetBase(event.data.assetBase); return }
   if ('deep' in event.data) {
     const { id, name, args, input, deep, grid, single, part, runs, firstRow } = event.data
@@ -56,7 +57,8 @@ self.onmessage = async (event: MessageEvent<Request | DeepRequest | WebAssembly.
     if (scale < 1 && !cached && source !== undefined) reduced = { source, pixels: pixels.clone() }
     // The copy's pixels map to the document through the layer's mapping, scaled up to the layer's own pixels first.
     const toDocument = scale < 1 ? multiply(input.toDocument, scaleBy(full.width / pixels.width, full.height / pixels.height)) : input.toDocument
-    let out = run({ ...input, pixels, toDocument }, ...args.map((a, i) => scaled.includes(i) && typeof a === 'number' ? a * scale : a))
+    const given = { ...input, pixels, toDocument }, settings = args.map((a, i) => scaled.includes(i) && typeof a === 'number' ? a * scale : a), banded = await runBanded(name, given, settings)
+    let out = banded !== undefined ? banded : run(given, ...settings)
     if (scale < 1 && out && (enlarge || !(out instanceof Raster))) {
       // Enlarged by the copy's own ratios, so a result on the copy's grid comes back exactly on the layer's.
       const small = out instanceof Raster ? out : out.pixels, origin = out instanceof Raster ? [0, 0] : out.origin, fx = full.width / pixels.width, fy = full.height / pixels.height

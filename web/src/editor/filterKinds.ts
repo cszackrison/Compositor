@@ -7,7 +7,7 @@ import type { Adjustment } from '../model/types'
 import { applyCameraRaw, type CameraRawSettings, type CameraRawView } from '../model/cameraRaw'
 import { channelTables, cubeSize, hueSaturationCube } from '../model/adjustments'
 import { type RimLightSettings, rimLight as rimLightPixels } from './rimLight'
-import { rgbSplit as rgbSplitPixels } from './rgbSplit'
+import { type RGBSplitSettings, rgbSplit as rgbSplitPixels } from './rgbSplit'
 import { type LensSettings, lensEffect, lensIsIdentity, normalizedLens } from './lensEffects'
 
 const clamp01 = (v: number) => Math.min(1, Math.max(0, v))
@@ -212,10 +212,17 @@ export function sharpen(input: FilterInput, amount: number, radius: number, side
 
 // Filter › Reduce Noise: Camera Raw's noise reduction on its own (adjust_camera_raw_detail), its contrast and color smoothness at their
 // defaults. `scale` is these pixels per layer pixel, for a reduced preview or the canvas.
-export function reduceNoise(input: FilterInput, strength: number, details: number, color: number, scale = 1): FilterOutput {
+// `sigma`, the whole picture's noise (noiseSigma) when these pixels are a band of it, so it's smoothed as the whole would be.
+export function reduceNoise(input: FilterInput, strength: number, details: number, color: number, scale = 1, sigma = 0): FilterOutput {
   if (strength <= 0 && color <= 0) return null
   const { pixels } = input
-  return kernelInPlace(pixels, 'adjust_camera_raw_detail', 0, 0, 0, 0, strength, details, 0, color, 50, 50, scale)
+  if (sigma) call('web_use_noise_sigma', sigma)
+  try { return kernelInPlace(pixels, 'adjust_camera_raw_detail', 0, 0, 0, 0, strength, details, 0, color, 50, 50, scale) } finally { if (sigma) call('web_use_noise_sigma', 0) }
+}
+export function noiseSigma(pixels: Raster): number {
+  let sigma = 0
+  withBuffers([{ data: pixels.data }], ([p]) => { sigma = call('web_noise_sigma', p, pixels.width, pixels.height, pixels.width * 4) as number })
+  return sigma
 }
 
 // Filter › Rim Light (RimLight.swift): lights behind the subject, the layer's own alpha its outline.
@@ -227,10 +234,14 @@ export function rimLight(input: FilterInput, s: RimLightSettings): FilterOutput 
 // middle when null) sharp there and full at `reach`, with Blur streaking them along the split.
 export function rgbSplit(input: FilterInput, distance: number, blur: number, angle: number, radial: boolean, center: [number, number] | null, reach: number, sides: Sides = noSides): FilterOutput {
   if (distance <= 0 && blur <= 0) return null
-  const { pixels } = input, toPixel = invert(input.toDocument)
-  const at = center ? apply(toPixel, ...center) as [number, number] : [pixels.width / 2, pixels.height / 2] as [number, number]
+  return rgbSplitPixels(input.pixels, rgbSplitSettings(input, distance, blur, angle, radial, center, reach), sides, input.band)
+}
+// RGB Split's settings in these pixels: the center and reach mapped from the document's (the middle of the whole picture when null).
+export function rgbSplitSettings(input: Pick<FilterInput, 'pixels' | 'toDocument' | 'band'>, distance: number, blur: number, angle: number, radial: boolean, center: [number, number] | null, reach: number): RGBSplitSettings {
+  const toPixel = invert(input.toDocument), [w, h] = input.band?.size ?? [input.pixels.width, input.pixels.height], [, top] = input.band?.offset ?? [0, 0]
+  const at = center ? apply(toPixel, ...center) as [number, number] : [w / 2, h / 2 - top] as [number, number]
   const edge = center ? apply(toPixel, center[0] + reach, center[1]) : [at[0] + reach, at[1]]
-  return rgbSplitPixels(pixels, { distance, blur, angle, radial, center: at, reach: Math.max(1, Math.hypot(edge[0] - at[0], edge[1] - at[1])) }, sides)
+  return { distance, blur, angle, radial, center: at, reach: Math.max(1, Math.hypot(edge[0] - at[0], edge[1] - at[1])) }
 }
 
 // Filter › Lens Effects (LensEffects.swift): a flare, starburst, mist, prism or bokeh from the picture's lights, sized by `side`, the
