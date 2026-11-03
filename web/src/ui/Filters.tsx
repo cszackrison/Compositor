@@ -105,8 +105,9 @@ function ProgressiveBlurDialog() {
 }
 
 export function ProgressiveLine({ settings, set }: { settings: Pick<ProgressiveSettings, 'start' | 'end' | 'radial'>; set: (c: Partial<ProgressiveSettings>) => void }) {
-  const latest = useRef(settings)
+  const latest = useRef(settings), latestSet = useRef(set)
   latest.current = settings
+  latestSet.current = set
   useEffect(() => {
     let dragging: 'start' | 'end' | null = null
     const snapped = (point: [number, number], anchor: [number, number]): [number, number] => {
@@ -118,12 +119,12 @@ export function ProgressiveLine({ settings, set }: { settings: Pick<ProgressiveS
         const { start, end } = latest.current, near = (p: [number, number]) => { const [x, y] = view.toScreen(...p); return Math.hypot(x - screen[0], y - screen[1]) <= 10 }
         if (near(end)) dragging = 'end'
         else if (near(start)) dragging = 'start'
-        else { dragging = 'end'; set({ start: point, end: point }) }
+        else { dragging = 'end'; latestSet.current({ start: point, end: point }) }
       },
       move: (point, shift) => {
         if (!dragging) return
         const anchor = dragging === 'start' ? latest.current.end : latest.current.start
-        set({ [dragging]: shift ? snapped(point, anchor) : point })
+        latestSet.current({ [dragging]: shift ? snapped(point, anchor) : point })
       },
       up: () => { dragging = null },
       draw: c => {
