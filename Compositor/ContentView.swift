@@ -3,18 +3,18 @@ import UniformTypeIdentifiers
 
 struct ContentView: View {
     /// The Layers panel's width, remembered across launches.
-    @AppStorage("layersPanelWidth") private var layersPanelWidth = 252.0
+    @AppStorage("layersPanelWidth") private var layersPanelWidth = 261.0
     @AppStorage("navigator.visible") private var showsNavigator = false
     @Bindable var session: EditorSession
     var applicationDelegate: CompositorApplicationDelegate? = nil
     @Environment(\.openWindow) private var openWindow
     @State private var canvasFrame: CGRect = .zero
-    @State private var levelsPanel = FloatingPanelController(name: "levelsPanel")
-    @State private var adjustmentPanel = FloatingPanelController(name: "adjustmentPanel")
-    @State private var selectionAmountPanel = FloatingPanelController(name: "selectionAmountPanel")
-    @State private var colorRangePanel = FloatingPanelController(name: "colorRangePanel")
-    @State private var filterPanel = FloatingPanelController(name: "filterPanel")
-    @State private var effectsPanel = FloatingPanelController(name: "effectsPanel")
+    @State private var levelsPanel = FloatingPanelController(name: "levelsPanel", sharing: "editPanel")
+    @State private var adjustmentPanel = FloatingPanelController(name: "adjustmentPanel", sharing: "editPanel")
+    @State private var selectionAmountPanel = FloatingPanelController(name: "selectionAmountPanel", sharing: "editPanel")
+    @State private var colorRangePanel = FloatingPanelController(name: "colorRangePanel", sharing: "editPanel")
+    @State private var filterPanel = FloatingPanelController(name: "filterPanel", sharing: "editPanel")
+    @State private var effectsPanel = FloatingPanelController(name: "effectsPanel", sharing: "editPanel")
     @State private var isDropTargeted = false
     /// The window's width, so the tab strip can use the toolbar's free space.
     @State private var windowWidth: CGFloat = 1180
@@ -82,7 +82,7 @@ struct ContentView: View {
             if !session.canvasOnly { toolHeaders }
             HStack(spacing: 0) {
                 if !session.canvasOnly {
-                    toolRail
+                    ToolRail(session: session)
                     Divider()
                 }
                 VStack(spacing: 0) {
@@ -118,6 +118,32 @@ struct ContentView: View {
                             }
                         }
                         .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("editor")) } action: { canvasFrame = $0 }
+                    }
+                    if !session.canvasOnly,
+                       let gifLayerID = session.gifTimelineLayerID,
+                       session.activeLayerID == gifLayerID,
+                       session.document?.layers.contains(where: { $0.id == gifLayerID }) == true,
+                       !session.gifTimelineFrames.isEmpty {
+                        Divider()
+                        GIFTimeline(frames: session.gifTimelineFrames,
+                                    selectedFrameIndex: session.gifTimelineSelectedFrameIndex,
+                                    isPlaying: session.gifTimelineIsPlaying,
+                                    canPlay: session.gifTimelineCanPlay,
+                                    timing: session.gifTimelineTiming,
+                                    canEditFrames: session.gifTimelineCanEditFrames,
+                                    canEditTiming: session.gifTimelineCanEditTiming,
+                                    onSelectFrame: { index in
+                                        guard session.activeLayerID == gifLayerID else { return }
+                                        await session.selectGIFTimelineFrame(index)
+                                    },
+                                    onTogglePlayback: { session.toggleGIFPlayback(for: gifLayerID) },
+                                    onStopPlayback: { session.stopGIFPlayback(for: gifLayerID) },
+                                    onChangeTiming: { session.setGIFFrameTiming($0, for: gifLayerID) },
+                                    onDuplicateFrame: { await session.duplicateGIFFrame(at: $0, for: gifLayerID) },
+                                    onDeleteFrame: { await session.deleteGIFFrames(at: [$0], for: gifLayerID) })
+                            .id(gifLayerID)
+                            .frame(height: 110)
+                            .releasesFocusOnCommit(session)
                     }
                 }
                 if !session.canvasOnly {
@@ -307,40 +333,6 @@ struct ContentView: View {
         if let applicationDelegate { Task { await applicationDelegate.projects.newCanvas() } }
         else { session.clearProject() }
     }
-    private var toolRail: some View {
-        // Scrolls when the window is too short for every tool, rather than pushing the bars above and below away.
-        IndicatorlessScrollView {
-        VStack(spacing: 10) {
-            ForEach(NavigationTool.allCases.filter { $0 != .idle }, id: \.self) { tool in
-                Button { session.selectTool(tool) } label: {
-                    Group {
-                        if tool == .gradient { GradientToolIcon().frame(width: 18, height: 18) }
-                        else if tool == .cloneStamp { CloneStampToolIcon().frame(width: 18, height: 18) }
-                        else if tool == .lasso, session.lassoKind == .polygonal { PolygonalLassoToolIcon().frame(width: 18, height: 18) }
-                        else if tool == .wand, session.wandMode == .object { ObjectSelectionToolIcon().frame(width: 18, height: 18) }
-                        // The Marquee's icon follows its shape: a dashed circle in Ellipse mode.
-                        else { Image(systemName: tool == .marquee && session.marqueeKind == .ellipse ? "circle.dashed" : session.symbol(for: tool)).font(.system(size: 17)) }
-                    }
-                    .frame(width: 36, height: 36)
-                        .background(session.tool == tool ? Color.white.opacity(0.12) : .clear,
-                                    in: RoundedRectangle(cornerRadius: 7))
-                        .overlay {
-                            RoundedRectangle(cornerRadius: 7)
-                                .strokeBorder(session.tool == tool ? Color.white.opacity(0.14) : .clear)
-                        }
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain).help(tool.label).accessibilityLabel(tool.label)
-                .foregroundStyle(.primary)
-                .accessibilityAddTraits(session.tool == tool ? .isSelected : [])
-            }
-            ColorPaletteControls(session: session).padding(.top, 8)
-        }
-        .padding(.top, 16).padding(.bottom, 12)
-        .frame(width: 56)
-        }
-        .frame(width: 56)
-    }
     private var welcome: some View {
         NewCanvasSheet(session: session,
             onCreate: { session.createNewProject(width: $0, height: $1, resolution: $2, background: $3) },
@@ -352,6 +344,9 @@ struct ContentView: View {
                 Text(session.viewport.zoom, format: .percent.precision(.fractionLength(0...1)))
                     .frame(width: 62, alignment: .leading).accessibilityIdentifier("zoomStatus")
                 Text("\(document.width) × \(document.height) px").accessibilityIdentifier("canvasDimensions")
+                if let size = session.selectionSize {
+                    Text("Selection \(size.width) × \(size.height) px").accessibilityIdentifier("selectionDimensions")
+                }
                 Text("sRGB · Transparent")
             } else { Text("Ready when you are") }
             Spacer()
