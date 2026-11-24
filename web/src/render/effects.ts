@@ -1,5 +1,6 @@
 import { Raster } from '../model/raster'
 import type { LayerEffects } from '../model/types'
+import { call, kernelsLoaded, withBuffers } from '../kernels'
 
 const on = <T extends { enabled?: boolean } | undefined>(effect: T) => effect && effect.enabled !== false ? effect : undefined
 
@@ -16,23 +17,50 @@ function blur(source: Float32Array, width: number, height: number, sigma: number
   let sum = 0
   for (let k = -radius; k <= radius; k++) sum += weights[k + radius] = Math.exp(-k * k / (2 * sigma * sigma))
   for (let k = 0; k < weights.length; k++) weights[k] /= sum
+  if (kernelsLoaded() && source.length >= 16384) {
+    const out = new Float32Array(source.length)
+    const ok = withBuffers([{ data: source }, { data: out, out: true }, { data: weights }], ([s, d, w]) =>
+      call('web_effects_blur_f32', s, d, width, height, w, radius))
+    if (ok) return out
+  }
   const temp = new Float32Array(source.length), out = new Float32Array(source.length), taps = radius * 2 + 1
+  const rowLive = new Uint8Array(height)
   for (let y = 0; y < height; y++) {
     const row = y * width
-    for (let x = 0; x < width; x++) {
+    let minX = 0
+    while (minX < width && source[row + minX] === 0) minX++
+    if (minX === width) continue
+    let maxX = width - 1
+    while (maxX > minX && source[row + maxX] === 0) maxX--
+    rowLive[y] = 1
+    const xs = Math.max(0, minX - radius), xe = Math.min(width, maxX + radius + 1)
+    for (let x = xs; x < xe; x++) {
       let v = 0
       if (x >= radius && x + radius < width) for (let k = 0, i = row + x - radius; k < taps; k++, i++) v += source[i] * weights[k]
       else for (let k = -radius; k <= radius; k++) { const sx = x + k; v += source[row + (sx < 0 ? 0 : sx > width - 1 ? width - 1 : sx)] * weights[k + radius] }
       temp[row + x] = v
     }
   }
+  // Row-major tiled vertical pass (64 columns per tile): sequential reads in exact k = -radius..radius float64 order.
+  const acc = new Float64Array(64)
   for (let y = 0; y < height; y++) {
-    const inside = y >= radius && y + radius < height
-    for (let x = 0; x < width; x++) {
-      let v = 0
-      if (inside) for (let k = 0, i = (y - radius) * width + x; k < taps; k++, i += width) v += temp[i] * weights[k]
-      else for (let k = -radius; k <= radius; k++) { const sy = y + k; v += temp[(sy < 0 ? 0 : sy > height - 1 ? height - 1 : sy) * width + x] * weights[k + radius] }
-      out[y * width + x] = v
+    let any = false
+    for (let k = -radius; k <= radius; k++) {
+      const sy = y + k < 0 ? 0 : y + k >= height ? height - 1 : y + k
+      if (rowLive[sy]) { any = true; break }
+    }
+    if (!any) continue
+    const outRow = y * width
+    for (let x0 = 0; x0 < width; x0 += 64) {
+      const len = Math.min(64, width - x0)
+      acc.fill(0, 0, len)
+      for (let k = -radius; k <= radius; k++) {
+        const sy = y + k < 0 ? 0 : y + k >= height ? height - 1 : y + k
+        if (!rowLive[sy]) continue
+        const w = weights[k + radius], inRow = sy * width + x0
+        for (let j = 0; j < len; j++) acc[j] += temp[inRow + j] * w
+      }
+      for (let j = 0; j < len; j++) out[outRow + x0 + j] = acc[j]
     }
   }
   return out
@@ -40,13 +68,35 @@ function blur(source: Float32Array, width: number, height: number, sigma: number
 
 function shift(source: Float32Array, width: number, height: number, dx: number, dy: number) {
   const out = new Float32Array(source.length)
+  // Fractional offsets are identical for every pixel; hoist floor & weights outside the pixel loop.
+  const ox = Math.floor(-dx), oy = Math.floor(-dy), gx = -dx - ox, gy = -dy - oy
+  const omgX = 1 - gx, omgY = 1 - gy
   const at = (x: number, y: number) => x < 0 || y < 0 || x >= width || y >= height ? 0 : source[y * width + x]
-  for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
-    const sx = x - dx, sy = y - dy, x0 = Math.floor(sx), y0 = Math.floor(sy), gx = sx - x0, gy = sy - y0
-    if (x0 >= 0 && y0 >= 0 && x0 + 1 < width && y0 + 1 < height) {
-      const i = y0 * width + x0
-      out[y * width + x] = (source[i] * (1 - gx) + source[i + 1] * gx) * (1 - gy) + (source[i + width] * (1 - gx) + source[i + width + 1] * gx) * gy
-    } else out[y * width + x] = (at(x0, y0) * (1 - gx) + at(x0 + 1, y0) * gx) * (1 - gy) + (at(x0, y0 + 1) * (1 - gx) + at(x0 + 1, y0 + 1) * gx) * gy
+  const inX0 = Math.max(0, -ox), inX1 = Math.min(width, width - 1 - ox)
+  for (let y = 0; y < height; y++) {
+    const y0 = y + oy, outRow = y * width
+    if (y0 + 1 < 0 || y0 >= height) continue
+    if (y0 >= 0 && y0 + 1 < height) {
+      const r0 = y0 * width, r1 = r0 + width
+      let x = 0
+      for (; x < inX0; x++) {
+        const x0 = x + ox
+        out[outRow + x] = (at(x0, y0) * omgX + at(x0 + 1, y0) * gx) * omgY + (at(x0, y0 + 1) * omgX + at(x0 + 1, y0 + 1) * gx) * gy
+      }
+      for (; x < inX1; x++) {
+        const i = r0 + x + ox, j = r1 + x + ox
+        out[outRow + x] = (source[i] * omgX + source[i + 1] * gx) * omgY + (source[j] * omgX + source[j + 1] * gx) * gy
+      }
+      for (; x < width; x++) {
+        const x0 = x + ox
+        out[outRow + x] = (at(x0, y0) * omgX + at(x0 + 1, y0) * gx) * omgY + (at(x0, y0 + 1) * omgX + at(x0 + 1, y0 + 1) * gx) * gy
+      }
+    } else {
+      for (let x = 0; x < width; x++) {
+        const x0 = x + ox
+        out[outRow + x] = (at(x0, y0) * omgX + at(x0 + 1, y0) * gx) * omgY + (at(x0, y0 + 1) * omgX + at(x0 + 1, y0 + 1) * gx) * gy
+      }
+    }
   }
   return out
 }
@@ -209,10 +259,15 @@ export function renderEffects(image: Raster, mask: Raster | null, effects: Layer
   if (shadow) { const [dx, dy] = offset(shadow.angle, shadow.distance); shadowBuf = blur(shift(shape, width, height, dx, dy), width, height, shadow.blur / 2) }
   if (innerShadow) {
     const [dx, dy] = offset(innerShadow.angle, innerShadow.distance), b = blur(shift(shape, width, height, dx, dy), width, height, innerShadow.blur / 2)
-    innerBuf = b.map(v => Math.min(1, Math.max(0, 1 - v)))
+    for (let i = 0; i < total; i++) { const v = 1 - b[i]; b[i] = v <= 0 ? 0 : v >= 1 ? 1 : v }
+    innerBuf = b
   }
   if (outerGlow && outerGlow.size > 0) glowBuf = blur(shape, width, height, outerGlow.size / 2)
-  if (innerGlow && innerGlow.size > 0) { const b = blur(shape, width, height, innerGlow.size / 2); innerGlowBuf = b.map(v => Math.min(1, Math.max(0, 1 - v))) }
+  if (innerGlow && innerGlow.size > 0) {
+    const b = blur(shape, width, height, innerGlow.size / 2)
+    for (let i = 0; i < total; i++) { const v = 1 - b[i]; b[i] = v <= 0 ? 0 : v >= 1 ? 1 : v }
+    innerGlowBuf = b
+  }
   const out = new Raster(width, height, 4)
   const clamp = (v: number) => v <= 0 ? 0 : v >= 1 ? 1 : v
   for (let i = 0; i < total; i++) {

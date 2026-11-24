@@ -12,6 +12,17 @@ type Banded = { reach: (input: FilterInput, args: unknown[], y0: number, y1: num
 const banded: Partial<Record<keyof typeof kinds, Banded>> = {
   sharpen: { reach: (_, [, radius]) => Math.ceil(blurReach(radius as number)) + 1 },
   tonalContrast: { reach: (_, [, , , , radius]) => Math.ceil(blurReach(radius as number)) + 1 },
+  motionBlur: {
+    // Only band when the grid does not grow (mask or all four sides clamped to the canvas edge).
+    reach: (input, [angle, distance, sides]) => {
+      const s = sides as kinds.Sides | undefined
+      if (!input.isMask && !(s?.left && s?.right && s?.top && s?.bottom)) return null
+      const d = distance as number
+      if (!(d > 0)) return 0
+      const reach = Math.ceil(d / Math.sqrt(12) * 3)
+      return Math.ceil(reach * Math.abs(Math.sin((angle as number) * Math.PI / 180))) + 2
+    },
+  },
   reduceNoise: {
     // The search window and patch (at most 7 and 2), then Color's blur and the color edges it looks for, each up to 64 across.
     reach: (_, [, , color, scale = 1]) => 7 + 2 + 2 * Math.min(64, Math.max(1, Math.round((1.5 + (color as number) / 100 * 4 * 1) * ((scale as number) > 0 ? scale as number : 1)))) + 2,

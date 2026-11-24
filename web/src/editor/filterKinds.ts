@@ -1,6 +1,6 @@
 import { Raster } from '../model/raster'
-import { blurFloats, blurRaster, kernelInPlace } from '../model/pixels'
-import { call, floats, withBuffers } from '../kernels'
+import { blurFloats, blurRaster, kernelInPlace, boxesFor } from '../model/pixels'
+import { call, floats, kernelsLoaded, withBuffers } from '../kernels'
 import { apply, invert } from '../render/gl'
 import type { FilterInput, FilterOutput } from './filters'
 import type { Adjustment } from '../model/types'
@@ -74,25 +74,72 @@ export function progressiveBlur(input: FilterInput, from: number, to: number, st
   let [dx, dy] = [ex - sx, ey - sy]
   if (Math.hypot(dx, dy) < 1) [dx, dy] = [0, 1]
   const length = Math.hypot(dx, dy), radius = new Float32Array(width * height)
+  let minR = Infinity
   for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
     const px = x + 0.5 - sx, py = y + 0.5 - sy, t = radial ? Math.hypot(px, py) / length : (px * dx + py * dy) / (length * length)
-    radius[y * width + x] = from + (to - from) * clamp01(t)
+    const r = from + (to - from) * clamp01(t)
+    radius[y * width + x] = r
+    if (r < minR) minR = r
   }
   const levels = [0]
   for (let r = strongest; r >= 0.5 && levels.length < 7; r /= 2) levels.splice(1, 0, r)
-  const source = Float32Array.from(grid.pixels.data), out = like(grid.pixels, width, height)
-  let lower: Float32Array = source
-  for (let k = 1; k < levels.length; k++) {
-    const upper = blurFloats(source, width, height, 4, levels[k], clamp), low = levels[k - 1], span = levels[k] - low
+  const source = isFloat(grid.pixels) ? grid.pixels.data : new Float32Array(grid.pixels.data), out = like(grid.pixels, width, height)
+  const dst = out.data, float = isFloat(out)
+  // Skip blurring lower levels when no pixel has a radius below them.
+  let firstLevel = 1
+  while (firstLevel + 1 < levels.length && levels[firstLevel] < minR) firstLevel++
+  let lower: Float32Array = firstLevel > 1 ? blurFloats(source, width, height, 4, levels[firstLevel - 1], clamp) : source
+  for (let k = firstLevel; k < levels.length; k++) {
+    const upper = blurFloats(source, width, height, 4, levels[k], clamp), low = levels[k - 1], invSpan = 1 / (levels[k] - low), first = k === 1
     for (let i = 0; i < radius.length; i++) {
       const r = radius[i]
-      if (r > levels[k] || (k > 1 && r <= low)) continue
-      const w = (r - low) / span
-      for (let c = i * 4; c < i * 4 + 4; c++) out.data[c] = put(out, lower[c] + (upper[c] - lower[c]) * w)
+      if (r > levels[k] || (!first && r <= low)) continue
+      const w = (r - low) * invSpan, p = i * 4
+      if (float) {
+        dst[p] = lower[p] + (upper[p] - lower[p]) * w
+        dst[p + 1] = lower[p + 1] + (upper[p + 1] - lower[p + 1]) * w
+        dst[p + 2] = lower[p + 2] + (upper[p + 2] - lower[p + 2]) * w
+        dst[p + 3] = lower[p + 3] + (upper[p + 3] - lower[p + 3]) * w
+      } else {
+        dst[p] = lower[p] + (upper[p] - lower[p]) * w + 0.5
+        dst[p + 1] = lower[p + 1] + (upper[p + 1] - lower[p + 1]) * w + 0.5
+        dst[p + 2] = lower[p + 2] + (upper[p + 2] - lower[p + 2]) * w + 0.5
+        dst[p + 3] = lower[p + 3] + (upper[p + 3] - lower[p + 3]) * w + 0.5
+      }
     }
     lower = upper
   }
   return { pixels: out, origin: grid.origin }
+}
+
+// Coalesces the 1D directional Gaussian's bilinear footprints into unique integer (dx, dy, weight) taps, sorted row-major.
+function motionTaps(angle: number, distance: number) {
+  const sigma = distance / Math.sqrt(12), reach = Math.ceil(sigma * 3)
+  const dx = Math.cos(angle * Math.PI / 180), dy = -Math.sin(angle * Math.PI / 180)
+  const taps = Math.min(96, Math.max(1, reach)), step = reach / taps, count = taps * 2 + 1
+  const weights = new Float64Array(count)
+  let total = 0
+  for (let i = 0; i < count; i++) { const d = (i - taps) * step; total += weights[i] = Math.exp(-d * d / (2 * sigma * sigma)) }
+  const map = new Map<number, { x: number; y: number; w: number }>()
+  const add = (x: number, y: number, w: number) => {
+    if (w <= 0) return
+    const key = (y + 2048) * 4096 + (x + 2048)
+    const entry = map.get(key)
+    if (entry) entry.w += w
+    else map.set(key, { x, y, w })
+  }
+  for (let i = 0; i < count; i++) {
+    const d = (i - taps) * step, w = weights[i] / total, ox = dx * d, oy = dy * d
+    const x0 = Math.floor(ox), y0 = Math.floor(oy), fx = ox - x0, fy = oy - y0
+    add(x0, y0, (1 - fx) * (1 - fy) * w)
+    add(x0 + 1, y0, fx * (1 - fy) * w)
+    add(x0, y0 + 1, (1 - fx) * fy * w)
+    add(x0 + 1, y0 + 1, fx * fy * w)
+  }
+  const entries = [...map.values()].sort((a, b) => a.y - b.y || a.x - b.x)
+  const n = entries.length, tdx = new Int32Array(n), tdy = new Int32Array(n), twt = new Float32Array(n)
+  for (let i = 0; i < n; i++) { tdx[i] = entries[i].x; tdy[i] = entries[i].y; twt[i] = entries[i].w }
+  return { reach, tdx, tdy, twt, n }
 }
 
 export function motionBlur(input: FilterInput, angle: number, distance: number, sides: Sides = noSides): FilterOutput {
@@ -102,50 +149,65 @@ export function motionBlur(input: FilterInput, angle: number, distance: number, 
   const grid = margin ? paddedSides(input.pixels, margin, sides) : { pixels: input.pixels, origin: [0, 0] as [number, number] }
   const { width, height, data } = grid.pixels, clamped = input.isMask || anySide(sides)
   const out = like(grid.pixels, width, height), dst = out.data, float = isFloat(out)
-  const dx = Math.cos(angle * Math.PI / 180), dy = -Math.sin(angle * Math.PI / 180)
-  const taps = Math.min(96, Math.max(1, reach)), step = reach / taps, count = taps * 2 + 1
-  const weights = new Float64Array(count), ox = new Float64Array(count), oy = new Float64Array(count)
-  let total = 0
-  for (let i = 0; i < count; i++) {
-    const k = i - taps, d = k * step, w = Math.exp(-d * d / (2 * sigma * sigma))
-    weights[i] = w; total += w
-    ox[i] = dx * d; oy[i] = dy * d
+  // Axis-aligned motion blur (0°/180° horizontal or 90°/270° vertical) is a 1D Gaussian: 3-pass O(1) box blur in WASM SIMD.
+  const rad = angle * Math.PI / 180, dx0 = Math.cos(rad), dy0 = -Math.sin(rad)
+  const horiz = Math.abs(dy0) < 1e-6, vert = Math.abs(dx0) < 1e-6
+  if ((horiz || vert) && sigma >= 1.5 && kernelsLoaded()) {
+    const radii = boxesFor(sigma).map(s => (s - 1) >> 1).filter(r => r > 0)
+    if (radii.length) {
+      const axis = vert ? 1 : 0
+      if (float) {
+        dst.set(data)
+        const ok = withBuffers([{ data: dst, out: true }, { data: Int32Array.from(radii) }], ([p, r]) =>
+          call('web_blur_1d_f32', p, width, height, axis, r, radii.length, clamped ? 1 : 0))
+        if (ok) return { pixels: out, origin: grid.origin }
+      } else {
+        const ok = withBuffers([{ data }, { data: dst, out: true }, { data: Int32Array.from(radii) }], ([s, d, r]) =>
+          call('web_blur_1d_u8', s, d, width, height, axis, r, radii.length, clamped ? 1 : 0))
+        if (ok) return { pixels: out, origin: grid.origin }
+      }
+    }
   }
-  for (let i = 0; i < count; i++) weights[i] /= total
-  const wMax = width - 1, hMax = height - 1, rowStride = width * 4
+  const { tdx, tdy, twt, n } = motionTaps(angle, distance)
+  if (kernelsLoaded()) {
+    if (float) {
+      withBuffers([{ data }, { data: dst, out: true }, { data: tdx }, { data: tdy }, { data: twt }], ([s, d, x, y, w]) =>
+        call('web_motion_blur_f32', s, d, width, height, x, y, w, n, clamped ? 1 : 0))
+      return { pixels: out, origin: grid.origin }
+    }
+    const ok = withBuffers([{ data }, { data: dst, out: true }, { data: tdx }, { data: tdy }, { data: twt }], ([s, d, x, y, w]) =>
+      call('web_motion_blur_u8', s, d, width, height, x, y, w, n, clamped ? 1 : 0))
+    if (ok) return { pixels: out, origin: grid.origin }
+  }
+  let minDx = 0, maxDx = 0, minDy = 0, maxDy = 0
+  const rowStride = width * 4, off = new Int32Array(n)
+  for (let i = 0; i < n; i++) {
+    if (tdx[i] < minDx) minDx = tdx[i]; if (tdx[i] > maxDx) maxDx = tdx[i]
+    if (tdy[i] < minDy) minDy = tdy[i]; if (tdy[i] > maxDy) maxDy = tdy[i]
+    off[i] = tdy[i] * rowStride + tdx[i] * 4
+  }
+  const xMin = Math.max(0, -minDx), xMax = Math.min(width, width - maxDx), yMin = Math.max(0, -minDy), yMax = Math.min(height, height - maxDy)
   for (let y = 0; y < height; y++) {
-    const outRow = y * rowStride
+    const outRow = y * rowStride, rowIn = y >= yMin && y < yMax
     for (let x = 0; x < width; x++) {
       let r = 0, g = 0, b = 0, a = 0
-      for (let i = 0; i < count; i++) {
-        let sx = x + ox[i], sy = y + oy[i]
-        if (clamped) {
-          if (sx < 0) sx = 0; else if (sx > wMax) sx = wMax
-          if (sy < 0) sy = 0; else if (sy > hMax) sy = hMax
+      const p = outRow + x * 4
+      if (rowIn && x >= xMin && x < xMax) {
+        for (let i = 0; i < n; i++) {
+          const q = p + off[i], w = twt[i]
+          r += data[q] * w; g += data[q + 1] * w; b += data[q + 2] * w; a += data[q + 3] * w
         }
-        const x0 = Math.floor(sx), y0 = Math.floor(sy), fx = sx - x0, fy = sy - y0
-        const w = weights[i]
-        if (x0 >= 0 && y0 >= 0 && x0 < wMax && y0 < hMax) {
-          const p00 = y0 * rowStride + x0 * 4, p10 = p00 + 4, p01 = p00 + rowStride, p11 = p01 + 4
-          const w00 = (1 - fx) * (1 - fy) * w, w10 = fx * (1 - fy) * w, w01 = (1 - fx) * fy * w, w11 = fx * fy * w
-          r += data[p00] * w00 + data[p10] * w10 + data[p01] * w01 + data[p11] * w11
-          g += data[p00 + 1] * w00 + data[p10 + 1] * w10 + data[p01 + 1] * w01 + data[p11 + 1] * w11
-          b += data[p00 + 2] * w00 + data[p10 + 2] * w10 + data[p01 + 2] * w01 + data[p11 + 2] * w11
-          a += data[p00 + 3] * w00 + data[p10 + 3] * w10 + data[p01 + 3] * w01 + data[p11 + 3] * w11
-        } else {
-          const x1 = x0 + 1, y1 = y0 + 1
-          const i00 = x0 >= 0 && y0 >= 0 && x0 < width && y0 < height ? y0 * rowStride + x0 * 4 : -1
-          const i10 = x1 >= 0 && y0 >= 0 && x1 < width && y0 < height ? y0 * rowStride + x1 * 4 : -1
-          const i01 = x0 >= 0 && y1 >= 0 && x0 < width && y1 < height ? y1 * rowStride + x0 * 4 : -1
-          const i11 = x1 >= 0 && y1 >= 0 && x1 < width && y1 < height ? y1 * rowStride + x1 * 4 : -1
-          const w00 = (1 - fx) * (1 - fy) * w, w10 = fx * (1 - fy) * w, w01 = (1 - fx) * fy * w, w11 = fx * fy * w
-          if (i00 >= 0) { r += data[i00] * w00; g += data[i00 + 1] * w00; b += data[i00 + 2] * w00; a += data[i00 + 3] * w00 }
-          if (i10 >= 0) { r += data[i10] * w10; g += data[i10 + 1] * w10; b += data[i10 + 2] * w10; a += data[i10 + 3] * w10 }
-          if (i01 >= 0) { r += data[i01] * w01; g += data[i01 + 1] * w01; b += data[i01 + 2] * w01; a += data[i01 + 3] * w01 }
-          if (i11 >= 0) { r += data[i11] * w11; g += data[i11 + 1] * w11; b += data[i11 + 2] * w11; a += data[i11 + 3] * w11 }
+      } else {
+        for (let i = 0; i < n; i++) {
+          let sx = x + tdx[i], sy = y + tdy[i]
+          if (clamped) {
+            if (sx < 0) sx = 0; else if (sx >= width) sx = width - 1
+            if (sy < 0) sy = 0; else if (sy >= height) sy = height - 1
+          } else if (sx < 0 || sx >= width || sy < 0 || sy >= height) continue
+          const q = sy * rowStride + sx * 4, w = twt[i]
+          r += data[q] * w; g += data[q + 1] * w; b += data[q + 2] * w; a += data[q + 3] * w
         }
       }
-      const p = outRow + x * 4
       if (float) { dst[p] = r; dst[p + 1] = g; dst[p + 2] = b; dst[p + 3] = a }
       else {
         dst[p] = r <= 0 ? 0 : r >= 255 ? 255 : (r + 0.5) | 0
@@ -338,13 +400,22 @@ function glyphMaps(characters: string, textSize: number) {
 }
 
 function resampleArea(source: Raster, width: number, height: number) {
-  const out = new Raster(width, height, 4), fx = source.width / width, fy = source.height / height
-  for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
-    const sx0 = Math.floor(x * fx), sx1 = Math.min(source.width, Math.ceil((x + 1) * fx)), sy0 = Math.floor(y * fy), sy1 = Math.min(source.height, Math.ceil((y + 1) * fy))
-    const sum = [0, 0, 0, 0]
-    let n = 0
-    for (let sy = sy0; sy < sy1; sy++) for (let sx = sx0; sx < sx1; sx++) { const i = (sy * source.width + sx) * 4; for (let c = 0; c < 4; c++) sum[c] += source.data[i + c]; n++ }
-    out.data.set(sum.map(v => Math.round(v / Math.max(1, n))), (y * width + x) * 4)
+  const out = new Raster(width, height, 4), src = source.data, dst = out.data, sw = source.width, sh = source.height, fx = sw / width, fy = sh / height
+  for (let y = 0; y < height; y++) {
+    const sy0 = Math.floor(y * fy), sy1 = Math.min(sh, Math.ceil((y + 1) * fy)), outRow = y * width * 4
+    for (let x = 0; x < width; x++) {
+      const sx0 = Math.floor(x * fx), sx1 = Math.min(sw, Math.ceil((x + 1) * fx))
+      let r = 0, g = 0, b = 0, a = 0, n = 0
+      for (let sy = sy0; sy < sy1; sy++) {
+        const sRow = sy * sw
+        for (let sx = sx0; sx < sx1; sx++) {
+          const i = (sRow + sx) * 4
+          r += src[i]; g += src[i + 1]; b += src[i + 2]; a += src[i + 3]; n++
+        }
+      }
+      const inv = 1 / (n || 1), o = outRow + x * 4
+      dst[o] = (r * inv + 0.5) | 0; dst[o + 1] = (g * inv + 0.5) | 0; dst[o + 2] = (b * inv + 0.5) | 0; dst[o + 3] = (a * inv + 0.5) | 0
+    }
   }
   return out
 }
@@ -375,8 +446,16 @@ export function dither(input: FilterInput, s: DitherSettings): FilterOutput {
   })
   if (!ok) throw new Error('Dither ran out of memory.')
   if (block <= 1) return work
-  const out = new Raster(full.width, full.height, 4)
-  for (let y = 0; y < full.height; y++) for (let x = 0; x < full.width; x++) out.data.set(work.data.subarray(((Math.floor(y / block)) * work.width + Math.floor(x / block)) * 4, ((Math.floor(y / block)) * work.width + Math.floor(x / block)) * 4 + 4), (y * full.width + x) * 4)
+  const out = new Raster(full.width, full.height, 4), fw = full.width, fh = full.height, ww = work.width
+  const src32 = new Uint32Array(work.data.buffer, work.data.byteOffset, work.data.byteLength >> 2)
+  const dst32 = new Uint32Array(out.data.buffer, out.data.byteOffset, out.data.byteLength >> 2)
+  for (let y = 0; y < fh; y++) {
+    const sRow = ((y / block) | 0) * ww, dRow = y * fw
+    for (let sx = 0, dx = 0; sx < ww && dx < fw; sx++) {
+      const pixel = src32[sRow + sx], end = dx + block < fw ? dx + block : fw
+      for (; dx < end; dx++) dst32[dRow + dx] = pixel
+    }
+  }
   if (s.pixelShape === 'Dot') withBuffers([{ data: out.data, out: true }, { data: new Uint8Array(two ? dark : [0, 0, 0]) }], ([p, g]) => call('dither_dots', p, full.width, full.height, full.width * 4, block, g))
   return out
 }

@@ -10,6 +10,7 @@ import { brightestPoint, defaultVolumetric, type VolumetricSettings } from '../e
 import { describeDepth, estimateDepth } from '../ai/depth'
 import { describe as describeSubject, findSubject } from '../ai/subject'
 import { bytes } from '../ai/matte'
+import { kernelModule } from '../kernels'
 
 // Settings are remembered between openings, as the Mac app does; the light starts afresh each time on the layer's biggest bright area.
 let remembered: VolumetricSettings = defaultVolumetric
@@ -60,6 +61,8 @@ export function VolumetricLightDialog({ onExtractDepth }: { onExtractDepth?: (gr
     const filter = FilterSession.start()
     if (!filter) { close(null); return }
     const worker = new Worker(new URL('../editor/volumetricWorker.ts', import.meta.url), { type: 'module' })
+    const module = kernelModule()
+    if (module) worker.postMessage(module)
     const s: Session = { filter, worker, ready: false, hasDepth: false, waiting: new Map(), nextId: 1 }
     session.current = s
     worker.onmessage = (event: MessageEvent<{ id?: number; error?: string; width: number; height: number; data: Uint8Array }>) => {

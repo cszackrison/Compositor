@@ -1,5 +1,6 @@
 import { Raster } from '../model/raster'
 import { curveValue } from '../model/adjustments'
+import { call, kernelsLoaded, withBuffers } from '../kernels'
 
 // Filter › Lens Effects, after LensEffects.swift: what light does inside a camera's lens and the filters in front of it, each effect
 // made from the picture's own light, in linear light as optics work. Planes of floats (one per color) stand in for Core Image's
@@ -373,7 +374,17 @@ function convColumns(src: Float32Array, w: number, h: number, sigma: number, cla
 function blurGrid(src: Float32Array, w: number, h: number, sx: number, sy: number, clamp: boolean, spans?: Int32Array) {
   const qx = sx < 5 ? 1 : Math.floor(sx / 2.5), qy = sy < 5 ? 1 : Math.floor(sy / 2.5)
   const sw = qx > 1 ? Math.max(1, Math.round(w / qx)) : w, sh = qy > 1 ? Math.max(1, Math.round(h / qy)) : h, reduced = sw !== w || sh !== h
-  return { data: convColumns(convRows(reduced ? resample(src, w, h, sw, sh, spans) : src, sw, sh, sx * sw / w, clamp), sw, sh, sy * sh / h, clamp), sw, sh }
+  const input = reduced ? resample(src, w, h, sw, sh, spans) : src, esx = sx * sw / w, esy = sy * sh / h
+  if (kernelsLoaded() && sw * sh >= 4096) {
+    const gx = gaussKernel(esx), gy = gaussKernel(esy), kx = (gx.length - 1) >> 1, ky = (gy.length - 1) >> 1
+    if (kx > 0 || ky > 0) {
+      const dst = new Float32Array(sw * sh)
+      const ok = withBuffers([{ data: input }, { data: dst, out: true }, { data: gx }, { data: gy }], ([s, d, x, y]) =>
+        call('web_gauss_sep_f32', s, d, sw, sh, x, kx, y, ky, clamp ? 1 : 0))
+      if (ok) return { data: dst, sw, sh }
+    }
+  }
+  return { data: convColumns(convRows(input, sw, sh, esx, clamp), sw, sh, esy, clamp), sw, sh }
 }
 const blurRows = (src: Float32Array, w: number, h: number, sx: number, sy: number, clamp: boolean, spans?: Int32Array) => { const { data, sw, sh } = blurGrid(src, w, h, sx, sy, clamp, spans); return stretcher(data, sw, sh, w, h) }
 
@@ -656,7 +667,7 @@ function prism(f: Frame, s: LensSettings): Planes {
   for (const { layers, sigma, gx0, gy0, gw, gh, fade } of copies) {
     for (let gy = 0; gy < gh; gy++) lightenRow(ghost, gy * gw, gy, lin, w, layers)
     const rows = ghost.map(p => blurRows(p.subarray(0, gw * gh), gw, gh, sigma, sigma, true)), back = [0, 1, 2, 3].map(() => new Float32Array(gw)), whole = gx0 <= 0 && gx0 + gw >= w
-    ghost.forEach(g => g.fill(0))
+    ghost.forEach(g => g.fill(0, 0, gw * gh))
     for (let y = 0; y < h; y++) {
       const gy = Math.min(gh - 1, Math.max(0, y - gy0))
       rows.forEach((r, k) => r(gy, 1, back[k]))

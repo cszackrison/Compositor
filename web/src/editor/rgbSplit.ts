@@ -1,5 +1,6 @@
 import { Raster } from '../model/raster'
 import type { Sides } from './filterKinds'
+import { call, kernelsLoaded, withBuffers } from '../kernels'
 
 // Filter › RGB Split, as the Mac's MetalDispersion: each pixel gathers the image from many places along the split, each tinted by its
 // place in the spectrum (blue at one end, green in the middle, red at the other), so edges fan into a continuous rainbow. Blur smears
@@ -273,10 +274,28 @@ export function rgbSplit(pixels: Raster, s: RGBSplitSettings, sides?: Sides, ban
     out[o] = r / m + 0.5; out[o + 1] = g / m + 0.5; out[o + 2] = b / m + 0.5; out[o + 3] = a / m + 0.5
   }
   let input = source.input, iw = source.iw, ih = source.ih, origin = -sp, inputSides = source.sides
+  const useWasm = kernelsLoaded() && !capped && w * h >= 4096
+  const emptyF32 = new Float32Array(1), emptyI32 = new Int32Array(1)
   if (m > 1) {
     iw = w + pad * 2; ih = h + pad * 2
     const streaks = input = new Uint16Array(iw * ih * 4), row = iw * 4
-    sweep(iw, ih, -pad, source, { radial, cx, cy, reach, dx, dy, scale: blur }, 0.5, radial ? null : gridTaps(streak, dx * blur, dy * blur, source.iw * 4), null, (y, x0, x1, acc) => streaksOut(streaks, y * row + x0 * 4, acc, x1 - x0, m), spectrumSpans(s, w, h, pad, dx, dy))
+    const spans = spectrumSpans(s, w, h, pad, dx, dy)
+    const g = radial ? null : gridTaps(streak, dx * blur, dy * blur, source.iw * 4)
+    if (useWasm) {
+      const { levels: lv, w: lw } = levelMap(iw, ih)
+      withBuffers([
+        { data: source.input }, { data: streaks, out: true }, { data: lv },
+        { data: Float32Array.from(streak) }, { data: emptyF32 }, { data: emptyF32 },
+        { data: g ? g.offsets : emptyI32 }, { data: g ? Float32Array.from(g.weights) : emptyF32 }, { data: g ? Float32Array.from(g.pairs) : emptyF32 },
+        { data: spans },
+      ], ([pIn, pOut, pLv, pAlong, pTints, pTotals, pOff, pWt, pPairs, pSpans]) =>
+        call('web_rgb_split_sweep', pIn, source.iw, source.ih, -sp, source.sides, source.opaque ? 1 : 0,
+          pOut, iw, ih, -pad, 0, pLv, lw, m, pAlong, pTints, pTotals,
+          radial ? 1 : 0, cx, cy, reach, dx, dy, blur, 0.5,
+          g ? 1 : 0, pOff, pWt, pPairs, g ? g.step : 0, pSpans))
+    } else {
+      sweep(iw, ih, -pad, source, { radial, cx, cy, reach, dx, dy, scale: blur }, 0.5, g, null, (y, x0, x1, acc) => streaksOut(streaks, y * row + x0 * 4, acc, x1 - x0, m), spans)
+    }
     origin = -pad; inputSides = 15
   }
   // The spectrum's places along the split and their tints, for each jitter step: −1 is the blue end, 0 green, 1 red, so red lands
@@ -307,7 +326,25 @@ export function rgbSplit(pixels: Raster, s: RGBSplitSettings, sides?: Sides, ban
     }
     acc[ai] = cr; acc[ai + 1] = cg; acc[ai + 2] = cb; acc[ai + 3] = ar; acc[ai + 4] = ag; acc[ai + 5] = ab
   }
-  sweep(w, h, 0, taps, { radial, cx, cy, reach, dx, dy, scale: distance }, 1, radial ? null : gridTaps(along, dx * distance, dy * distance, iw * 4), slow, (y, x0, x1, acc, lv, li) => spectrumOut(data, (y * w + x0) * 4, acc, x1 - x0, lv, li + x0, totals))
+  const g2 = radial ? null : gridTaps(along, dx * distance, dy * distance, iw * 4)
+  if (useWasm) {
+    const { levels: lv, w: lw } = levelMap(w, h)
+    // Pack tints and totals as 4-float tuples so WASM SIMD loads each in one v128 load.
+    const tints4 = new Float32Array(levels * n * 4), totals4 = new Float32Array(levels * 4)
+    for (let k = 0; k < levels * n; k++) { tints4[k * 4] = tints[k * 3]; tints4[k * 4 + 1] = tints[k * 3 + 1]; tints4[k * 4 + 2] = tints[k * 3 + 2] }
+    for (let l = 0; l < levels; l++) { totals4[l * 4] = totals[l * 3]; totals4[l * 4 + 1] = totals[l * 3 + 1]; totals4[l * 4 + 2] = totals[l * 3 + 2] }
+    withBuffers([
+      { data: input }, { data, out: true }, { data: lv },
+      { data: Float32Array.from(along) }, { data: tints4 }, { data: totals4 },
+      { data: g2 ? g2.offsets : emptyI32 }, { data: g2 ? Float32Array.from(g2.weights) : emptyF32 }, { data: g2 ? Float32Array.from(g2.pairs) : emptyF32 },
+    ], ([pIn, pOut, pLv, pAlong, pTints, pTotals, pOff, pWt, pPairs]) =>
+      call('web_rgb_split_sweep', pIn, iw, ih, origin, inputSides, taps.opaque ? 1 : 0,
+        pOut, w, h, 0, 1, pLv, lw, n, pAlong, pTints, pTotals,
+        radial ? 1 : 0, cx, cy, reach, dx, dy, distance, 1.0,
+        g2 ? 1 : 0, pOff, pWt, pPairs, g2 ? g2.step : 0, 0))
+  } else {
+    sweep(w, h, 0, taps, { radial, cx, cy, reach, dx, dy, scale: distance }, 1, g2, slow, (y, x0, x1, acc, lv, li) => spectrumOut(data, (y * w + x0) * 4, acc, x1 - x0, lv, li + x0, totals))
+  }
   return out
 }
 

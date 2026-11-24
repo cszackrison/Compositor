@@ -13,6 +13,7 @@ export async function loadKernels(source?: BufferSource | WebAssembly.Module) {
 }
 
 export const kernelModule = () => compiled
+export const kernelsLoaded = () => !!exports
 
 function kernel() {
   if (!exports) throw new Error('Pixel kernels are not loaded')

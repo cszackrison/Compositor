@@ -1,6 +1,7 @@
 import { Raster } from '../model/raster'
 import { blurFloats } from '../model/pixels'
 import { resize } from '../ai/matte'
+import { call, kernelsLoaded, withBuffers } from '../kernels'
 
 // Filter › Volumetric Light (VolumetricLight.swift and MetalVolumetricLight.swift): a light placed on the image, its beams through
 // the air, and the haze it lights, thicker with distance and thinner in front of the subject, with the photo's own lights glowing into
@@ -46,9 +47,9 @@ function blur(data: Float32Array, width: number, height: number, sigma: number) 
 // matte.resize's enlargement, the same sums, each source row blended across once for all the rows of the output between it and the next.
 function enlarge(source: Float32Array, width: number, height: number, toWidth: number, toHeight: number) {
   if (width === toWidth && height === toHeight) return source
-  const out = new Float32Array(toWidth * toHeight), sx = width / toWidth, sy = height / toHeight, x0 = new Int32Array(toWidth), x1 = new Int32Array(toWidth), tx = new Float64Array(toWidth)
+  const out = new Float32Array(toWidth * toHeight), sx = width / toWidth, sy = height / toHeight, x0 = new Int32Array(toWidth), x1 = new Int32Array(toWidth), tx = new Float32Array(toWidth)
   for (let x = 0; x < toWidth; x++) { const fx = Math.min(width - 1, Math.max(0, (x + 0.5) * sx - 0.5)); x0[x] = Math.floor(fx); x1[x] = Math.min(width - 1, x0[x] + 1); tx[x] = fx - x0[x] }
-  const rows = [new Float64Array(toWidth), new Float64Array(toWidth)], held = [-1, -1]
+  const rows = [new Float32Array(toWidth), new Float32Array(toWidth)], held = [-1, -1]
   const row = (y: number, keep: number) => {
     let k = held[0] === y ? 0 : held[1] === y ? 1 : -1
     if (k >= 0) return rows[k]
@@ -66,6 +67,15 @@ function enlarge(source: Float32Array, width: number, height: number, toWidth: n
 // Each 8-bit value unpremultiplied by each alpha, value + alpha × 256, as the haze works it out per pixel.
 const unpremultiplied = Float64Array.from({ length: 65536 }, (_, i) => Math.max(0, (i & 255) / 255 / ((i >> 8) / 255)))
 const linear = (v: number) => v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4)
+// Interpolated table for exp(-x) over [0, 16]: max error < 1e-6, avoids millions of Math.exp calls per slider drag.
+const expSteps = 4096, expMax = 16, expScale = expSteps / expMax
+const expTable = Float32Array.from({ length: expSteps + 2 }, (_, i) => Math.exp(-i / expScale))
+const expNeg = (x: number) => {
+  if (x <= 0) return 1
+  if (x >= expMax) return 0
+  const u = x * expScale, i = u | 0
+  return expTable[i] + (expTable[i + 1] - expTable[i]) * (u - i)
+}
 const workSize = (width: number, height: number, limit: number) => { const k = Math.min(1, limit / Math.max(width, height)); return [Math.max(1, Math.round(width * k)), Math.max(1, Math.round(height * k))] }
 const unit = (bytes: Uint8Array) => { const out = new Float32Array(bytes.length); for (let i = 0; i < out.length; i++) out[i] = bytes[i] / 255; return out }
 const channel = (pixels: Raster, c: number) => { const out = new Float32Array(pixels.width * pixels.height); for (let i = 0; i < out.length; i++) out[i] = pixels.data[i * 4 + c] / 255; return out }
@@ -76,8 +86,6 @@ function axis(from: number, to: number) {
   for (let i = 0; i < to; i++) { const f = Math.min(from - 1, Math.max(0, (i + 0.5) * from / to - 0.5)); lo[i] = Math.floor(f); hi[i] = Math.min(from - 1, lo[i] + 1); t[i] = f - lo[i] }
   return { lo, hi, t }
 }
-const bilerp = (p: Float32Array, a: number, b: number, c: number, d: number, tx: number, ty: number) => (p[a] * (1 - tx) + p[b] * tx) * (1 - ty) + (p[c] * (1 - tx) + p[d] * tx) * ty
-const at = (p: Float32Array, direct: boolean, a: number, b: number, c: number, d: number, tx: number, ty: number) => direct ? p[a] : bilerp(p, a, b, c, d, tx, ty)
 
 // `pixels` (premultiplied RGBA) with the light at `center`, in its pixels (rows down). `depth`: width × height, 1 nearest and 0
 // farthest, as the Mac's DepthMap (null guesses from where each pixel sits, as the Mac does without its model); `subject`: 0–255 over
@@ -94,28 +102,62 @@ export function volumetricLight(pixels: Raster, depth: Float32Array | null, subj
   const sx = axis(sw, width), sy = axis(sh, height), bx = beams && axis(beams.width, width), by = beams && axis(beams.height, height)
   // A scene worked out at the photo's size is read straight, as the lookups would land on its pixels.
   const out = new Raster(width, height, 4), dst = out.data, direct = sw === width && sh === height, { near, glows, ambient } = scene, depthAt = composed?.composed
-  const fogs = [0, 1].map(r => 1 - Math.exp(-3 * haze * (0.12 + 0.88 * r))), radius = side * 0.35
+  const [g0, g1, g2] = glows, [a0, a1, a2] = ambient, [t0, t1, t2] = tint
+  const fog0 = 1 - Math.exp(-3 * haze * 0.12), fog1 = 1 - Math.exp(-3 * haze), invRadius = 1 / (side * 0.35), invSpan = 1 / (end - start)
+  const beamData = beams?.data, beamW = beams?.width ?? 0, hasBeams = !!(beams && bx && by && strength > 0)
+  const k0 = (1 + (t0 - 1) * 0.6) * 0.9, k1 = (1 + (t1 - 1) * 0.6) * 0.9, k2 = (1 + (t2 - 1) * 0.6) * 0.9
+  const s0 = t0 * strength * 0.5, s1 = t1 * strength * 0.5, s2 = t2 * strength * 0.5
+  const hazeBloom = haze * 1.6, fogCoeff = 3 * haze, c0 = center[0], c1 = center[1]
   for (let y = 0, i = 0; y < height; y++) {
-    const down = (y + 0.5) / height, r0 = sy.lo[y] * sw, r1 = sy.hi[y] * sw, ty = sy.t[y], dy = y + 0.5 - center[1]
-    const q0 = by ? by.lo[y] * beams!.width : 0, q1 = by ? by.hi[y] * beams!.width : 0, bty = by ? by.t[y] : 0
+    const down = (y + 0.5) / height, r0 = sy.lo[y] * sw, r1 = sy.hi[y] * sw, ty = sy.t[y], dy = y + 0.5 - c1, dy2 = dy * dy
+    const q0 = by ? by.lo[y] * beamW : 0, q1 = by ? by.hi[y] * beamW : 0, bty = by ? by.t[y] : 0
+    const guessBase = 1 - smoothstep(0.45, 1.05, down)
     for (let x = 0; x < width; x++, i++) {
       const o = i * 4, alpha = src[o + 3]
       if (alpha === 0) { dst[o] = src[o]; dst[o + 1] = src[o + 1]; dst[o + 2] = src[o + 2]; continue }
-      const ia = direct ? i : r0 + sx.lo[x], ib = r0 + sx.hi[x], ic = r1 + sx.lo[x], id = r1 + sx.hi[x], tx = sx.t[x]
-      const front = clamp01(at(near, direct, ia, ib, ic, id, tx, ty))
-      const beam = beams && bx ? bilerp(beams.data, q0 + bx.lo[x], q0 + bx.hi[x], q1 + bx.lo[x], q1 + bx.hi[x], bx.t[x], bty) : 0
-      const far = depthAt ? 1 - clamp01(at(depthAt, direct, ia, ib, ic, id, tx, ty)) : (1 - smoothstep(0.45, 1.05, down)) * (1 - 0.8 * front)
-      const dx = x + 0.5 - center[0], glow = Math.exp(-Math.sqrt(dx * dx + dy * dy) / radius)
-      // Clear nearer than where Distance starts the haze, building to full over a gentle stretch beyond; a little even in front.
-      const r = smoothstep(start, end, far), fog = r === 0 ? fogs[0] : r === 1 ? fogs[1] : 1 - Math.exp(-3 * haze * (0.12 + 0.88 * r)), shade = 1 - 0.92 * front
-      for (let c = 0; c < 3; c++) {
-        const t = tint[c], air = Math.max(0, at(ambient[c], direct, ia, ib, ic, id, tx, ty)), bloom = Math.max(0, at(glows[c], direct, ia, ib, ic, id, tx, ty))
-        const fogColor = air * (1 + (t - 1) * 0.6) * 0.9 + t * glow * 0.45, base = unpremultiplied[alpha << 8 | src[o + c]]
-        const veiled = base + (fogColor - base) * fog + bloom * haze * 1.6 * (0.3 + 0.7 * r)
-        // The beams screened over, rolling off into the light's color and white rather than clipping; the store rounds it, never negative.
-        const lit = 1 - (1 - Math.min(veiled, 1)) * Math.exp(-t * strength * beam * 0.5 * shade)
-        dst[o + c] = clamp01(lit) * alpha + 0.5
+      let front: number, far: number, air0: number, air1: number, air2: number, bl0: number, bl1: number, bl2: number
+      if (direct) {
+        const nf = near[i]; front = nf < 0 ? 0 : nf > 1 ? 1 : nf
+        if (depthAt) { const df = depthAt[i]; far = 1 - (df < 0 ? 0 : df > 1 ? 1 : df) } else far = guessBase * (1 - 0.8 * front)
+        air0 = a0[i]; if (air0 < 0) air0 = 0; air1 = a1[i]; if (air1 < 0) air1 = 0; air2 = a2[i]; if (air2 < 0) air2 = 0
+        bl0 = g0[i]; if (bl0 < 0) bl0 = 0; bl1 = g1[i]; if (bl1 < 0) bl1 = 0; bl2 = g2[i]; if (bl2 < 0) bl2 = 0
+      } else {
+        const ia = r0 + sx.lo[x], ib = r0 + sx.hi[x], ic = r1 + sx.lo[x], id = r1 + sx.hi[x], tx = sx.t[x], omt = 1 - tx, omy = 1 - ty
+        const nf = (near[ia] * omt + near[ib] * tx) * omy + (near[ic] * omt + near[id] * tx) * ty
+        front = nf < 0 ? 0 : nf > 1 ? 1 : nf
+        if (depthAt) {
+          const df = (depthAt[ia] * omt + depthAt[ib] * tx) * omy + (depthAt[ic] * omt + depthAt[id] * tx) * ty
+          far = 1 - (df < 0 ? 0 : df > 1 ? 1 : df)
+        } else far = guessBase * (1 - 0.8 * front)
+        air0 = (a0[ia] * omt + a0[ib] * tx) * omy + (a0[ic] * omt + a0[id] * tx) * ty; if (air0 < 0) air0 = 0
+        air1 = (a1[ia] * omt + a1[ib] * tx) * omy + (a1[ic] * omt + a1[id] * tx) * ty; if (air1 < 0) air1 = 0
+        air2 = (a2[ia] * omt + a2[ib] * tx) * omy + (a2[ic] * omt + a2[id] * tx) * ty; if (air2 < 0) air2 = 0
+        bl0 = (g0[ia] * omt + g0[ib] * tx) * omy + (g0[ic] * omt + g0[id] * tx) * ty; if (bl0 < 0) bl0 = 0
+        bl1 = (g1[ia] * omt + g1[ib] * tx) * omy + (g1[ic] * omt + g1[id] * tx) * ty; if (bl1 < 0) bl1 = 0
+        bl2 = (g2[ia] * omt + g2[ib] * tx) * omy + (g2[ic] * omt + g2[id] * tx) * ty; if (bl2 < 0) bl2 = 0
       }
+      const dx = x + 0.5 - c0, glow = expNeg(Math.sqrt(dx * dx + dy2) * invRadius) * 0.45
+      let u = (far - start) * invSpan; if (u < 0) u = 0; else if (u > 1) u = 1
+      const r = u * u * (3 - 2 * u)
+      const fog = r === 0 ? fog0 : r === 1 ? fog1 : 1 - expNeg(fogCoeff * (0.12 + 0.88 * r))
+      const bloomScale = hazeBloom * (0.3 + 0.7 * r), aShift = alpha << 8
+      let b0 = unpremultiplied[aShift | src[o]], b1 = unpremultiplied[aShift | src[o + 1]], b2 = unpremultiplied[aShift | src[o + 2]]
+      let v0 = b0 + (air0 * k0 + t0 * glow - b0) * fog + bl0 * bloomScale
+      let v1 = b1 + (air1 * k1 + t1 * glow - b1) * fog + bl1 * bloomScale
+      let v2 = b2 + (air2 * k2 + t2 * glow - b2) * fog + bl2 * bloomScale
+      if (hasBeams) {
+        const btx = bx!.t[x], bmx = 1 - btx, blo = bx!.lo[x], bhi = bx!.hi[x]
+        const beam = (beamData![q0 + blo] * bmx + beamData![q0 + bhi] * btx) * (1 - bty) + (beamData![q1 + blo] * bmx + beamData![q1 + bhi] * btx) * bty
+        if (beam > 0) {
+          const bs = beam * (1 - 0.92 * front)
+          v0 = 1 - (1 - (v0 < 1 ? v0 : 1)) * expNeg(s0 * bs)
+          v1 = 1 - (1 - (v1 < 1 ? v1 : 1)) * expNeg(s1 * bs)
+          v2 = 1 - (1 - (v2 < 1 ? v2 : 1)) * expNeg(s2 * bs)
+        }
+      }
+      dst[o] = (v0 <= 0 ? 0 : v0 >= 1 ? 1 : v0) * alpha + 0.5
+      dst[o + 1] = (v1 <= 0 ? 0 : v1 >= 1 ? 1 : v1) * alpha + 0.5
+      dst[o + 2] = (v2 <= 0 ? 0 : v2 >= 1 ? 1 : v2) * alpha + 0.5
       dst[o + 3] = alpha
     }
   }
@@ -157,7 +199,8 @@ function makeBeams(pixels: Raster, subject: Uint8Array | null, center: [number, 
   // The photo's brightest, lightly blurred so one hot pixel doesn't set it, to tell its openings by.
   let peak = 0
   const [pw, ph] = workSize(width, height, workSide)
-  for (const v of blur(resize(channel(pixels, 1), width, height, pw, ph), pw, ph, 2 * pw / width)) if (v > peak) peak = v
+  const peakBuf = blur(resize(channel(pixels, 1), width, height, pw, ph), pw, ph, 2 * pw / width)
+  for (let i = 0; i < peakBuf.length; i++) if (peakBuf[i] > peak) peak = peakBuf[i]
   const brightest = Math.max(0.05, peak), small = resize(luma, width, height, bw, bh), blocked = subject ? resize(unit(subject), width, height, bw, bh) : null
   const bside = side * scale, size = Math.max(1, bside * (0.02 + s.size / 100 * 0.4)), shafts = s.shafts / 100, lx = center[0] * scale, ly = center[1] * scale
   // Kept at float precision, in doubles, which the gathering below reads quicker.
@@ -177,6 +220,12 @@ function makeBeams(pixels: Raster, subject: Uint8Array | null, center: [number, 
   const within = (px: number, py: number) => px - 0.5 >= 0 && px - 0.5 < bw - 1 && py - 0.5 >= 0 && py - 0.5 < bh - 1
   let weights = 0
   for (let k = 0, w = 1; k < samples; k++, w *= 0.985) { weight[k] = w; weights += w }
+  if (kernelsLoaded() && bw * bh >= 4096) {
+    const emissionF = Float32Array.from(emission), weightF = Float32Array.from(weight)
+    withBuffers([{ data: emissionF }, { data: gathered, out: true }, { data: weightF }], ([e, g, w]) =>
+      call('web_volumetric_gather', e, g, w, bw, bh, lx, ly, length, samples))
+    return { data: blur(gathered, bw, bh, scale * 2), width: bw, height: bh }
+  }
   for (let y = 0, i = 0; y < bh; y++) for (let x = 0; x < bw; x++, i++) {
     // With no Length every sample lands on the pixel itself.
     if (length === 0) { gathered[i] = emission[i] * weights / samples * 4; continue }
@@ -198,7 +247,10 @@ function makeBeams(pixels: Raster, subject: Uint8Array | null, center: [number, 
 const bins = 65536
 function histogram(values: Float32Array) {
   const counts = new Uint32Array(bins)
-  for (const v of values) counts[Math.min(bins - 1, Math.floor(clamp01(v) * bins))]++
+  for (let i = 0; i < values.length; i++) {
+    const v = values[i], c = v < 0 ? 0 : v > 1 ? 1 : v, b = (c * bins) | 0
+    counts[b < bins ? b : bins - 1]++
+  }
   return counts
 }
 export function equalized(values: Float32Array, amount: number): Float32Array {

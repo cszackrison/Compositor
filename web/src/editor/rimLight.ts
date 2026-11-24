@@ -32,6 +32,14 @@ const fullStrength = 10, fullGlow = 4
 const decode = (v: number) => v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4)
 const encode = (v: number) => v <= 0.0031308 ? v * 12.92 : 1.055 * Math.pow(v, 1 / 2.4) - 0.055
 const lumaWeights = [0.2126, 0.7152, 0.0722], toLinear = Float32Array.from({ length: 256 }, (_, i) => decode(i / 255))
+let encodeTable: Float32Array | undefined
+const encodeOf = () => encodeTable ??= Float32Array.from({ length: 65537 }, (_, i) => encode(i / 65536) * 255)
+const expSteps = 4096, expMax = 16, expScale = expSteps / expMax
+const expTable = Float32Array.from({ length: expSteps + 2 }, (_, i) => Math.exp(-i / expScale))
+const expNeg = (x: number) => { if (x <= 0) return 1; if (x >= expMax) return 0; const u = x * expScale, i = u | 0; return expTable[i] + (expTable[i + 1] - expTable[i]) * (u - i) }
+const powSteps = 4096
+const pow16Table = Float32Array.from({ length: powSteps + 2 }, (_, i) => Math.pow(Math.min(1, i / powSteps), 1.6))
+const pow16 = (x: number) => { if (x <= 0) return 0; if (x >= 1) return 1; const u = x * powSteps, i = u | 0; return pow16Table[i] + (pow16Table[i + 1] - pow16Table[i]) * (u - i) }
 // Each 8-bit value unpremultiplied by each alpha, value + alpha × 256.
 const straight = Uint8Array.from({ length: 65536 }, (_, i) => i >> 8 ? Math.min(255, Math.round((i & 255) * 255 / (i >> 8))) : 0)
 const smoothstep = (e0: number, e1: number, x: number) => { const t = Math.min(1, Math.max(0, (x - e0) / (e1 - e0))); return t * t * (3 - 2 * t) }
@@ -59,17 +67,33 @@ function blur(data: Float32Array, w: number, h: number, sigma: number): Float32A
   if (f === 1) return blurFloats(data, w, h, 1, sigma, true)
   const sw = Math.ceil(w / f), sh = Math.ceil(h / f), small = new Float32Array(sw * sh)
   // Each cell summed a row at a time, left to right, at the float precision it's kept in.
-  for (let y = 0; y < h; y++) for (let X = 0, row = y * w, to = ((y / f) | 0) * sw; X < sw; X++) {
-    let sum = small[to + X]
-    for (let x = X * f, end = Math.min(w, x + f); x < end; x++) sum = Math.fround(sum + data[row + x])
-    small[to + X] = sum
+  if (f === 2) {
+    const evenW = w & ~1, evenH = h & ~1
+    for (let Y = 0; Y < (evenH >> 1); Y++) {
+      const r0 = Y * 2 * w, r1 = r0 + w, dstRow = Y * sw
+      for (let X = 0, x = 0; x < evenW; X++, x += 2) {
+        small[dstRow + X] = (data[r0 + x] + data[r0 + x + 1] + data[r1 + x] + data[r1 + x + 1]) * 0.25
+      }
+      if (w & 1) small[dstRow + sw - 1] = (data[r0 + w - 1] + data[r1 + w - 1]) * 0.5
+    }
+    if (h & 1) {
+      const r0 = (h - 1) * w, dstRow = (sh - 1) * sw
+      for (let X = 0, x = 0; x < evenW; X++, x += 2) small[dstRow + X] = (data[r0 + x] + data[r0 + x + 1]) * 0.5
+      if (w & 1) small[dstRow + sw - 1] = data[r0 + w - 1]
+    }
+  } else {
+    for (let y = 0; y < h; y++) for (let X = 0, row = y * w, to = ((y / f) | 0) * sw; X < sw; X++) {
+      let sum = small[to + X]
+      for (let x = X * f, end = Math.min(w, x + f); x < end; x++) sum = Math.fround(sum + data[row + x])
+      small[to + X] = sum
+    }
+    for (let Y = 0; Y < sh; Y++) for (let X = 0; X < sw; X++) small[Y * sw + X] /= (Math.min(w, (X + 1) * f) - X * f) * (Math.min(h, (Y + 1) * f) - Y * f)
   }
-  for (let Y = 0; Y < sh; Y++) for (let X = 0; X < sw; X++) small[Y * sw + X] /= (Math.min(w, (X + 1) * f) - X * f) * (Math.min(h, (Y + 1) * f) - Y * f)
   const blurred = blur(small, sw, sh, Math.sqrt(Math.max(0.09, sigma * sigma - f * f / 6)) / f), out = new Float32Array(w * h)
   const x0 = new Int32Array(w), x1 = new Int32Array(w), tx = new Float32Array(w)
   for (let x = 0; x < w; x++) { const fx = Math.min(sw - 1, Math.max(0, (x + 0.5) / f - 0.5)); x0[x] = Math.floor(fx); x1[x] = Math.min(sw - 1, x0[x] + 1); tx[x] = fx - x0[x] }
   // Each reduced row blended across once, for all the rows between it and the next.
-  const rows = [new Float64Array(w), new Float64Array(w)], held = [-1, -1]
+  const rows = [new Float32Array(w), new Float32Array(w)], held = [-1, -1]
   const across = (r: number, keep: number) => {
     let k = held[0] === r ? 0 : held[1] === r ? 1 : -1
     if (k >= 0) return rows[k]
@@ -107,7 +131,6 @@ export function rimLight(pixels: Raster, settings: RimLightSettings, subject?: R
   const fine = blurred(gray, 1), coarse = blurred(gray, Math.max(2, side / 400)), detail = new Float32Array(n)
   for (let i = 0; i < n; i++) detail[i] = fine[i] - coarse[i]
   const near = blurred(outline, side * 0.015)
-  const left = (x: number) => x > 0 ? -1 : 0, right = (x: number) => x < w - 1 ? 1 : 0, up = (y: number) => y > 0 ? -w : 0, down = (y: number) => y < h - 1 ? w : 0
 
   // Past the edge, loose strands: whatever near the subject stands out from the backdrop behind it (the photo outside the outline
   // spread in under it) by more than that backdrop varies on its own. Only a subject mask has photo outside it; alpha has none.
@@ -120,11 +143,18 @@ export function rimLight(pixels: Raster, settings: RimLightSettings, subject?: R
     }
     const openBlur = blurred(open, spread), around = weighted.map(p => blurred(p, spread)), aroundSquares = squares.map(p => blurred(p, spread))
     strand = new Float32Array(n)
+    const [a0, a1, a2] = albedo, [ar0, ar1, ar2] = around, [sq0, sq1, sq2] = aroundSquares
     for (let i = 0; i < n; i++) {
-      const o = openBlur[i] + 0.001
-      let differs = 0, varies = 0
-      for (let c = 0; c < 3; c++) { const behind = around[c][i] / o; differs = Math.max(differs, Math.abs(albedo[c][i] * alpha[i] - behind)); varies = Math.max(varies, Math.abs(aroundSquares[c][i] / o - behind * behind)) }
-      strand[i] = Math.min(1, Math.max(0, (differs - 0.03 - 2.5 * Math.sqrt(varies)) / 0.1)) * smoothstep(0, 0.1, near[i])
+      const nr = near[i]
+      if (nr <= 0) continue
+      const o = openBlur[i] + 0.001, al = alpha[i]
+      const b0 = ar0[i] / o, b1 = ar1[i] / o, b2 = ar2[i] / o
+      const d0 = Math.abs(a0[i] * al - b0), d1 = Math.abs(a1[i] * al - b1), d2 = Math.abs(a2[i] * al - b2)
+      const differs = d0 > d1 ? (d0 > d2 ? d0 : d2) : (d1 > d2 ? d1 : d2)
+      const v0 = Math.abs(sq0[i] / o - b0 * b0), v1 = Math.abs(sq1[i] / o - b1 * b1), v2 = Math.abs(sq2[i] / o - b2 * b2)
+      const varies = v0 > v1 ? (v0 > v2 ? v0 : v2) : (v1 > v2 ? v1 : v2)
+      const s0 = (differs - 0.03 - 2.5 * Math.sqrt(varies)) * 10
+      if (s0 > 0) strand[i] = (s0 >= 1 ? 1 : s0) * smoothstep(0, 0.1, nr)
     }
   }
 
@@ -139,32 +169,43 @@ export function rimLight(pixels: Raster, settings: RimLightSettings, subject?: R
     measured.set(reach, depthOf)
     const dl = Math.hypot(Math.cos(angle), Math.sin(angle), 0.2), dx = Math.cos(angle) / dl, dy = Math.sin(angle) / dl, dz = -0.2 / dl
     const strength = l.strength / 100 * fullStrength, color = l.color.map(c => decode(c / 255) * strength)
-    const heldFrom = Math.max(0, (choke - 0.3) / 0.7) * 0.95
-    for (let y = 0, i = 0; y < h; y++) for (let x = 0; x < w; x++, i++) {
-      const covered = coverage[i], b = depthOf[i]
-      if ((covered <= 0.002 && near[i] <= 0.002) || !alpha[i] || b >= 0.999 || (b <= 0.001 && !(strand && strand[i] > 0))) continue
-      // A hard edge blurred by `reach` is at half where the edge is, and its level tells the distance from it.
-      const depth = reach * Math.SQRT2 * inverseError(2 * Math.max(0.001, b) - 1)
-      const l0 = i + left(x), r0 = i + right(x), u0 = i + up(y), d0 = i + down(y)
-      let ix = depthOf[r0] - depthOf[l0], iy = depthOf[u0] - depthOf[d0]
-      const il = Math.hypot(ix, iy)
-      if (il > 1e-6) { ix /= il; iy /= il } else ix = iy = 0
-      const bx = (detail[r0] - detail[l0]) / 2, by = (detail[u0] - detail[d0]) / 2
-      const sx = -ix * 2.75 - bx * detailScale, sy = -iy * 2.75 - by * detailScale, sl = Math.hypot(sx, sy, 1)
-      const lit = Math.pow(Math.max(0, (sx * dx + sy * dy + dz) / sl), 1.6)
-      // At Choke 0 it tails off softly with no end; more holds it bright and ends it crisply at Width. Let go before twice Width.
-      const t = Math.max(depth, 0) / width, held = 1 - smoothstep(heldFrom, 1, t), tail = Math.exp(-2.2 * t)
-      const reaches = (choke < 0.3 ? tail + (held - tail) * choke / 0.3 : held) * (1 - smoothstep(1.5, 1.9, t))
-      // Strands and edges brighter than around them catch more of it.
-      const catches = Math.min(1.8, Math.max(0.3, 1 + detail[i] * 6)), inside = smoothstep(-1.5, 1.5, depth)
-      let k = lit * reaches * catches * covered * inside
-      if (strand && strand[i] > 0 && inside < 1) {
-        let ax = near[r0] - near[l0], ay = near[u0] - near[d0]
-        const al = Math.hypot(ax, ay)
-        if (al > 1e-6) { ax /= al; ay /= al } else ax = ay = 0
-        k += Math.pow(Math.max(0, (-ax * 2.75 * dx - ay * 2.75 * dy + dz) / Math.hypot(ax * 2.75, ay * 2.75, 1)), 1.6) * strand[i] * (1 - inside)
+    const heldFrom = Math.max(0, (choke - 0.3) / 0.7) * 0.95, invWidth = 1 / width, c0 = color[0], c1 = color[1], c2 = color[2]
+    const [a0, a1, a2] = albedo, [lt0, lt1, lt2] = light
+    for (let y = 0, i = 0; y < h; y++) {
+      const upOff = y > 0 ? -w : 0, downOff = y < h - 1 ? w : 0
+      for (let x = 0; x < w; x++, i++) {
+        const covered = coverage[i], b = depthOf[i], al = alpha[i]
+        if ((covered <= 0.002 && near[i] <= 0.002) || !al || b >= 0.999 || (b <= 0.001 && !(strand && strand[i] > 0))) continue
+        // A hard edge blurred by `reach` is at half where the edge is, and its level tells the distance from it.
+        const depth = reach * Math.SQRT2 * inverseError(2 * (b > 0.001 ? b : 0.001) - 1)
+        const l0 = i + (x > 0 ? -1 : 0), r0 = i + (x < w - 1 ? 1 : 0), u0 = i + upOff, d0 = i + downOff
+        let ix = depthOf[r0] - depthOf[l0], iy = depthOf[u0] - depthOf[d0]
+        const il = Math.sqrt(ix * ix + iy * iy)
+        if (il > 1e-6) { ix /= il; iy /= il } else ix = iy = 0
+        const bx = (detail[r0] - detail[l0]) * 0.5, by = (detail[u0] - detail[d0]) * 0.5
+        const sx = -ix * 2.75 - bx * detailScale, sy = -iy * 2.75 - by * detailScale, sl = Math.sqrt(sx * sx + sy * sy + 1)
+        const dot = (sx * dx + sy * dy + dz) / sl
+        const lit = dot > 0 ? pow16(dot) : 0
+        // At Choke 0 it tails off softly with no end; more holds it bright and ends it crisply at Width. Let go before twice Width.
+        const t = (depth > 0 ? depth : 0) * invWidth, held = 1 - smoothstep(heldFrom, 1, t), tail = expNeg(2.2 * t)
+        const reaches = (choke < 0.3 ? tail + (held - tail) * choke / 0.3 : held) * (1 - smoothstep(1.5, 1.9, t))
+        // Strands and edges brighter than around them catch more of it.
+        const det = 1 + detail[i] * 6, catches = det < 0.3 ? 0.3 : det > 1.8 ? 1.8 : det, inside = smoothstep(-1.5, 1.5, depth)
+        let k = lit * reaches * catches * covered * inside
+        if (strand && strand[i] > 0 && inside < 1) {
+          let ax = near[r0] - near[l0], ay = near[u0] - near[d0]
+          const len = Math.sqrt(ax * ax + ay * ay)
+          if (len > 1e-6) { ax /= len; ay /= len } else ax = ay = 0
+          const sdot = (-ax * 2.75 * dx - ay * 2.75 * dy + dz) / Math.sqrt(ax * ax * 7.5625 + ay * ay * 7.5625 + 1)
+          if (sdot > 0) k += pow16(sdot) * strand[i] * (1 - inside)
+        }
+        if (k > 0) {
+          const ka = k * al
+          lt0[i] += c0 * (a0[i] * 0.7 + 0.45) * ka
+          lt1[i] += c1 * (a1[i] * 0.7 + 0.45) * ka
+          lt2[i] += c2 * (a2[i] * 0.7 + 0.45) * ka
+        }
       }
-      if (k > 0) for (let c = 0; c < 3; c++) light[c][i] += color[c] * (albedo[c][i] * 0.7 + 0.45) * k * alpha[i]
     }
   }
 
@@ -182,11 +223,20 @@ export function rimLight(pixels: Raster, settings: RimLightSettings, subject?: R
 
   // The light over the photo: eased so a lot of it approaches 1 rather than passing it, then screened over, so a bright edge rolls off
   // into the light's color and white instead of clipping. Clear pixels stay clear.
-  const out = pixels.clone(), data = out.data
+  const out = pixels.clone(), data = out.data, enc = encodeOf(), [a0, a1, a2] = albedo, [lt0, lt1, lt2] = light
   for (let i = 0; i < n; i++) {
-    const a = alpha[i]
-    if (!a || (light[0][i] <= 0 && light[1][i] <= 0 && light[2][i] <= 0)) continue
-    for (let c = 0; c < 3; c++) data[i * 4 + c] = Math.round(encode(1 - (1 - Math.min(1, albedo[c][i])) * Math.exp(-Math.max(0, light[c][i]))) * a * 255)
+    const a = alpha[i], l0 = lt0[i], l1 = lt1[i], l2 = lt2[i]
+    if (!a || (l0 <= 0 && l1 <= 0 && l2 <= 0)) continue
+    const o = i * 4
+    const v0 = 1 - (1 - (a0[i] < 1 ? a0[i] : 1)) * expNeg(l0)
+    const v1 = 1 - (1 - (a1[i] < 1 ? a1[i] : 1)) * expNeg(l1)
+    const v2 = 1 - (1 - (a2[i] < 1 ? a2[i] : 1)) * expNeg(l2)
+    const k0 = v0 <= 0 ? 0 : v0 >= 1 ? 65536 : (v0 * 65536 + 0.5) | 0
+    const k1 = v1 <= 0 ? 0 : v1 >= 1 ? 65536 : (v1 * 65536 + 0.5) | 0
+    const k2 = v2 <= 0 ? 0 : v2 >= 1 ? 65536 : (v2 * 65536 + 0.5) | 0
+    data[o] = enc[k0] * a + 0.5
+    data[o + 1] = enc[k1] * a + 0.5
+    data[o + 2] = enc[k2] * a + 0.5
   }
   return out
 }

@@ -512,6 +512,8 @@ export class Compositor {
     if (this.effectsWorker === undefined) {
       try {
         this.effectsWorker = new Worker(new URL('./effectsWorker.ts', import.meta.url), { type: 'module' })
+        const module = kernelModule()
+        if (module) this.effectsWorker.postMessage(module)
         this.effectsWorker.onmessage = (event: MessageEvent<{ id: number; width: number; height: number; data: Uint8Array; inset: number }>) => this.effectsDone(event.data)
         this.effectsWorker.onerror = () => { this.effectsWorker = null; this.effectsJobs.clear() }
       } catch { this.effectsWorker = null }

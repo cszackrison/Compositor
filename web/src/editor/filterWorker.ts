@@ -73,13 +73,30 @@ self.onmessage = async (event: MessageEvent<Request | DeepRequest | WebAssembly.
 
 // Bilinear resampling to a new size (pixel centers mapped onto each other), for previews only.
 function resample(source: Raster, width: number, height: number) {
-  const out = new Raster(width, height, source.channels), c = source.channels, sx = source.width / width, sy = source.height / height
+  const out = new Raster(width, height, source.channels), c = source.channels, sw = source.width, sh = source.height, sx = sw / width, sy = sh / height
+  const src = source.data, dst = out.data
+  const x0 = new Int32Array(width), x1 = new Int32Array(width), tx = new Float32Array(width)
+  for (let x = 0; x < width; x++) {
+    const fx = Math.min(sw - 1, Math.max(0, (x + 0.5) * sx - 0.5)), ix = Math.floor(fx)
+    x0[x] = ix * c; x1[x] = Math.min(sw - 1, ix + 1) * c; tx[x] = fx - ix
+  }
   for (let y = 0; y < height; y++) {
-    const fy = Math.min(source.height - 1, Math.max(0, (y + 0.5) * sy - 0.5)), y0 = Math.floor(fy), y1 = Math.min(source.height - 1, y0 + 1), ty = fy - y0
-    for (let x = 0; x < width; x++) {
-      const fx = Math.min(source.width - 1, Math.max(0, (x + 0.5) * sx - 0.5)), x0 = Math.floor(fx), x1 = Math.min(source.width - 1, x0 + 1), tx = fx - x0
-      const a = (y0 * source.width + x0) * c, b = (y0 * source.width + x1) * c, d = (y1 * source.width + x0) * c, e = (y1 * source.width + x1) * c, o = (y * width + x) * c
-      for (let k = 0; k < c; k++) out.data[o + k] = Math.round((source.data[a + k] * (1 - tx) + source.data[b + k] * tx) * (1 - ty) + (source.data[d + k] * (1 - tx) + source.data[e + k] * tx) * ty)
+    const fy = Math.min(sh - 1, Math.max(0, (y + 0.5) * sy - 0.5)), y0 = Math.floor(fy), y1 = Math.min(sh - 1, y0 + 1), ty = fy - y0, omy = 1 - ty
+    const r0 = y0 * sw * c, r1 = y1 * sw * c, outRow = y * width * c
+    if (c === 4) {
+      for (let x = 0; x < width; x++) {
+        const t = tx[x], omt = 1 - t, w00 = omt * omy, w10 = t * omy, w01 = omt * ty, w11 = t * ty
+        const a = r0 + x0[x], b = r0 + x1[x], d = r1 + x0[x], e = r1 + x1[x], o = outRow + x * 4
+        dst[o] = (src[a] * w00 + src[b] * w10 + src[d] * w01 + src[e] * w11 + 0.5) | 0
+        dst[o + 1] = (src[a + 1] * w00 + src[b + 1] * w10 + src[d + 1] * w01 + src[e + 1] * w11 + 0.5) | 0
+        dst[o + 2] = (src[a + 2] * w00 + src[b + 2] * w10 + src[d + 2] * w01 + src[e + 2] * w11 + 0.5) | 0
+        dst[o + 3] = (src[a + 3] * w00 + src[b + 3] * w10 + src[d + 3] * w01 + src[e + 3] * w11 + 0.5) | 0
+      }
+    } else {
+      for (let x = 0; x < width; x++) {
+        const t = tx[x], omt = 1 - t, a = r0 + x0[x], b = r0 + x1[x], d = r1 + x0[x], e = r1 + x1[x], o = outRow + x * c
+        for (let k = 0; k < c; k++) dst[o + k] = ((src[a + k] * omt + src[b + k] * t) * omy + (src[d + k] * omt + src[e + k] * t) * ty + 0.5) | 0
+      }
     }
   }
   return out

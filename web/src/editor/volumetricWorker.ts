@@ -1,5 +1,6 @@
 import { Raster } from '../model/raster'
 import { resize } from '../ai/matte'
+import { loadKernels } from '../kernels'
 import { type VolumetricCache, type VolumetricSettings, depthPicture, volumetricLight } from './volumetricLight'
 
 // Volumetric Light off the main thread, for its panel: the layer, its depth and subject are sent once, and a copy at most
@@ -10,6 +11,7 @@ type Request = { kind: 'source'; width: number; height: number; data: Uint8Array
   | { kind: 'depth'; id: number; settings: VolumetricSettings }
 
 let full: Source | null = null, preview: Source | null = null
+let ready: Promise<void> | undefined
 
 // Premultiplied RGBA shrunk by averaging each output pixel's footprint, or enlarged bilinearly.
 function resized(raster: Raster, width: number, height: number): Raster {
@@ -23,9 +25,11 @@ function resized(raster: Raster, width: number, height: number): Raster {
   return out
 }
 
-self.onmessage = (event: MessageEvent<Request>) => {
+self.onmessage = async (event: MessageEvent<Request | WebAssembly.Module>) => {
+  if (event.data instanceof WebAssembly.Module) { ready = loadKernels(event.data); return }
   const m = event.data
   try {
+    if (ready) await ready
     if (m.kind === 'source') {
       const pixels = new Raster(m.width, m.height, 4, m.data), k = Math.min(1, m.previewSide / Math.max(m.width, m.height))
       full = { pixels, depth: m.depth, subject: m.subject, cache: {} }

@@ -1,10 +1,16 @@
 import { renderEffects } from './effects'
 import { Raster } from '../model/raster'
+import { loadKernels } from '../kernels'
 
 // Layer effects worked out off the main thread, so a brush stroke on a layer with a drop shadow never stalls while it's redone.
 type Pixels = { width: number; height: number; channels: 1 | 4; data: Uint8Array }
+type Request = { id: number; image: Pixels; mask: Pixels | null; effects: Parameters<typeof renderEffects>[2] }
 
-self.onmessage = (event: MessageEvent<{ id: number; image: Pixels; mask: Pixels | null; effects: Parameters<typeof renderEffects>[2] }>) => {
+let ready: Promise<void> | undefined
+
+self.onmessage = async (event: MessageEvent<Request | WebAssembly.Module>) => {
+  if (event.data instanceof WebAssembly.Module) { ready = loadKernels(event.data); return }
+  if (ready) await ready
   const { id, image, mask, effects } = event.data
   const raster = (p: Pixels) => new Raster(p.width, p.height, p.channels, p.data)
   const { raster: out, inset } = renderEffects(raster(image), mask ? raster(mask) : null, effects)

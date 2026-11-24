@@ -1,14 +1,15 @@
 import { Raster } from './raster'
-import { call, withBuffers, floats } from '../kernels'
+import { call, withBuffers, floats, kernelsLoaded } from '../kernels'
 
 // Box sizes whose three passes approximate a Gaussian of `sigma` (Kovesi).
-function boxes(sigma: number, n = 3) {
+export function boxesFor(sigma: number, n = 3) {
   const ideal = Math.sqrt(12 * sigma * sigma / n + 1)
   let lower = Math.floor(ideal); if (lower % 2 === 0) lower--
   const upper = lower + 2
   const m = Math.round((12 * sigma * sigma - n * lower * lower - 4 * n * lower - 3 * n) / (-4 * lower - 4))
   return Array.from({ length: n }, (_, i) => i < m ? lower : upper)
 }
+const boxes = boxesFor
 
 // How far blurFloats reaches from a pixel: its boxes' radii together.
 export const blurReach = (sigma: number) => sigma < 0.3 ? 0 : boxes(sigma).reduce((sum, size) => sum + (size - 1) / 2, 0)
@@ -80,6 +81,12 @@ export function blurFloats(data: Float32Array, width: number, height: number, ch
   // A one-pixel box leaves the image as it is, so it's skipped.
   const radii = boxes(sigma).map(size => (size - 1) / 2).filter(radius => radius > 0)
   if (!radii.length) return overwrite ? data : data.slice()
+  if (kernelsLoaded() && (channels === 1 || channels === 4) && data.length >= 16384) {
+    const out = overwrite ? data : data.slice()
+    const ok = withBuffers([{ data: out, out: true }, { data: Int32Array.from(radii) }], ([p, r]) =>
+      call('web_blur_floats', p, width, height, channels, r, radii.length, clamp ? 1 : 0))
+    if (ok) return out
+  }
   const a = overwrite ? data : new Float32Array(data.length), b = new Float32Array(data.length), sums = new Float64Array(width * channels)
   let from = data
   for (const radius of radii) {
@@ -92,6 +99,15 @@ export function blurFloats(data: Float32Array, width: number, height: number, ch
 
 // A Gaussian blur of premultiplied pixels; `clamp` extends the edge pixels, otherwise outside is transparent.
 export function blurRaster(raster: Raster, sigma: number, clamp = false): Raster {
+  if (sigma < 0.3) return raster.clone()
+  const radii = boxes(sigma).map(size => (size - 1) / 2).filter(radius => radius > 0)
+  if (!radii.length) return raster.clone()
+  if (kernelsLoaded() && (raster.channels === 1 || raster.channels === 4) && raster.data.length >= 16384) {
+    const out = new Raster(raster.width, raster.height, raster.channels)
+    const ok = withBuffers([{ data: raster.data }, { data: out.data, out: true }, { data: Int32Array.from(radii) }], ([s, d, r]) =>
+      call('web_blur_u8', s, d, raster.width, raster.height, raster.channels, r, radii.length, clamp ? 1 : 0))
+    if (ok) return out
+  }
   const blurred = blurFloats(new Float32Array(raster.data), raster.width, raster.height, raster.channels, sigma, clamp, true)
   const out = new Raster(raster.width, raster.height, raster.channels), data = out.data
   // A float's half added and the fraction dropped by the store rounds it as Math.round does (a blur never dips to −½), and quicker.

@@ -449,15 +449,36 @@ function warp(source: Raster, g: GeometrySettings): Raster {
   // Each output pixel's place in the unit square through the inverse of the corners' map, then in the source.
   const [a, b, c, d, e, f, gg, hh] = squareTo(corners(g, w, h))
   const A = e - f * hh, B = f * gg - d, C = d * hh - e * gg, D = c * hh - b, E = a - c * gg, F = b * gg - a * hh, G = b * f - c * e, H = c * d - a * f, I = a * e - b * d
-  const out = new Raster(w, h, 4), src = source.data, dst = out.data
-  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
-    const px = x + 0.5, py = y + 0.5, z = C * px + F * py + I
-    const u = (A * px + D * py + G) / z * w - 0.5, v = (B * px + E * py + H) / z * h - 0.5
-    if (!(u > -1 && v > -1 && u < w && v < h)) continue
-    const u0 = Math.floor(u), v0 = Math.floor(v), tu = u - u0, tv = v - v0, o = (y * w + x) * 4
-    for (let k = 0; k < 4; k++) {
-      const at = (xx: number, yy: number) => xx < 0 || yy < 0 || xx >= w || yy >= h ? 0 : src[(yy * w + xx) * 4 + k]
-      dst[o + k] = Math.round((at(u0, v0) * (1 - tu) + at(u0 + 1, v0) * tu) * (1 - tv) + (at(u0, v0 + 1) * (1 - tu) + at(u0 + 1, v0 + 1) * tu) * tv)
+  const out = new Raster(w, h, 4), src = source.data, dst = out.data, rowStride = w * 4, wMax = w - 1, hMax = h - 1
+  for (let y = 0; y < h; y++) {
+    const py = y + 0.5, dyA = D * py + G, dyB = E * py + H, dyC = F * py + I, outRow = y * rowStride
+    for (let x = 0; x < w; x++) {
+      const px = x + 0.5, invZ = 1 / (C * px + dyC)
+      const u = (A * px + dyA) * invZ * w - 0.5, v = (B * px + dyB) * invZ * h - 0.5
+      if (!(u > -1 && v > -1 && u < w && v < h)) continue
+      const u0 = Math.floor(u), v0 = Math.floor(v), tu = u - u0, tv = v - v0, o = outRow + x * 4
+      const w00 = (1 - tu) * (1 - tv), w10 = tu * (1 - tv), w01 = (1 - tu) * tv, w11 = tu * tv
+      if (u0 >= 0 && v0 >= 0 && u0 < wMax && v0 < hMax) {
+        const p00 = v0 * rowStride + u0 * 4, p10 = p00 + 4, p01 = p00 + rowStride, p11 = p01 + 4
+        dst[o] = (src[p00] * w00 + src[p10] * w10 + src[p01] * w01 + src[p11] * w11 + 0.5) | 0
+        dst[o + 1] = (src[p00 + 1] * w00 + src[p10 + 1] * w10 + src[p01 + 1] * w01 + src[p11 + 1] * w11 + 0.5) | 0
+        dst[o + 2] = (src[p00 + 2] * w00 + src[p10 + 2] * w10 + src[p01 + 2] * w01 + src[p11 + 2] * w11 + 0.5) | 0
+        dst[o + 3] = (src[p00 + 3] * w00 + src[p10 + 3] * w10 + src[p01 + 3] * w01 + src[p11 + 3] * w11 + 0.5) | 0
+      } else {
+        const u1 = u0 + 1, v1 = v0 + 1
+        const i00 = u0 >= 0 && v0 >= 0 && u0 < w && v0 < h ? v0 * rowStride + u0 * 4 : -1
+        const i10 = u1 >= 0 && v0 >= 0 && u1 < w && v0 < h ? v0 * rowStride + u1 * 4 : -1
+        const i01 = u0 >= 0 && v1 >= 0 && u0 < w && v1 < h ? v1 * rowStride + u0 * 4 : -1
+        const i11 = u1 >= 0 && v1 >= 0 && u1 < w && v1 < h ? v1 * rowStride + u1 * 4 : -1
+        for (let k = 0; k < 4; k++) {
+          let sum = 0
+          if (i00 >= 0) sum += src[i00 + k] * w00
+          if (i10 >= 0) sum += src[i10 + k] * w10
+          if (i01 >= 0) sum += src[i01 + k] * w01
+          if (i11 >= 0) sum += src[i11 + k] * w11
+          dst[o + k] = (sum + 0.5) | 0
+        }
+      }
     }
   }
   return g.constrainCrop ? constrain(out) : out
@@ -467,15 +488,39 @@ function warp(source: Raster, g: GeometrySettings): Raster {
 function constrain(image: Raster): Raster {
   const { width: w, height: h, data } = image
   let x0 = w, y0 = h, x1 = 0, y1 = 0
-  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) if (data[(y * w + x) * 4 + 3]) { x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x + 1); y1 = Math.max(y1, y + 1) }
+  for (let y = 0; y < h; y++) {
+    const row = y * w
+    for (let x = 0; x < w; x++) if (data[(row + x) * 4 + 3]) {
+      if (x < x0) x0 = x; if (x + 1 > x1) x1 = x + 1
+      if (y < y0) y0 = y; if (y + 1 > y1) y1 = y + 1
+    }
+  }
   const cw = x1 - x0, ch = y1 - y0
   if (cw < 1 || ch < 1 || (cw >= w && ch >= h)) return image
-  const scale = Math.min(w / cw, h / ch), dw = cw * scale, dh = ch * scale, left = (w - dw) / 2, top = (h - dh) / 2, out = new Raster(w, h, 4)
-  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
-    const u = (x + 0.5 - left) / scale + x0 - 0.5, v = (y + 0.5 - top) / scale + y0 - 0.5
-    if (u < x0 - 0.5 || v < y0 - 0.5 || u > x1 - 0.5 || v > y1 - 0.5) continue
-    const u0 = Math.max(x0, Math.min(x1 - 1, Math.floor(u))), v0 = Math.max(y0, Math.min(y1 - 1, Math.floor(v))), u1 = Math.min(x1 - 1, u0 + 1), v1 = Math.min(y1 - 1, v0 + 1), tu = Math.max(0, u - u0), tv = Math.max(0, v - v0), o = (y * w + x) * 4
-    for (let k = 0; k < 4; k++) out.data[o + k] = Math.round((data[(v0 * w + u0) * 4 + k] * (1 - tu) + data[(v0 * w + u1) * 4 + k] * tu) * (1 - tv) + (data[(v1 * w + u0) * 4 + k] * (1 - tu) + data[(v1 * w + u1) * 4 + k] * tu) * tv)
+  const scale = Math.min(w / cw, h / ch), invScale = 1 / scale, dw = cw * scale, dh = ch * scale, left = (w - dw) / 2, top = (h - dh) / 2
+  const out = new Raster(w, h, 4), dst = out.data, rowStride = w * 4
+  const u0Arr = new Int32Array(w), u1Arr = new Int32Array(w), tuArr = new Float32Array(w), validX = new Uint8Array(w)
+  for (let x = 0; x < w; x++) {
+    const u = (x + 0.5 - left) * invScale + x0 - 0.5
+    if (u < x0 - 0.5 || u > x1 - 0.5) continue
+    validX[x] = 1
+    const u0 = Math.max(x0, Math.min(x1 - 1, Math.floor(u)))
+    u0Arr[x] = u0 * 4; u1Arr[x] = Math.min(x1 - 1, u0 + 1) * 4; tuArr[x] = Math.max(0, u - u0)
+  }
+  for (let y = 0; y < h; y++) {
+    const v = (y + 0.5 - top) * invScale + y0 - 0.5
+    if (v < y0 - 0.5 || v > y1 - 0.5) continue
+    const v0 = Math.max(y0, Math.min(y1 - 1, Math.floor(v))), v1 = Math.min(y1 - 1, v0 + 1), tv = Math.max(0, v - v0), omv = 1 - tv
+    const r0 = v0 * rowStride, r1 = v1 * rowStride, outRow = y * rowStride
+    for (let x = 0; x < w; x++) {
+      if (!validX[x]) continue
+      const tu = tuArr[x], omu = 1 - tu, w00 = omu * omv, w10 = tu * omv, w01 = omu * tv, w11 = tu * tv
+      const p00 = r0 + u0Arr[x], p10 = r0 + u1Arr[x], p01 = r1 + u0Arr[x], p11 = r1 + u1Arr[x], o = outRow + x * 4
+      dst[o] = (data[p00] * w00 + data[p10] * w10 + data[p01] * w01 + data[p11] * w11 + 0.5) | 0
+      dst[o + 1] = (data[p00 + 1] * w00 + data[p10 + 1] * w10 + data[p01 + 1] * w01 + data[p11 + 1] * w11 + 0.5) | 0
+      dst[o + 2] = (data[p00 + 2] * w00 + data[p10 + 2] * w10 + data[p01 + 2] * w01 + data[p11 + 2] * w11 + 0.5) | 0
+      dst[o + 3] = (data[p00 + 3] * w00 + data[p10 + 3] * w10 + data[p01 + 3] * w01 + data[p11 + 3] * w11 + 0.5) | 0
+    }
   }
   return out
 }

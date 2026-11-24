@@ -42,24 +42,39 @@ export function grayLevels(rgba: Uint8Array, width: number, height: number): Flo
 
 // Mean over a (2r+1)² square, edges held, as two running-sum passes (GuidedMatte.box).
 export function box(source: Float32Array, width: number, height: number, radius: number): Float32Array {
-  const span = radius * 2 + 1, pass = new Float32Array(width * height), out = new Float32Array(width * height)
+  const invSpan = 1 / (radius * 2 + 1), pass = new Float32Array(width * height), out = new Float32Array(width * height)
+  const lo = Math.min(radius, width), hi = Math.max(lo, width - radius - 1)
   for (let y = 0; y < height; y++) {
-    const row = y * width
+    const row = y * width, f = source[row], e = source[row + width - 1]
     let sum = 0
-    for (let x = -radius; x <= radius; x++) sum += source[row + Math.min(width - 1, Math.max(0, x))]
-    for (let x = 0; x < width; x++) {
-      pass[row + x] = sum / span
-      sum -= source[row + Math.min(width - 1, Math.max(0, x - radius))]
-      sum += source[row + Math.min(width - 1, Math.max(0, x + radius + 1))]
+    for (let x = -radius; x <= radius; x++) sum += x < 0 ? f : x >= width ? e : source[row + x]
+    let x = 0
+    for (; x < lo; x++) {
+      pass[row + x] = sum * invSpan
+      sum += (x + radius + 1 < width ? source[row + x + radius + 1] : e) - f
+    }
+    for (; x < hi; x++) {
+      pass[row + x] = sum * invSpan
+      sum += source[row + x + radius + 1] - source[row + x - radius]
+    }
+    for (; x < width; x++) {
+      pass[row + x] = sum * invSpan
+      sum += e - (x >= radius ? source[row + x - radius] : f)
     }
   }
-  for (let x = 0; x < width; x++) {
-    let sum = 0
-    for (let y = -radius; y <= radius; y++) sum += pass[Math.min(height - 1, Math.max(0, y)) * width + x]
-    for (let y = 0; y < height; y++) {
-      out[y * width + x] = sum / span
-      sum -= pass[Math.min(height - 1, Math.max(0, y - radius)) * width + x]
-      sum += pass[Math.min(height - 1, Math.max(0, y + radius + 1)) * width + x]
+  // Row-major column pass: sequential memory reads with a single running sum per column.
+  const sums = new Float64Array(width), last = (height - 1) * width
+  for (let y = -radius; y <= radius; y++) {
+    const r = y < 0 ? 0 : y >= height ? last : y * width
+    for (let x = 0; x < width; x++) sums[x] += pass[r + x]
+  }
+  for (let y = 0; y < height; y++) {
+    const o = y * width, addY = y + radius + 1, subY = y - radius
+    const add = (addY >= height ? height - 1 : addY) * width, sub = (subY < 0 ? 0 : subY) * width
+    for (let x = 0; x < width; x++) {
+      const v = sums[x]
+      out[o + x] = v * invSpan
+      sums[x] = v + (pass[add + x] - pass[sub + x])
     }
   }
   return out
