@@ -15,7 +15,8 @@ XCTESTRUN=$(ls "$DERIVED"/Build/Products/*.xctestrun 2>/dev/null | head -1)
 
 FILTER_SUITES=(CameraRawTests CameraRawSliderTests HueSaturationTests ImageAdjustmentTests LevelsTests FilterTests
   ScanlinesTests FinishingFilterTests)
-WINDOW_SUITES=(FloatingPanelTests SliderSnapTests)
+# LayerRowDragTests posts mouse events and waits on them: beside other suites, one of theirs could take a drag's event.
+WINDOW_SUITES=(FloatingPanelTests SliderSnapTests LayerRowDragTests)
 # About half of the rest, alternating down the suites by size so neither half gets all the big ones.
 FIRST_SUITES=(PSDRoundTripTests LayerTests SelectionTests SelectionEditTests TransformTests TiledLayerTests
   AdjustmentLayerTests GuideTests SelectionClipboardTests ImageImportTests CompositorTests ExternalChangeTests
@@ -28,14 +29,28 @@ FIRST_SUITES=(PSDRoundTripTests LayerTests SelectionTests SelectionEditTests Tra
 only() { args=(); for suite; do args+=("-only-testing:CompositorTests/$suite"); done; }
 skip() { args=(); for suite; do args+=("-skip-testing:CompositorTests/$suite"); done; }
 
+# A batch that runs this long has a test stuck, not slow: it's stopped and fails with its log, naming the tests that
+# finished, rather than holding the job until the workflow's own limit cancels it with nothing to show.
+BATCH_LIMIT=${BATCH_LIMIT:-1200}
+
 names=() pids=()
 run() {
   local name=$1; shift
-  rm -rf "$name.xcresult"
+  rm -rf "$name.xcresult" "$name.stuck"
   ( start=$SECONDS
     xcodebuild test-without-building -xctestrun "$XCTESTRUN" -destination 'platform=macOS,arch=arm64' \
-      -resultBundlePath "$name.xcresult" "$@" > "$name.log" 2>&1
+      -resultBundlePath "$name.xcresult" "$@" > "$name.log" 2>&1 &
+    test=$!
+    # Checks every few seconds, so it ends soon after the batch does.
+    ( for ((waited = 0; waited < BATCH_LIMIT; waited += 5)); do sleep 5; kill -0 "$test" 2>/dev/null || exit 0; done
+      touch "$name.stuck"
+      pkill -TERM -P "$test"; kill -TERM "$test" ) 2>/dev/null &
+    wait "$test"
     status=$?
+    if [[ -e "$name.stuck" ]]; then
+      echo "** $name stopped after $((BATCH_LIMIT / 60)) minutes: a test is stuck. The tests above finished; the stuck one is among those that didn't. **" >> "$name.log"
+      status=1
+    fi
     echo "$((SECONDS - start))" > "$name.seconds"
     exit $status ) &
   names+=("$name") pids+=($!)

@@ -14,6 +14,10 @@ final class MetalBrushCoverage {
         /// The firmest press that has reached each pixel, for a soft tip whose opacity follows a pen; nil otherwise.
         let cap: MTLBuffer?
     }
+    /// The GPU didn't finish the work: it was reset, or ran out of memory. The session paints the stroke again on the CPU.
+    struct Failed: Error {}
+    /// Renders left to fail on purpose, for tests of that recovery.
+    var failuresForTesting = 0
     private struct Uniforms {
         var mapping: SIMD4<Float>
         var geometry: SIMD4<Float>
@@ -46,6 +50,7 @@ final class MetalBrushCoverage {
     func render(_ tiles: [(Tile, CGRect, CGContext)], settled: [BrushSegment], tail: [BrushSegment],
                 mapping: CGAffineTransform, settings: BrushSettings, canvas: CGSize) throws {
         guard !tiles.isEmpty else { return }
+        if failuresForTesting > 0 { failuresForTesting -= 1; throw Failed() }
         // A dummy segment supplies a valid buffer for tail removal with no new geometry.
         let segments = settled + tail
         let storage = segments.isEmpty ? [BrushSegment(line: SIMD4(repeating: 0), dynamics: SIMD4(repeating: 0))] : segments
@@ -61,7 +66,7 @@ final class MetalBrushCoverage {
                 geometry: SIMD4(Float(origin.x), Float(origin.y), Float(settings.diameter / 2), Float(settings.hardness)),
                 canvas: SIMD4(Float(canvas.width), Float(canvas.height), Float(max(0.001, min(hypot(mapping.a, mapping.b), hypot(mapping.c, mapping.d)))), Float(max(0.25, settings.diameter * BrushStroke.spacingFraction(settings.hardness)))),
                 counts: SIMD4(UInt32(rect.width), UInt32(rect.height), UInt32(settled.count), UInt32(segments.count)),
-                options: SIMD4(tile.cap == nil ? 0 : 1, 0, 0, 0))
+                options: SIMD4(tile.cap == nil ? 0 : 1, settings.antialiased ? 0 : 1, 0, 0))
             encoder.setBuffer(tile.permanent, offset: 0, index: 0)
             // Without a cap the shader never reads it; any buffer fills the slot.
             encoder.setBuffer(tile.cap ?? tile.permanent, offset: 0, index: 4)
@@ -73,7 +78,7 @@ final class MetalBrushCoverage {
         encoder.endEncoding()
         command.commit()
         command.waitUntilCompleted()
-        guard command.status == .completed else { throw command.error ?? ExportError.render }
+        guard command.status == .completed else { throw Failed() }
         for (tile, rect, context) in tiles {
             // CGContext owns its memory so makeImage's copy-on-write snapshots stay immutable.
             guard let destination = context.data else { throw ExportError.render }
@@ -91,7 +96,7 @@ struct BrushUniforms {
     float4 geometry; // document origin of tile, radius, hardness
     float4 canvas; // width, height, antialias width, deposition spacing
     uint4 counts; // tile width, height, committed segment count, total segment count
-    uint4 options; // whether `cap` holds the firmest press per pixel
+    uint4 options; // whether `cap` holds the firmest press per pixel; whether edges are aliased (a pencil)
 };
 
 // dynamics: the tip's radius at the start and end, and its strength at the start and end (a pen's pressure).
@@ -113,6 +118,8 @@ float segmentDistanceSquared(float2 p, float4 segment, float t) {
 
 float brushCoverage(float distanceSquared, float radius, constant BrushUniforms &u) {
     float distance = sqrt(distanceSquared);
+    // A pencil: a pixel whose center the tip reaches is painted fully, any other not at all.
+    if (u.options.y != 0) return distance < radius ? 1.0f : 0.0f;
     if (u.geometry.w >= 1.0f) {
         return clamp((radius - distance) / u.canvas.z + 0.5f, 0.0f, 1.0f);
     }

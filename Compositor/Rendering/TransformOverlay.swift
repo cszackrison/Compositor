@@ -2,14 +2,13 @@ import AppKit
 
 struct TransformOverlayGeometry: Equatable {
     let handles: [CGPoint]
-    let rotationHandle: CGPoint
-    /// A distortion has no single rotation, so its rotation handle is hidden.
+    /// A distortion has no single rotation, so it can't be rotated.
     let showsRotation: Bool
+    /// How far past a corner, outside the box, a press rotates rather than missing, as in Photoshop.
+    static let rotationReach: CGFloat = 26
 
     init(transform: LayerTransform, viewport: CanvasViewport, documentSize: CGSize) {
         handles = LayerTransform.handles.map { viewport.viewPoint(from: transform.point($0), documentSize: documentSize) }
-        rotationHandle = CGPoint(x: handles[1].x + sin(transform.radians) * 28,
-                                 y: handles[1].y - cos(transform.radians) * 28)
         showsRotation = true
     }
 
@@ -19,13 +18,11 @@ struct TransformOverlayGeometry: Equatable {
         func middle(_ a: CGPoint, _ b: CGPoint) -> CGPoint { CGPoint(x: (a.x + b.x) / 2, y: (a.y + b.y) / 2) }
         handles = [view[0], middle(view[0], view[1]), view[1], middle(view[1], view[2]),
                    view[2], middle(view[2], view[3]), view[3], middle(view[3], view[0])]
-        rotationHandle = handles[1]
         showsRotation = false
     }
 
     func hit(_ point: CGPoint) -> TransformDrag.Mode? {
         func near(_ other: CGPoint) -> Bool { hypot(point.x - other.x, point.y - other.y) <= 10 }
-        if showsRotation, near(rotationHandle) { return .rotate }
         if let index = handles.firstIndex(where: near) { return .resize(index) }
         for (start, end, handle) in [(0, 2, 1), (2, 4, 3), (4, 6, 5), (6, 0, 7)] {
             let a = handles[start], b = handles[end]
@@ -37,7 +34,29 @@ struct TransformOverlayGeometry: Equatable {
                 return .resize(handle)
             }
         }
+        // Just outside the box, around a corner: rotates, from wherever the press lands.
+        if showsRotation, !box.contains(point),
+           [0, 2, 4, 6].contains(where: { hypot(point.x - handles[$0].x, point.y - handles[$0].y) <= Self.rotationReach }) {
+            return .rotate
+        }
         return nil
+    }
+
+    /// Which way the rotate pointer at `point` faces: out from the box's middle through its nearest corner, as an angle
+    /// with y up, so each corner has its own curved arrow wrapped around it, as Photoshop's does.
+    func rotationAngle(at point: CGPoint) -> CGFloat {
+        let corners = [0, 2, 4, 6].map { handles[$0] }
+        let middle = CGPoint(x: corners.map(\.x).reduce(0, +) / 4, y: corners.map(\.y).reduce(0, +) / 4)
+        let corner = corners.min { hypot($0.x - point.x, $0.y - point.y) < hypot($1.x - point.x, $1.y - point.y) }!
+        return atan2(-(corner.y - middle.y), corner.x - middle.x)
+    }
+
+    /// The box through the four corner handles.
+    var box: CGPath {
+        let path = CGMutablePath()
+        path.addLines(between: [handles[0], handles[2], handles[4], handles[6]])
+        path.closeSubpath()
+        return path
     }
 
     func resizeCursor(for index: Int) -> NSCursor {
@@ -226,6 +245,62 @@ final class TransformOverlay: NSView {
         drawSelection()
         drawLassoDraft()
         drawSnapGuides()
+        drawDistances()
+        drawDragOutSize()
+    }
+
+    /// A Marquee's or shape's size, a line's length, or a resized layer's size, as it's dragged: in a dark label just
+    /// above and right of the point being dragged, the other side of it near the view's edge.
+    private func drawDragOutSize() {
+        guard let size = session.dragOutSize, let transform = documentToView else { return }
+        let corner = size.corner.applying(transform)
+        let text = NSAttributedString(string: size.text, attributes: [
+            .font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .medium), .foregroundColor: NSColor.white,
+        ])
+        let textSize = text.size()
+        var label = CGRect(x: corner.x + 14, y: corner.y - 14 - (textSize.height + 6), width: textSize.width + 12, height: textSize.height + 6)
+        if label.maxX > bounds.maxX - 4 { label.origin.x = corner.x - 14 - label.width }
+        if label.minY < bounds.minY + 4 { label.origin.y = corner.y + 14 }
+        NSColor(white: 0.12, alpha: 0.9).setFill()
+        NSBezierPath(roundedRect: label, xRadius: 4, yRadius: 4).fill()
+        text.draw(at: CGPoint(x: label.minX + 6, y: label.minY + 3))
+    }
+
+    /// The Move tool's pixel gaps: a line with an end bar at each side, and its length in a label on it, the same
+    /// size at any zoom.
+    private func drawDistances() {
+        let lines = session.distanceLines
+        guard !lines.isEmpty, let transform = documentToView, let context = NSGraphicsContext.current?.cgContext else { return }
+        let color = NSColor.systemPink
+        context.saveGState()
+        context.setStrokeColor(color.cgColor)
+        context.setLineWidth(1)
+        for line in lines {
+            let start = (line.horizontal ? CGPoint(x: line.from, y: line.across) : CGPoint(x: line.across, y: line.from)).applying(transform)
+            let end = (line.horizontal ? CGPoint(x: line.to, y: line.across) : CGPoint(x: line.across, y: line.to)).applying(transform)
+            context.move(to: start)
+            context.addLine(to: end)
+            for point in [start, end] {
+                context.move(to: line.horizontal ? CGPoint(x: point.x, y: point.y - 4) : CGPoint(x: point.x - 4, y: point.y))
+                context.addLine(to: line.horizontal ? CGPoint(x: point.x, y: point.y + 4) : CGPoint(x: point.x + 4, y: point.y))
+            }
+        }
+        context.strokePath()
+        context.restoreGState()
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .medium), .foregroundColor: NSColor.white,
+        ]
+        for line in lines {
+            let start = (line.horizontal ? CGPoint(x: line.from, y: line.across) : CGPoint(x: line.across, y: line.from)).applying(transform)
+            let end = (line.horizontal ? CGPoint(x: line.to, y: line.across) : CGPoint(x: line.across, y: line.to)).applying(transform)
+            let text = NSAttributedString(string: "\(Int(line.length.rounded())) px", attributes: attributes)
+            let size = text.size()
+            let label = CGRect(x: (start.x + end.x) / 2 - size.width / 2 - 5, y: (start.y + end.y) / 2 - size.height / 2 - 2,
+                               width: size.width + 10, height: size.height + 4)
+            color.setFill()
+            NSBezierPath(roundedRect: label, xRadius: 4, yRadius: 4).fill()
+            text.draw(at: CGPoint(x: label.minX + 5, y: label.minY + 2))
+        }
     }
 
     /// Non-printing layout grid over the document: majors in the chosen style, dotted subdivisions, both in the
@@ -383,10 +458,6 @@ final class TransformOverlay: NSView {
         path.move(to: geometry.handles[0])
         for index in [2, 4, 6] { path.addLine(to: geometry.handles[index]) }
         path.closeSubpath()
-        if geometry.showsRotation {
-            path.move(to: geometry.handles[1])
-            path.addLine(to: geometry.rotationHandle)
-        }
         // Just the accent line: a dark line behind it read as a grey halo around the box.
         context.addPath(path)
         context.setStrokeColor(NSColor.controlAccentColor.cgColor)
@@ -399,11 +470,6 @@ final class TransformOverlay: NSView {
             context.fill(rect)
             context.stroke(rect)
         }
-        guard geometry.showsRotation else { return }
-        let point = geometry.rotationHandle
-        let rect = CGRect(x: point.x - 4, y: point.y - 4, width: 8, height: 8)
-        context.fillEllipse(in: rect)
-        context.strokeEllipse(in: rect)
     }
 
     var cropViewRect: CGRect? {

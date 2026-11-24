@@ -8,7 +8,7 @@ extension EditorSession {
         var masks: [UUID: ImportedImage] = [:]
         var animations: [UUID: GIFAnimation] = [:]
         let layers = document.layers.map { layer in
-            let asset = displayedAsset(for: layer)
+            let asset = savedAsset(for: layer)
             if let asset { images[layer.id] = asset }
             if let mask = layer.mask { masks[layer.id] = mask.asset }
             var gif: ProjectGIFRecord?
@@ -43,6 +43,7 @@ extension EditorSession {
             layers: snapshot.documentLayers, resolution: manifest.resolution ?? 72, guides: manifest.guides ?? [])
         activeLayerID = manifest.activeLayerID
         projectURL = url
+        sourceImageURL = nil
         renamingLayerID = nil
         history.reset()
         viewport.fit(documentSize: document!.size)
@@ -78,13 +79,16 @@ extension EditorSession {
         activeLayerID = nil
         renamingLayerID = nil
         projectURL = nil
+        sourceImageURL = nil
         history.reset()
     }
 
-    func createNewProject(width: Int, height: Int, resolution: Double = 72, background: CGColor? = nil) {
-        guard !isProjectBusy, !isImporting, (1...DocumentLimits.maxSide).contains(width), (1...DocumentLimits.maxSide).contains(height) else { return }
+    @discardableResult
+    func createNewProject(width: Int, height: Int, resolution: Double = 72, background: CGColor? = nil) -> Bool {
+        guard !isProjectBusy, !isImporting, (1...DocumentLimits.maxSide).contains(width), (1...DocumentLimits.maxSide).contains(height) else { return false }
         clearProject()
         createDocument(width: width, height: height, emptyLayer: true, resolution: resolution, background: background)
+        return true
     }
 }
 

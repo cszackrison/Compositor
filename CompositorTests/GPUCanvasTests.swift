@@ -77,7 +77,7 @@ import Testing
         return session
     }
 
-    private struct Difference { let mean: Double; let over: Double }
+    private struct Difference { let mean: Double; let over: Double; var cpu: CGImage? = nil }
 
     /// Both canvases drawn for `session`; the share of pixels more than 12 levels apart, and the mean difference.
     private func compare(_ session: EditorSession, name: String, width points: Int = 500, height pointsHigh: Int = 400,
@@ -140,7 +140,7 @@ import Testing
         if let png = NSBitmapImageRep(cgImage: pair.makeImage()!).representation(using: .png, properties: [:]) {
             Attachment.record(png, named: "\(name).png")
         }
-        return Difference(mean: total / Double(width * height * 3), over: Double(over) / Double(width * height))
+        return Difference(mean: total / Double(width * height * 3), over: Double(over) / Double(width * height), cpu: cpu.makeImage())
     }
 
     @Test(arguments: [1.0, 2.0 / 3.0, 1.0 / 3.0, 2.0])
@@ -206,6 +206,47 @@ import Testing
     }
 
     /// A gradient being dragged, linear and radial, the radial one inside a selection.
+    /// A gradient dragged on a layer's mask shows as it's dragged, as on the Core Graphics canvas, with the mask over its
+    /// layer or placed apart from it: placed apart, it used to show only once Return committed it.
+    @Test(arguments: [false, true])
+    func showsAGradientOnAMaskAsItsDragged(placedApart: Bool) throws {
+        guard GPUCanvasRenderer.shared != nil else { return }
+        let session = try paintable(masked: true)
+        let index = try #require(session.document?.layers.firstIndex { $0.id == session.activeLayerID })
+        if placedApart, let layer = session.document?.layers[index] {
+            var placement = layer.transform
+            placement.origin.y -= 6
+            placement.size.height += 14
+            session.document?.layers[index].mask?.placement = placement
+        }
+        session.isMaskSelected = true
+        session.tool = .gradient
+        session.zoom(to: 1)
+        // The GPU canvas on its own, as on screen: the Core Graphics one fills the gradient's tiles as it draws.
+        let renderer = try #require(GPUCanvasRenderer.shared)
+        let canvas = CanvasView(session: session)
+        canvas.frame = CGRect(x: 0, y: 0, width: 500, height: 400)
+        func frame() throws -> [UInt8] {
+            let shot = try #require(canvas.gpuFrame(size: CGSize(width: 1000, height: 800)))
+            let made = try #require(renderer.context.createCGImage(shot, from: CGRect(x: 0, y: 0, width: 1000, height: 800),
+                                                                    format: .RGBA8, colorSpace: renderer.space))
+            let read = try BrushRaster.context(width: 1000, height: 800, mask: false)
+            BrushRaster.draw(made, in: CGRect(x: 0, y: 0, width: 1000, height: 800), mask: false, context: read)
+            return Array(UnsafeBufferPointer(start: try #require(read.data).assumingMemoryBound(to: UInt8.self), count: 1000 * 800 * 4))
+        }
+        let before = try frame()
+        session.beginGradient(at: CGPoint(x: 150, y: 120))
+        session.moveGradient(end: CGPoint(x: 420, y: 330))
+        #expect(session.gradientEdit?.raster.isMask == true)
+        let during = try frame()
+        let changed = stride(from: 0, to: before.count, by: 4).filter { abs(Int(before[$0]) - Int(during[$0])) > 12 }.count
+        #expect(changed > 1000 * 800 / 20, "the gradient shows while dragging: \(changed) pixels changed")
+        // And as the Core Graphics canvas shows it.
+        let difference = try compare(session, name: "mask-gradient-\(placedApart)")
+        #expect(difference.mean < 1.5 && difference.over < 0.01, "mean \(difference.mean), over 12 levels \(difference.over * 100)%")
+        _ = session.finishBrushImmediately()
+    }
+
     @Test(arguments: [GradientShape.linear, .radial])
     func matchesWhileDraggingAGradient(shape: GradientShape) throws {
         guard GPUCanvasRenderer.shared != nil else { return }
@@ -660,6 +701,49 @@ import Testing
         session.zoom(to: 1)
         let difference = try compare(session, name: "shape")
         #expect(difference.mean < 1.5 && difference.over < 0.01, "mean \(difference.mean), over 12 levels \(difference.over * 100)%")
+    }
+
+    /// A shape dragged out over the top of a clipping stack: the new layer won't be clipped, so both canvases show it
+    /// in full, above the stack, past the base's edges too.
+    @Test func matchesWhileDrawingAShapeOverAClippingStack() throws {
+        guard GPUCanvasRenderer.shared != nil else { return }
+        let session = try paintable()
+        let image = try pattern(300, 200, seed: 5)
+        session.insert(ImportedImage(image: image, thumbnail: image, name: "Clipped"))
+        let clipped = try #require(session.activeLayerID)
+        session.toggleClippingMask(clipped)
+        #expect(session.activeLayer?.maskSourceID != nil)
+        session.selectTool(.shape)
+        session.beginShape(at: CGPoint(x: 20, y: 20))
+        session.dragShape(to: CGPoint(x: 580, y: 480), square: false, fromCenter: false)
+        session.zoom(to: 1)
+        let difference = try compare(session, name: "shape-over-stack")
+        #expect(difference.mean < 1.5 && difference.over < 0.01, "mean \(difference.mean), over 12 levels \(difference.over * 100)%")
+    }
+
+    /// With a hidden layer active, the shape shows as it's dragged out — its layer goes above the hidden one, and shows.
+    @Test func showsAShapeDrawnWithAHiddenLayerActive() throws {
+        guard GPUCanvasRenderer.shared != nil else { return }
+        let session = try paintable()
+        let image = try pattern(300, 200, seed: 5)
+        session.insert(ImportedImage(image: image, thumbnail: image, name: "Hidden"))
+        let hidden = try #require(session.document?.layers.firstIndex { $0.id == session.activeLayerID })
+        session.document!.layers[hidden].isVisible = false
+        session.selectTool(.shape)
+        session.beginShape(at: CGPoint(x: 20, y: 20))
+        session.dragShape(to: CGPoint(x: 580, y: 480), square: false, fromCenter: false)
+        session.zoom(to: 1)
+        let difference = try compare(session, name: "shape-over-hidden")
+        #expect(difference.mean < 1.5 && difference.over < 0.01, "mean \(difference.mean), over 12 levels \(difference.over * 100)%")
+        // The middle of the view, inside the shape, is the shape's color.
+        let fill = try #require(session.shapeDraft?.fill)
+        let cpu = try #require(difference.cpu)
+        let pixel = try BrushRaster.context(width: 1, height: 1, mask: false)
+        BrushRaster.draw(cpu, in: CGRect(x: -cpu.width / 2, y: -cpu.height / 2, width: cpu.width, height: cpu.height), mask: false, context: pixel)
+        let bytes = pixel.data!.assumingMemoryBound(to: UInt8.self)
+        let red = Double(bytes[0]) / 255, green = Double(bytes[1]) / 255, blue = Double(bytes[2]) / 255
+        #expect(abs(red - fill.red) < 0.05 && abs(green - fill.green) < 0.05 && abs(blue - fill.blue) < 0.05,
+                "\(red) \(green) \(blue)")
     }
 
     enum EffectsCase: String, CaseIterable {

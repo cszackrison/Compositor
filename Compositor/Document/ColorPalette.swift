@@ -38,6 +38,8 @@ extension EditorSession {
             // Type paints in the foreground color, so text being edited follows the swatch. A text layer merely
             // selected keeps its color: it changes only while its text is open for editing.
             if tool == .type, textDraft != nil { setDraftTextColor(color) }
+            // A line being dragged uses this color, the one the Line bar is showing.
+            if var draft = shapeDraft, draft.kind == .line { draft.fill = color; shapeDraft = draft }
         }
     }
     func swapPaletteColors() {
@@ -135,6 +137,8 @@ extension EditorSession {
             case .dialog:
                 dialogColorChange?(commit ? colorPicker.color : colorPicker.original)
                 dialogColorChange = nil
+            case .shapeFill, .shapeStroke:
+                finishShapeColorPick(commit: commit)
             }
         }
         colorPicker = nil
@@ -269,6 +273,11 @@ extension EditorSession {
         guard settings != edit.settings else { return }
         updateFilter(settings, preview: edit.preview)
     }
+    /// Loads a palette swatch's color into the open picker: the foreground or background color is one more to sample.
+    func sampleSwatchIntoColorPicker(background: Bool) {
+        colorPicker?.hsb.setRGB(paletteColor(background: background))
+    }
+
     /// Loads the canvas color under a document point into the open picker.
     func sampleIntoColorPicker(at point: CGPoint) {
         guard let colorPicker, let color = sampleCompositeColor(at: point) else { return }
@@ -315,11 +324,17 @@ enum ColorPickerTarget: Equatable {
     /// Dither's Two Colors: the dark one or the light one.
     case dither(light: Bool)
     case text(draftID: UUID?)
+    /// A selected rectangle or ellipse's fill.
+    case shapeFill(layerID: UUID)
+    /// Its inside stroke, or — with no layer — the stroke color of the next rectangle or ellipse.
+    case shapeStroke(layerID: UUID?)
     /// A dialog's own color, such as Export JPEG's background for transparency. The dialog is told as it changes.
     case dialog(title: String)
     var title: String {
         switch self {
         case .text: return "Color Picker (Text Color)"
+        case .shapeFill: return "Color Picker (Fill Color)"
+        case .shapeStroke: return "Color Picker (Stroke Color)"
         case .effect(let kind): return "Color Picker (\(kind.rawValue) Color)"
         case .palette(let background): return background ? "Color Picker (Background Color)" : "Color Picker (Foreground Color)"
         case .gradientMap(let highlights): return highlights ? "Color Picker (Gradient Map Highlights)" : "Color Picker (Gradient Map Shadows)"
@@ -417,5 +432,14 @@ extension PaletteColor {
         if text.count == 3 { text = text.map { "\($0)\($0)" }.joined() }
         guard text.count == 6, let value = UInt32(text, radix: 16) else { return nil }
         self.init(red: CGFloat((value >> 16) & 0xFF) / 255, green: CGFloat((value >> 8) & 0xFF) / 255, blue: CGFloat(value & 0xFF) / 255)
+    }
+
+    /// A hex value part-way through being typed, read as it stands with the missing digits as zeros, so the color
+    /// follows each digit: "F" is F00000, "FF8" FF8000. Nil for anything that isn't one to six hex digits.
+    init?(typedHex text: String) {
+        var digits = text.trimmingCharacters(in: .whitespaces)
+        if digits.hasPrefix("#") { digits.removeFirst() }
+        guard (1...6).contains(digits.count), digits.allSatisfy(\.isHexDigit) else { return nil }
+        self.init(hex: digits.padding(toLength: 6, withPad: "0", startingAt: 0))
     }
 }

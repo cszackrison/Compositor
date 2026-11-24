@@ -38,17 +38,18 @@ struct BrushControls: View {
                         .pickerStyle(.segmented).labelsHidden().fixedSize()
                         .help("Copy from the active layer only, or from every visible layer as shown")
                     }
-                    Text("Size").scrubbable(sensitivity: 1.0, value: $session.brushSettings.diameter, range: 1...2000)
-                    TextField("Size", value: Binding<Double>(get: { Double(session.brushSettings.diameter) },
-                                                             set: { session.brushSettings.diameter = $0.isFinite ? CGFloat(min(2000, max(1, $0))) : 40 }),
-                              format: .number.precision(.fractionLength(0)))
-                    .frame(width: 48).textFieldStyle(.roundedBorder)
-                    .arrowSteps(value: { Double(session.brushSettings.diameter) },
-                                change: { session.brushSettings.diameter = CGFloat(min(2000, max(1, $0))) })
-                    .onChange(of: session.brushSettings.diameter) { _, value in
-                        session.brushSettings.diameter = value.isFinite ? min(2000, max(1, value)) : 40
+                    HStack(spacing: 6) {
+                        Text("Size").scrubbable(sensitivity: 1.0, value: $session.brushSettings.diameter, range: 1...2000)
+                        TextField("Size", value: Binding<Double>(get: { Double(session.brushSettings.diameter) },
+                                                                 set: { session.brushSettings.diameter = $0.isFinite ? CGFloat(min(2000, max(1, $0))) : 40 }),
+                                  format: .number.precision(.fractionLength(0)))
+                        .frame(width: 48).textFieldStyle(.roundedBorder)
+                        .arrowSteps(value: { Double(session.brushSettings.diameter) },
+                                    change: { session.brushSettings.diameter = CGFloat(min(2000, max(1, $0))) })
+                        .onChange(of: session.brushSettings.diameter) { _, value in
+                            session.brushSettings.diameter = value.isFinite ? min(2000, max(1, value)) : 40
+                        }
                     }
-                    .unitSuffix("px")
                     // A pen's pressure, as Photoshop's buttons beside Size and Opacity: only once a tablet pen has
                     // been used since the app opened.
                     if session.tool == .brush, PenInput.shared.seen {
@@ -57,18 +58,22 @@ struct BrushControls: View {
                             .help("Pen pressure sets the size: a light touch paints a thinner line")
                             .accessibilityLabel("Pressure for size")
                     }
-                    Text("Hardness").scrubbable(sensitivity: 0.01, value: $session.brushSettings.hardness, range: 0...1)
-                    Slider(value: $session.brushSettings.hardness, in: 0...1).frame(width: 100)
-                    TextField("Hardness", value: Binding<Double>(get: { Double(session.brushSettings.hardness * 100) },
-                                                                 set: { session.brushSettings.hardness = $0.isFinite ? CGFloat(min(1, max(0, $0 / 100))) : 1 }),
-                              format: .number.precision(.fractionLength(0)))
-                    .frame(width: 42).textFieldStyle(.roundedBorder)
-                    .arrowSteps(value: { Double(session.brushSettings.hardness * 100) },
-                                change: { session.brushSettings.hardness = CGFloat(min(1, max(0, $0 / 100))) })
-                    .unitSuffix("%")
+                    // A pencil is always hard, so Hardness has nothing to do with Anti-alias off.
+                    Group {
+                        Text("Hardness").scrubbable(sensitivity: 0.01, value: $session.brushSettings.hardness, range: 0...1)
+                        AppSlider(value: $session.brushSettings.hardness, in: 0...1).frame(width: 100)
+                        TextField("Hardness", value: Binding<Double>(get: { Double(session.brushSettings.hardness * 100) },
+                                                                     set: { session.brushSettings.hardness = $0.isFinite ? CGFloat(min(1, max(0, $0 / 100))) : 1 }),
+                                  format: .number.precision(.fractionLength(0)))
+                        .frame(width: 42).textFieldStyle(.roundedBorder)
+                        .arrowSteps(value: { Double(session.brushSettings.hardness * 100) },
+                                    change: { session.brushSettings.hardness = CGFloat(min(1, max(0, $0 / 100))) })
+                        .unitSuffix("%")
+                    }
+                    .disabled(session.tool == .brush && !session.brushSettings.antialiased)
                     Text(session.tool == .blur ? "Strength" : "Opacity")
                         .scrubbable(sensitivity: 0.01, value: $session.brushSettings.opacity, range: 0.01...1)
-                    Slider(value: $session.brushSettings.opacity, in: 0.01...1).frame(width: 100)
+                    AppSlider(value: $session.brushSettings.opacity, in: 0.01...1).frame(width: 100)
                     TextField("Opacity", value: Binding<Double>(get: { Double(session.brushSettings.opacity * 100) },
                                                                 set: { session.brushSettings.opacity = $0.isFinite ? CGFloat(min(100, max(1, $0)) / 100) : 1 }),
                               format: .number.precision(.fractionLength(0)))
@@ -87,7 +92,7 @@ struct BrushControls: View {
                     if session.tool == .blur, session.blurMode == .blur {
                         Text("Radius").scrubbable(sensitivity: 0.1, value: $session.brushSettings.blurRadius, range: 0.5...50)
                         // The slider covers everyday radii; typing or scrubbing reaches up to 50.
-                        Slider(value: Binding(get: { min(20, session.brushSettings.blurRadius) },
+                        AppSlider(value: Binding(get: { min(20, session.brushSettings.blurRadius) },
                                               set: { session.brushSettings.blurRadius = $0 }), in: 0.5...20).frame(width: 100)
                         TextField("Radius", value: Binding<Double>(get: { Double(session.brushSettings.blurRadius) },
                                                                    set: { session.brushSettings.blurRadius = $0.isFinite ? CGFloat(min(50, max(0.5, $0))) : 5 }),
@@ -96,13 +101,12 @@ struct BrushControls: View {
                         .arrowSteps(value: { Double(session.brushSettings.blurRadius) },
                                     change: { session.brushSettings.blurRadius = CGFloat(min(50, max(0.5, $0))) })
                         .help("How far the blur softens, in pixels")
-                        .unitSuffix("px")
                     }
                     // Paint and Erase only: healing, cloning and smearing have their own feel.
                     if session.tool == .brush {
                         Text("Smoothing")
                             .scrubbable(sensitivity: 1, value: $session.brushSettings.smoothing, range: 0...100)
-                        Slider(value: $session.brushSettings.smoothing, in: 0...100).frame(width: 100)
+                        AppSlider(value: $session.brushSettings.smoothing, in: 0...100).frame(width: 100)
                         TextField("Smoothing", value: Binding<Double>(get: { Double(session.brushSettings.smoothing) },
                                                                       set: { session.brushSettings.smoothing = $0.isFinite ? CGFloat(min(100, max(0, $0))) : 0 }),
                                   format: .number.precision(.fractionLength(0)))
@@ -111,28 +115,15 @@ struct BrushControls: View {
                                     change: { session.brushSettings.smoothing = CGFloat(min(100, max(0, $0))) })
                         .help("The brush trails the pointer on a string this long, so a shaky hand still draws a smooth line")
                     }
+                    if session.tool == .brush {
+                        Toggle("Anti-alias", isOn: $session.brushSettings.antialiased)
+                            .help("Smooth edges; turn off for hard pixel edges, like a pencil")
+                    }
                     if session.isMaskSelected {
                         Picker("Paint", selection: $session.maskPaintWhite) {
                             Text("Black · Hide").tag(false)
                             Text("White · Reveal").tag(true)
                         }.frame(width: 180)
-                    } else if session.tool != .cloneStamp, session.tool != .blur {
-                        // Same foreground color and Color Picker as the tool-rail swatch.
-                        HStack(spacing: 6) {
-                            Text("Color")
-                            Button { session.openColorPicker(background: false) } label: {
-                                let shape = RoundedRectangle(cornerRadius: 4, style: .continuous)
-                                shape.fill(session.foregroundColor.swiftUI)
-                                    .overlay { shape.inset(by: 1).strokeBorder(.white, lineWidth: 1) }
-                                    .overlay { shape.strokeBorder(.black, lineWidth: 1) }
-                                    .frame(width: 34, height: 18)
-                                    .contentShape(shape)
-                            }
-                            .buttonStyle(.plain)
-                            .disabled(!session.canEditPalette)
-                            .help("Foreground color")
-                            .accessibilityLabel("Foreground color")
-                        }
                     }
                     Spacer(minLength: 0)
                     if session.tool == .cloneStamp, session.cloneSource == nil {

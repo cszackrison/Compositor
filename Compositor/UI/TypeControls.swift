@@ -3,6 +3,7 @@ import AppKit
 
 struct TypeControls: View {
     @Bindable var session: EditorSession
+    @FocusState private var editingSize: Bool
     private func value<T>(_ key: WritableKeyPath<LayerTextStyle, T>) -> Binding<T> {
         Binding(get: { session.currentTextStyle[keyPath: key] }, set: { value in
             session.changeTextStyle { $0[keyPath: key] = value }
@@ -37,18 +38,24 @@ struct TypeControls: View {
                         }
                     })
                         .frame(width: 210).help("Font face, including bold and italic variants")
-                    TextField("Size", value: number(\.fontSize), format: .number).frame(width: 52)
-                        .unitSuffix("px", scrubValue: value(\.fontSize), sensitivity: 1, range: 1...2000, step: 1)
-                        .arrowSteps(value: { Double(session.currentTextStyle.fontSize) },
-                                    change: { stepped in session.changeTextStyle { $0.fontSize = CGFloat(min(2000, max(1, stepped))) } })
-                    Button { session.openTextColorPicker() } label: {
-                        let color = session.typeColor
-                        let swatch = RoundedRectangle(cornerRadius: 3, style: .continuous)
-                        swatch.fill(Color(red: color.red, green: color.green, blue: color.blue))
-                            .overlay { swatch.strokeBorder(.black.opacity(0.5), lineWidth: 1) }
-                            .frame(width: 36, height: 18)
+                    HStack(spacing: 6) {
+                        Text("Size").scrubbable(sensitivity: 1, value: value(\.fontSize), range: 1...2000, step: 1)
+                        TextField("Size", value: number(\.fontSize), format: .number).frame(width: 52)
+                            .focused($editingSize)
+                            // Return applies the size and hands the keys back: to the text being edited, or the canvas.
+                            .onSubmit { editingSize = false; session.canvasFocusRequest += 1 }
+                            .arrowSteps(value: { Double(session.currentTextStyle.fontSize) },
+                                        change: { stepped in session.changeTextStyle { $0.fontSize = CGFloat(min(2000, max(1, stepped))) } })
                     }
-                    .buttonStyle(.plain).help("Text color").accessibilityLabel("Text color")
+                    HStack(spacing: 6) {
+                        Text("Color")
+                        Button { session.openTextColorPicker() } label: {
+                            let color = session.typeColor
+                            ColorSwatch(color: Color(red: color.red, green: color.green, blue: color.blue))
+                        }
+                        .buttonStyle(.plain).help("Text color").accessibilityLabel("Text color")
+                    }
+                    Divider().frame(height: 18)
                     HStack(spacing: 2) {
                         ForEach(TextAlignment.allCases, id: \.self) { alignment in
                             let selected = session.currentTextStyle.alignment == alignment
