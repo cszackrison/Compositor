@@ -124,3 +124,6 @@ export function definitionFor(event: KeyboardEvent): ShortcutDefinition | undefi
   if (!chord) return
   return definitions.find(d => sameChord(effective(d.id), chord))
 }
+
+// Photoshop's newer Export As key (⌥⇧⌘W) works alongside ⌥⇧⌘S, unless a shortcut has been given that key.
+export const isExportAsAlias = (event: KeyboardEvent) => sameChord(chordOf(event) ?? undefined, c('w', Command | Option | Shift)) && !definitionFor(event)

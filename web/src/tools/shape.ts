@@ -9,19 +9,8 @@ import { drawHudLabel, type ToolHandler } from './tool'
 // corners on a rectangle (format 14), a line's ends as fractions of the layer box, its dashes and caps (format 15; missing is solid
 // with round caps, as every line was before), and an optional inside stroke for rectangles and ellipses (format 22).
 export type ShapeStyle = {
-  kind: ShapeKind
-  red: number; green: number; blue: number
-  cornerRadius: number
-  smoothing?: boolean
-  lineWidth?: number
-  start?: [number, number]
-  end?: [number, number]
-  lineStyle?: LineStyle
-  lineCap?: LineCap
-  strokeWidth?: number
-  strokeRed?: number
-  strokeGreen?: number
-  strokeBlue?: number
+  kind: ShapeKind; red: number; green: number; blue: number; cornerRadius: number; smoothing?: boolean; lineWidth?: number; start?: [number, number]; end?: [number, number]
+  lineStyle?: LineStyle; lineCap?: LineCap; strokeWidth?: number; strokeRed?: number; strokeGreen?: number; strokeBlue?: number
 }
 
 // Dash and gap lengths in multiples of the line's width, as they look with their caps on: a dot is as long as the line is wide.
@@ -397,19 +386,8 @@ Store.onSelectionOrToolChange = owner => {
 // MARK: Dragging a new shape
 
 type Draft = {
-  kind: ShapeKind
-  anchor: [number, number]
-  point: [number, number]
-  square: boolean
-  center: boolean
-  radius: number
-  smoothing: boolean
-  fill: [number, number, number]
-  lineWidth: number
-  lineStyle: LineStyle
-  lineCap: LineCap
-  strokeWidth: number
-  strokeColor: [number, number, number]
+  kind: ShapeKind; anchor: [number, number]; point: [number, number]; square: boolean; center: boolean; radius: number; smoothing: boolean
+  fill: [number, number, number]; lineWidth: number; lineStyle: LineStyle; lineCap: LineCap; strokeWidth: number; strokeColor: [number, number, number]
 }
 let draft: Draft | null = null
 let shiftHeld = false

@@ -294,13 +294,7 @@ function SelectionHeader() {
       <NumberField disabled={!can} min={1} max={500} style={{ width: 48 }} value={amount} onChange={setAmount} />
     </label>
     <span className="segmented">
-      {(['expand', 'contract', 'feather'] as const).map(op => (
-        <button key={op} type="button" disabled={!can} title={`${op[0].toUpperCase() + op.slice(1)} the selection by this many pixels`} aria-label={op}
-          style={{ padding: '4px 7px', display: 'inline-flex', alignItems: 'center' }}
-          onClick={() => store.modifySelection(op, op === 'feather' ? Math.min(250, amount) : amount)}>
-          <Icon name={op} size={14} />
-        </button>
-      ))}
+      {(['expand', 'contract', 'feather'] as const).map(op => <button key={op} type="button" disabled={!can} title={`${op[0].toUpperCase() + op.slice(1)} the selection by this many pixels`} aria-label={op} style={{ padding: '4px 7px', display: 'inline-flex', alignItems: 'center' }} onClick={() => store.modifySelection(op, op === 'feather' ? Math.min(250, amount) : amount)}><Icon name={op} size={14} /></button>)}
     </span>
     <span style={{ flex: 1 }} />
     {state.selection && <button onClick={() => store.deselect()}>Deselect</button>}

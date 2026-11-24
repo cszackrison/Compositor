@@ -10,7 +10,7 @@ import { grownTransform, placeOnGrid } from './filters'
 // ⌘T with a selection (FloatingSelection.swift): the selected pixels are lifted onto a temporary "Floating Selection" layer just
 // above their layer and the hole is cleared, all inside one "Transform Selection" step that stays open while the Move tool
 // transforms the floating pixels. Applying merges them back; Escape restores everything exactly.
-type Floating = { sourceId: string; floatingId: string; original: Transform; selection: Raster; region: { x: number; y: number; w: number; h: number } }
+type Floating = { sourceId: string; floatingId: string; original: Transform; selection: Raster; selectionBase: Raster | null; region: { x: number; y: number; w: number; h: number } }
 let floating: Floating | null = null
 export const isFloating = () => !!floating
 export const floatingLayerId = () => floating?.floatingId
@@ -77,7 +77,7 @@ export function beginTransformSelection() {
   const temp = newLayer({ name: 'Floating Selection', image: liftedMade?.image ?? lifted, deep: liftedMade?.deep, transform, parentId: layer.parentId, opacity: layer.opacity, blendMode: layer.blendMode })
   const layers = store.doc.layers.flatMap(l => l.id === layer.id ? [{ ...l, image: clearedMade?.image ?? cleared, deep: clearedMade?.deep, text: undefined, shape: undefined }, temp] : [l])
   store.set({ doc: { ...store.doc, layers }, activeId: temp.id, selectedIds: [temp.id] })
-  floating = { sourceId: layer.id, floatingId: temp.id, original: transform, selection, region: box }
+  floating = { sourceId: layer.id, floatingId: temp.id, original: transform, selection, selectionBase: store.state.selectionBase, region: box }
   if (store.state.tool !== 'move') store.setTool('move')
   store.pixelsChanged()
   return true
@@ -122,13 +122,18 @@ export function commitFloating() {
   const mask = grown && source.mask && !source.maskPlacement && !source.mask.isUniform() ? padMask(source.mask, image, [x0, y0], merged.width, merged.height, 255) : source.mask
   // The selection follows the pixels.
   const move = multiply(pixelToDocument(temp.transform, f.region.w, f.region.h), invert(pixelToDocument(f.original, f.region.w, f.region.h)))
-  const back = invert(move), sel = f.selection, moved = new Raster(sel.width, sel.height, 1)
-  for (let y = 0; y < sel.height; y++) for (let x = 0; x < sel.width; x++) {
-    const [sx, sy] = apply(back, x + 0.5, y + 0.5), ix = Math.floor(sx), iy = Math.floor(sy)
-    if (ix >= 0 && iy >= 0 && ix < sel.width && iy < sel.height) moved.data[y * sel.width + x] = sel.data[iy * sel.width + ix]
+  const back = invert(move)
+  const carry = (sel: Raster) => {
+    const out = new Raster(sel.width, sel.height, 1)
+    for (let y = 0; y < sel.height; y++) for (let x = 0; x < sel.width; x++) {
+      const [sx, sy] = apply(back, x + 0.5, y + 0.5), ix = Math.floor(sx), iy = Math.floor(sy)
+      if (ix >= 0 && iy >= 0 && ix < sel.width && iy < sel.height) out.data[y * sel.width + x] = sel.data[iy * sel.width + ix]
+    }
+    return out
   }
+  const moved = carry(f.selection), kept = moved.data.some(v => v)
   const layers = store.doc.layers.filter(l => l.id !== temp.id).map(l => l.id === source.id ? { ...l, image: made?.image ?? merged, deep: made?.deep, transform, mask } : l)
-  store.set({ doc: { ...store.doc, layers }, activeId: source.id, selectedIds: [source.id], selection: moved.data.some(v => v) ? moved : null })
+  store.set({ doc: { ...store.doc, layers }, activeId: source.id, selectedIds: [source.id], selection: kept ? moved : null, selectionBase: kept && f.selectionBase ? carry(f.selectionBase) : null, selectionFeather: kept ? store.state.selectionFeather : 0 })
   store.endGesture()
   store.pixelsChanged()
 }

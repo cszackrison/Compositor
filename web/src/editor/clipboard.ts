@@ -166,7 +166,7 @@ export function layerViaCopy() {
 // `duplicate` leaves the originals in place. Returns a function that previews an offset; call `finish` to keep it.
 export function beginPixelMove(duplicate: boolean) {
   const layer = store.active
-  const selection = store.state.selection
+  const selection = store.state.selection, selectionBase = store.state.selectionBase
   if (!layer?.image || layer.isGroup || layer.adjustment || store.state.editingMask || !selection) return null
   store.beginGesture(duplicate ? 'Duplicate Pixels' : 'Move Pixels')
   const image = layer.image, toDoc = pixelToDocument(layer.transform, image.width, image.height), toPixel = invert(toDoc)
@@ -216,7 +216,7 @@ export function beginPixelMove(duplicate: boolean) {
     last = [dx, dy]
     const out = moved(image.data, ...place(dx, dy))
     update(out, { image: new Raster(out.width, out.height, 4, out.data as Uint8Array), deep: undefined })
-    store.set({ selection: offsetSelection(selection, dx, dy) })
+    store.set({ selection: offsetSelection(selection, dx, dy), selectionBase: selectionBase && offsetSelection(selectionBase, dx, dy) })
     store.pixelsChanged()
   }
   // A 16-bit or HDR layer's pixels are moved again at their full depth when the move is kept.

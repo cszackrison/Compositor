@@ -164,6 +164,18 @@ describe('layer operations', () => {
     expect(inserted.clipTo).toBe(id('A'))
   })
 
+  it('duplicates a clipping base alone without unclipping the layers clipped to it', () => {
+    const { store, names, id } = setup()
+    store.setActive(id('B')); store.toggleClip()
+    store.setActive(id('C')); store.toggleClip()
+    store.setActive(id('A'))
+    store.duplicate()
+    expect(names()).toEqual(['A', 'A copy', 'B', 'C'])
+    expect(store.layer(id('B'))!.clipTo).toBe(id('A'))
+    expect(store.layer(id('C'))!.clipTo).toBe(id('A'))
+    expect(store.layer(id('A copy'))!.clipTo).toBeNull()
+  })
+
   it('duplicates and nudges in one undo step, and puts new layers inside an active folder unless besideFolder is set', () => {
     const { store, names, id } = setup()
     store.setActive(id('A'))

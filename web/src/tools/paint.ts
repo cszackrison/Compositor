@@ -5,7 +5,8 @@ import { Raster } from '../model/raster'
 import { blurFloats, lazyBlur } from '../model/pixels'
 import { bound, deepOf, deepToFloats, flattened, floatsToDeep } from '../model/deep'
 import { call, withBuffers } from '../kernels'
-import { apply, invert, type Mat3 } from '../render/gl'
+import { apply, identity, invert, type Mat3 } from '../render/gl'
+import { resampleAffine } from '../model/gif'
 import { pixelToDocument } from '../render/compositor'
 import { GPUBrush } from '../render/gpuBrush'
 import { croppedLayer, grownTransform, placeOnGrid } from '../editor/filters'
@@ -23,7 +24,7 @@ let altHeld = false
 
 // Painting can reach past a layer's pixels to the whole canvas: the grid grows first, and shrinks back to what was painted after.
 // A scaled-down layer that would outgrow the pixel budget at its own resolution is resampled to its displayed size first (#334).
-function growToCanvas(layerId: string): { x: number; y: number; w: number; h: number } | null {
+export function growToCanvas(layerId: string): { x: number; y: number; w: number; h: number } | null {
   let layer = store.layer(layerId)!, image = layer.image!
   const calcBounds = (img: Raster, t: typeof layer.transform) => {
     const toPixel = invert(pixelToDocument(t, img.width, img.height))
@@ -40,16 +41,14 @@ function growToCanvas(layerId: string): { x: number; y: number; w: number; h: nu
   if (x0 === 0 && y0 === 0 && x1 === image.width && y1 === image.height) return null
   if ((x1 - x0) * (y1 - y0) > 120_000_000) {
     const dw = Math.max(1, Math.round(layer.transform.size[0])), dh = Math.max(1, Math.round(layer.transform.size[1]))
-    if (dw >= image.width && dh >= image.height) return null
-    const resampled = new Raster(dw, dh, 4), sx = image.width / dw, sy = image.height / dh
-    for (let y = 0; y < dh; y++) for (let x = 0; x < dw; x++) {
-      const ix = Math.min(image.width - 1, Math.floor((x + 0.5) * sx)), iy = Math.min(image.height - 1, Math.floor((y + 0.5) * sy))
-      resampled.data.set(image.data.subarray((iy * image.width + ix) * 4, (iy * image.width + ix) * 4 + 4), (y * dw + x) * 4)
-    }
-    store.updateLayerLive(layerId, { image: resampled, deep: undefined })
+    // A 16-bit or HDR layer keeps its pixels at full depth and is painted within its grid, as on the Mac.
+    if (deepOf(layer) || dw >= image.width && dh >= image.height) return null
+    const nextBounds = calcBounds({ width: dw, height: dh } as Raster, layer.transform)
+    if ((nextBounds.x1 - nextBounds.x0) * (nextBounds.y1 - nextBounds.y0) > 120_000_000) return null
+    const resampled = resampleAffine(image, dw, dh, identity(), 'High quality')
+    store.updateLayerLive(layerId, { image: resampled })
     layer = store.layer(layerId)!; image = resampled
-    ;({ x0, y0, x1, y1 } = calcBounds(image, layer.transform))
-    if ((x1 - x0) * (y1 - y0) > 120_000_000) return null
+    ;({ x0, y0, x1, y1 } = nextBounds)
   }
   const grown = placeOnGrid(image, [x0, y0], x1 - x0, y1 - y0)
   const transform = grownTransform(layer.transform, pixelToDocument(layer.transform, image.width, image.height), image.width, image.height, [x0, y0], grown.width, grown.height)

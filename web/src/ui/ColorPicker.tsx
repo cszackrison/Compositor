@@ -48,6 +48,14 @@ export function parseTypedHex(text: string): RGB255 | null {
   return [0, 2, 4].map(i => parseInt(padded.slice(i, i + 2), 16)) as RGB255
 }
 
+// A hex value as it's committed, by Return or leaving the field (PaletteColor(hex:)): three digits stand for six ("FFF" -> FFFFFF).
+export function parseHex(text: string): RGB255 | null {
+  const digits = text.trim().replace(/^#/, '')
+  if (!/^([0-9a-f]{3}|[0-9a-f]{6})$/i.test(digits)) return null
+  const padded = digits.length === 3 ? [...digits].map(d => d + d).join('') : digits
+  return [0, 2, 4].map(i => parseInt(padded.slice(i, i + 2), 16)) as RGB255
+}
+
 function Picker({ request: r }: { request: Request }) {
   const [hsb, setHSB] = useState<HSB>(() => fromRGB(r.initial, { h: 0, s: 0, b: 0 }))
   const [hexText, setHexText] = useState(hex(r.initial))
@@ -71,7 +79,7 @@ function Picker({ request: r }: { request: Request }) {
     }
     return () => { canvasPicker.current = null; activeSetter = null }
   }, [])
-  const finish = (ok: boolean) => { remembered.set(r.title, position); closePicker(); if (ok) r.onCommit(color); else r.onCancel?.() }
+  const finish = (ok: boolean, chosen = color) => { remembered.set(r.title, position); closePicker(); if (ok) r.onCommit(chosen); else r.onCancel?.() }
   const latest = useRef(finish)
   latest.current = finish
   useEffect(() => {
@@ -105,6 +113,7 @@ function Picker({ request: r }: { request: Request }) {
     const parsed = parseTypedHex(text)
     if (parsed) setHSB(h => fromRGB(parsed, h))
   }
+  const commitHex = () => { editingHex.current = false; const parsed = parseHex(hexText); if (parsed) setHSB(h => fromRGB(parsed, h)); setHexText(hex(parsed ?? color)); return parsed ?? color }
   const pure = toRGB({ h: hsb.h, s: 1, b: 1 })
   return (
     <div className="color-picker" style={{ left: position.x, top: position.y }} onPointerDown={moveWindow}>
@@ -125,16 +134,12 @@ function Picker({ request: r }: { request: Request }) {
           {(['R', 'G', 'B'] as const).map((label, i) => (
             <label key={label}>
               <Scrub label={label} value={color[i]} min={0} max={255} onChange={v => setChannel(i, v)} />
-              <NumberField min={0} max={255} style={{ width: 58 }} value={color[i]} onChange={v => setChannel(i, v)}
-                onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); finish(true) } e.stopPropagation() }} />
+              <NumberField min={0} max={255} style={{ width: 58 }} value={color[i]} onChange={v => setChannel(i, v)} onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); finish(true) } e.stopPropagation() }} />
             </label>
           ))}
           <label>
             <span className="muted">#</span>
-            <input type="text" style={{ width: 84, fontFamily: 'ui-monospace, monospace' }} value={hexText}
-              onChange={e => onHexChange(e.target.value)}
-              onBlur={() => { editingHex.current = false; setHexText(hex(color)) }}
-              onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); finish(true) } e.stopPropagation() }} />
+            <input type="text" style={{ width: 84, fontFamily: 'ui-monospace, monospace' }} value={hexText} onChange={e => onHexChange(e.target.value)} onBlur={commitHex} onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); finish(true, commitHex()) } e.stopPropagation() }} />
           </label>
         </div>
       </div>
@@ -142,7 +147,7 @@ function Picker({ request: r }: { request: Request }) {
         <span className="muted">{r.sampling !== false ? 'Click the canvas to sample' : ''}</span>
         <span style={{ display: 'flex', gap: 8 }}>
           <button type="button" onClick={() => finish(false)}>Cancel</button>
-          <button type="button" className="primary" onClick={() => finish(true)}>OK</button>
+          <button type="button" className="primary" onClick={() => finish(true, editingHex.current ? commitHex() : color)}>OK</button>
         </span>
       </div>
     </div>

@@ -9,7 +9,7 @@ import { dashedPath, drawHudLabel, type Pointer, type ToolHandler } from './tool
 type Drag =
   | { kind: 'marquee'; start: [number, number]; current: [number, number]; mode: SelectionMode; square: boolean; center: boolean; pointer: [number, number]; moving?: { pointer: [number, number]; start: [number, number]; current: [number, number] } }
   | { kind: 'lasso'; points: [number, number][]; mode: SelectionMode }
-  | { kind: 'outline'; start: [number, number]; original: Raster; box: { x: number; y: number; w: number; h: number }; moved: boolean }
+  | { kind: 'outline'; start: [number, number]; original: Raster; originalBase: Raster | null; box: { x: number; y: number; w: number; h: number }; moved: boolean }
   | { kind: 'pixels'; start: [number, number]; move: NonNullable<ReturnType<typeof beginPixelMove>>; moved: boolean }
   | { kind: 'click'; start: [number, number]; mode: SelectionMode }
 let drag: Drag | null = null
@@ -69,7 +69,7 @@ function startMoves(p: Pointer): boolean {
   }
   if (p.shift || p.alt) return false
   const original = store.state.selection!
-  drag = { kind: 'outline', start: p.point, original, box: bounds(original)!, moved: false }
+  drag = { kind: 'outline', start: p.point, original, originalBase: store.state.selectionBase, box: bounds(original)!, moved: false }
   store.beginGesture('Move Selection')
   return true
 }
@@ -181,7 +181,7 @@ function dragMove(p: Pointer) {
     const [lx, ly, lock] = axisLock(Math.round(p.point[0] - d.start[0]), Math.round(p.point[1] - d.start[1]), p.shift)
     const [dx, dy] = snapMove(d.box, lx, ly, p.control, undefined, false, lock)
     d.moved = d.moved || dx !== 0 || dy !== 0
-    store.set({ selection: offsetSelection(d.original, Math.round(dx), Math.round(dy)) })
+    store.set({ selection: offsetSelection(d.original, Math.round(dx), Math.round(dy)), selectionBase: d.originalBase && offsetSelection(d.originalBase, Math.round(dx), Math.round(dy)) })
   } else if (d.kind === 'pixels') {
     const [dx, dy] = axisLock(Math.round(p.point[0] - d.start[0]), Math.round(p.point[1] - d.start[1]), p.shift)
     d.moved = true

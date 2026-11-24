@@ -9,7 +9,7 @@ import { channelTables, curveValue, hueSaturationCube, kernelCube } from '../src
 import { newAdjustment, newLayer, fullTransform, type Doc } from '../src/model/types'
 import { expandSelection, contractSelection, wand } from '../src/model/selection'
 import { movingDistances, distancesBetween } from '../src/tools/distances'
-import { parseTypedHex } from '../src/ui/ColorPicker'
+import { parseHex, parseTypedHex } from '../src/ui/ColorPicker'
 import { BrushStroke } from '../src/tools/brush'
 import { History } from '../src/model/history'
 import { pixelToDocument } from '../src/render/compositor'
@@ -366,6 +366,10 @@ describe('pixel tools', () => {
     expect(parseTypedHex('1a2b3c')).toEqual([0x1a, 0x2b, 0x3c])
     expect(parseTypedHex('')).toBeNull()
     expect(parseTypedHex('GGGGGG')).toBeNull()
+    expect(parseHex('#fff')).toEqual([255, 255, 255])
+    expect(parseHex('F80')).toEqual([0xff, 0x88, 0])
+    expect(parseHex('1a2b3c')).toEqual([0x1a, 0x2b, 0x3c])
+    expect(parseHex('FF8F')).toBeNull()
   })
 })
 

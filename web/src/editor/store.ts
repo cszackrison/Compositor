@@ -424,7 +424,8 @@ export class Store {
     }
     const copies = families.map(f => f.copy)
     const activeCopy = families.find(f => f.root === this.state.activeId)?.copy ?? copies.at(-1)!
-    return { doc: this.replaceLayers(this.releaseBrokenClips(layers)), activeId: activeCopy, selectedIds: copies }
+    // A single copy leaves clipping as it was, as on the Mac (relinkCopiedClipping): a base's copy above it keeps the stack clipped to the base.
+    return { doc: this.replaceLayers(families.length > 1 ? this.releaseBrokenClips(layers) : layers), activeId: activeCopy, selectedIds: copies }
   }
 
   duplicate() {
@@ -944,7 +945,7 @@ export class Store {
   resizeCanvas(width: number, height: number, offsetX: number, offsetY: number, name = 'Canvas Size') {
     const shift = (t: Transform): Transform => ({ ...t, origin: [t.origin[0] + offsetX, t.origin[1] + offsetY] })
     const layers = this.doc.layers.map(l => ({ ...l, transform: l.isGroup || l.adjustment ? { ...fullTransform(width, height), sampling: l.transform.sampling, ...(l.mask ? shift(l.transform) : {}) } : shift(l.transform), maskPlacement: l.maskPlacement ? shift(l.maskPlacement) : null }))
-    this.commit(name, { doc: { ...this.doc, width, height, layers, guides: this.doc.guides.map(g => ({ ...g, position: g.position + (g.axis === 'vertical' ? offsetX : offsetY) })) }, selection: null })
+    this.commit(name, { doc: { ...this.doc, width, height, layers, guides: this.doc.guides.map(g => ({ ...g, position: g.position + (g.axis === 'vertical' ? offsetX : offsetY) })) }, selection: null, selectionFeather: 0, selectionBase: null })
     this.pixelsChanged()
   }
 
@@ -1007,7 +1008,7 @@ export class Store {
       return { ...l, image: baked.raster, deep: made?.deep, transform: baked.transform, mask, maskPlacement, effects: scaleEffects(l.effects), text: undefined, shape: undefined, ...resizedGIF }
     })
     const guides = doc.guides.map(g => ({ ...g, position: g.position * (g.axis === 'vertical' ? sx : sy) }))
-    this.commit('Image Size', { doc: { ...doc, width, height, resolution, layers, guides }, selection: null })
+    this.commit('Image Size', { doc: { ...doc, width, height, resolution, layers, guides }, selection: null, selectionFeather: 0, selectionBase: null })
     this.pixelsChanged()
   }
 
@@ -1033,7 +1034,7 @@ export class Store {
       : { ...t, origin: [t.origin[0], height - t.origin[1] - t.size[1]], rotation: -t.rotation, flipY: !t.flipY }
     const layers = this.doc.layers.map(l => ({ ...l, transform: mirror(l.transform), maskPlacement: l.maskPlacement ? mirror(l.maskPlacement) : null }))
     const guides = this.doc.guides.map(g => (axis === 'x') === (g.axis === 'vertical') ? { ...g, position: (axis === 'x' ? width : height) - g.position } : g)
-    this.commit(axis === 'x' ? 'Flip Canvas Horizontal' : 'Flip Canvas Vertical', { doc: { ...this.doc, layers, guides }, selection: null })
+    this.commit(axis === 'x' ? 'Flip Canvas Horizontal' : 'Flip Canvas Vertical', { doc: { ...this.doc, layers, guides }, selection: null, selectionFeather: 0, selectionBase: null })
   }
 
   // Image › Rotate Canvas 90° (CanvasRotation.swift): width and height swap, and every layer, placed mask, guide and the selection turn

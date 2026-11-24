@@ -22,7 +22,7 @@ import { FilterHost, lastFilterName, repeatLastFilter } from './Filters'
 import { CommandPalette } from './CommandPalette'
 import { Navigator } from './Navigator'
 import { guidesShown, prefs, setPrefs, subscribePrefs } from '../editor/prefs'
-import { definitionFor, shortcutText, subscribeShortcuts } from '../editor/shortcuts'
+import { definitionFor, isExportAsAlias, shortcutText, subscribeShortcuts } from '../editor/shortcuts'
 import { brushKey } from '../tools/paint'
 import { beginTransformSelection } from '../editor/floating'
 import { clearGuides } from '../tools/guides'
@@ -318,8 +318,7 @@ export function App() {
       // The tool first: Return applies, Escape cancels, and painting tools take their own keys.
       if (activeHandler().key?.(event)) { event.preventDefault(); return }
       if (brushKey(event)) { event.preventDefault(); return }
-      // Photoshop's newer Export As key (⌥⇧⌘W) works alongside ⌥⇧⌘S.
-      if ((event.metaKey || event.ctrlKey) && event.altKey && event.shiftKey && event.code === 'KeyW' && has()) return run(commands['Export As'].run)
+      if (isExportAsAlias(event) && has()) return run(commands['Export As'].run)
       const definition = definitionFor(event)
       if (!definition) return
       if (definition.group === 'Menus') {
