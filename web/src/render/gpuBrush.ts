@@ -20,6 +20,7 @@ uniform float radius;
 uniform float hardness;
 uniform float strength;
 uniform int hard;
+uniform int aliased;
 out vec4 value;
 float falloff(float u) {
   const float k = 2.5;
@@ -28,7 +29,10 @@ float falloff(float u) {
 void main() {
   vec2 d = gl_FragCoord.xy - center;
   float d2 = dot(d, d), v;
-  if (hard == 1) {
+  if (aliased == 1) {
+    if (d2 >= radius * radius) discard;
+    v = 1.0;
+  } else if (hard == 1) {
     float outer = radius + 0.5, solid = max(0.0, radius - 0.5);
     if (d2 >= outer * outer) discard;
     v = d2 <= solid * solid ? 1.0 : min(1.0, radius - sqrt(d2) + 0.5);
@@ -213,14 +217,14 @@ export class GPUBrush {
   }
 
   // One dab into the coverage, over its bounds `rect` (raster pixels).
-  dab(cx: number, cy: number, radius: number, hardness: number, rect: Rect, strength = 1) {
-    const gl = this.gl, hard = hardness >= 1
+  dab(cx: number, cy: number, radius: number, hardness: number, rect: Rect, strength = 1, aliased = false) {
+    const gl = this.gl, hard = hardness >= 1 || aliased
     gl.bindFramebuffer(gl.FRAMEBUFFER, this.coverageFramebuffer)
     gl.viewport(rect.x0, rect.y0, rect.x1 - rect.x0, rect.y1 - rect.y0)
     gl.enable(gl.BLEND)
     if (hard) gl.blendEquation(gl.MAX)
     else { gl.blendEquation(gl.FUNC_ADD); gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_COLOR) }
-    this.uniforms(this.programs.dab, { center: [cx, cy], radius, hardness, strength, hard: hard ? 1 : 0 })
+    this.uniforms(this.programs.dab, { center: [cx, cy], radius, hardness, strength, hard: hard ? 1 : 0, aliased: aliased ? 1 : 0 })
     this.draw()
     this.done()
   }

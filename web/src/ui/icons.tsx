@@ -31,6 +31,10 @@ const paths: Record<string, string> = {
   shape: 'M2 9h6v5H2zM11 2l3.5 6h-7z',
   crop: 'M4 1v11h11M1 4h11v11',
   type: 'M3 3h10M8 3v10M6 13h4',
+  expand: 'M5.5 5.5h5v5h-5zM4 4L1.5 1.5M1.5 4V1.5H4M12 4l2.5-2.5M12 1.5h2.5V4M4 12l-2.5 2.5M1.5 12v2.5H4M12 12l2.5 2.5M14.5 12v2.5H12',
+  contract: 'M1.5 1.5h13v13h-13zM3.8 3.8l2.5 2.5M6.3 4.3v2h-2M12.2 3.8l-2.5 2.5M9.7 4.3v2h2M3.8 12.2l2.5-2.5M6.3 11.7v-2h-2M12.2 12.2l-2.5-2.5M9.7 11.7v-2h2',
+  feather: 'M5.5 5.5h5v5h-5zM3.5 3.5h9v9h-9zM1.5 1.5h13v13h-13z',
+  resetColors: 'M2 2h12v12H2zM2 14L14 2',
 }
 
 export function Icon({ name, size = 16 }: { name: string; size?: number }) {

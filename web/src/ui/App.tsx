@@ -56,7 +56,6 @@ const commands: Record<string, { run: () => void; enabled?: () => boolean }> = {
   'Save As': { run: () => save(true), enabled: has },
   'Export PNG': { run: () => exportImage(), enabled: has },
   'Export As': { run: open('Export As'), enabled: has },
-  'Export JPEG': { run: open('Export JPEG'), enabled: has },
   'Close Project': { run: () => closeProject(), enabled: has },
   'Fit Canvas': { run: () => fit(), enabled: has },
   'Search Commands': { run: open('Search Commands') },
@@ -145,10 +144,11 @@ function canvasCommand(title: string): boolean {
     store.setBlend(layer.id, blendModes[(index + step + blendModes.length) % blendModes.length])
     return true
   }
-  const nudge = /^(Nudge|Move selected pixels) (Left|Right|Up|Down) (1|10) px$/.exec(title)
+  const nudge = /^(Nudge|Duplicate and Nudge|Move selected pixels) (Left|Right|Up|Down) (1|10) px$/.exec(title)
   if (nudge && has()) {
     const n = +nudge[3], [dx, dy] = { Left: [-n, 0], Right: [n, 0], Up: [0, -n], Down: [0, n] }[nudge[2] as 'Left']
     if (nudge[1] === 'Move selected pixels') { import('../editor/clipboard').then(({ beginPixelMove }) => { const move = beginPixelMove(false); if (move) { move.preview(dx, dy); move.finish() } }); return true }
+    if (nudge[1] === 'Duplicate and Nudge') { if (s.tool === 'move' && store.active) { store.duplicateAndNudge(dx, dy); return true } return false }
     if (['marquee', 'lasso', 'wand'].includes(s.tool) && s.selection) { store.moveSelectionBy(dx, dy); return true }
     if (s.tool === 'move' && store.active) { store.commit('Nudge', { doc: { ...store.doc, layers: store.movedLayers(dx, dy) } }, { coalesce: 'nudge' }); return true }
     return false
@@ -204,7 +204,6 @@ export function App() {
       { label: 'Download as Zip', action: downloadZip, disabled: !doc },
       'divider',
       item('Export PNG…', 'Export PNG'),
-      item('Export JPEG…', 'Export JPEG'),
       item('Export As…', 'Export As'),
       'divider',
       item('Close Project', 'Close Project'),
@@ -293,6 +292,7 @@ export function App() {
       'divider',
       item('Grid', 'Show Grid', { checked: prefs.grid }),
       item('Guides', 'Show Guides', { checked: guidesShown() }),
+      { label: 'Distances', checked: prefs.distances, action: () => setPrefs({ distances: !prefs.distances }), disabled: !doc },
       { label: 'Grid Settings…', action: open('Grid Settings') },
       item('Rulers', 'Show Rulers', { checked: prefs.rulers }),
       'divider',
@@ -318,6 +318,8 @@ export function App() {
       // The tool first: Return applies, Escape cancels, and painting tools take their own keys.
       if (activeHandler().key?.(event)) { event.preventDefault(); return }
       if (brushKey(event)) { event.preventDefault(); return }
+      // Photoshop's newer Export As key (⌥⇧⌘W) works alongside ⌥⇧⌘S.
+      if ((event.metaKey || event.ctrlKey) && event.altKey && event.shiftKey && event.code === 'KeyW' && has()) return run(commands['Export As'].run)
       const definition = definitionFor(event)
       if (!definition) return
       if (definition.group === 'Menus') {

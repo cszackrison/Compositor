@@ -93,13 +93,13 @@ export async function cut() {
   if (store.history.last !== last) store.history.renameLast(store.state.editingMask ? 'Fill Mask' : 'Clear')
 }
 
-function pastePixels(pixels: Raster, origin: [number, number] | null, name = 'Paste', deep?: DeepRegion) {
+function pastePixels(pixels: Raster, origin: [number, number] | null, name = 'Paste', deep?: DeepRegion, besideFolder = true) {
   const doc = store.doc
   const at = origin ?? [Math.floor((doc.width - pixels.width) / 2), Math.floor((doc.height - pixels.height) / 2)]
   const count = doc.layers.filter(l => /^Layer \d+$/.test(l.name)).length + 1
   const made = deep ? makeDeep(floatsToDeep(deep.data, deep.hdr), pixels.width, pixels.height, deep.hdr) : null
-  store.addLayer(newLayer({ name: `Layer ${count}`, transform: fullTransform(pixels.width, pixels.height, at[0], at[1]), image: made?.image ?? pixels, deep: made?.deep }), name)
-  store.set({ selection: null })
+  store.addLayer(newLayer({ name: `Layer ${count}`, transform: fullTransform(pixels.width, pixels.height, at[0], at[1]), image: made?.image ?? pixels, deep: made?.deep }), name, besideFolder)
+  store.set({ selection: null, selectionFeather: 0, selectionBase: null })
 }
 
 // A layer's pixels copied, at their full depth if it keeps it.
@@ -153,13 +153,13 @@ export async function paste(event?: ClipboardEvent) {
   if (tabs.includes(clip.from) || clip.layers.length) copyLayersInto(store, clip.layers)
 }
 
-// ⌘J with a selection: the selected pixels (or mask) as a new layer at the same place.
+// ⌘J with a selection: the selected pixels (or mask) as a new layer at the same place (inside the folder if a folder is active).
 export function layerViaCopy() {
   const layer = store.active
   if (!layer || !store.state.selection || layer.isGroup) { store.duplicate(); return }
   const region = selectedRegion(layerOnCanvas(layer, store.state.editingMask), store.state.editingMask ? null : deepOnCanvas([canvasLayer(layer)]))
   if (!region) return
-  pastePixels(region.pixels, region.origin, 'Layer via Copy', region.deep)
+  pastePixels(region.pixels, region.origin, 'Layer via Copy', region.deep, false)
 }
 
 // ⌘-drag with a selection tool: the selected pixels of the active layer, lifted and moved by a whole number of document pixels.

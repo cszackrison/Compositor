@@ -43,7 +43,7 @@ export function transformCorners(t: Transform) {
   return [apply(m, 0, 0), apply(m, 1, 0), apply(m, 1, 1), apply(m, 0, 1)]
 }
 
-type Entry = { layer: Layer; ancestors: Layer[] }
+type Entry = { layer: Layer; ancestors: Layer[]; visible: boolean }
 type Source = { texture: WebGLTexture; width: number; height: number; unitToDoc: Mat3; sampling: Transform['sampling'] | 'Exact'; rotation: number; raster?: Raster; mipmapped?: boolean }
 type MaskSpec = { mode: 0 } | { mode: 1; texture: WebGLTexture } | { mode: 2; texture: WebGLTexture; unitToDoc: Mat3; outside: number }
 
@@ -51,18 +51,24 @@ export function drawOrder(doc: Doc): Entry[] {
   const children = new Map<string | null, Layer[]>()
   for (const layer of doc.layers) children.set(layer.parentId, [...(children.get(layer.parentId) ?? []), layer])
   const out: Entry[] = []
-  const walk = (parent: string | null, ancestors: Layer[], depth: number) => {
+  const walk = (parent: string | null, ancestors: Layer[], shown: boolean, depth: number) => {
     if (depth > 64) return
+    const below = new Set<string>(), visibleSiblings = new Set<string>()
     for (const layer of children.get(parent) ?? []) {
-      out.push({ layer, ancestors })
-      if (layer.isGroup) walk(layer.id, [...ancestors, layer], depth + 1)
+      let effective = shown && layer.visible
+      // Hiding a clipping stack's base hides the layers clipped to it, as in Photoshop.
+      if (layer.clipTo && below.has(layer.clipTo) && !visibleSiblings.has(layer.clipTo)) effective = false
+      below.add(layer.id)
+      if (effective) visibleSiblings.add(layer.id)
+      out.push({ layer, ancestors, visible: effective })
+      if (layer.isGroup) walk(layer.id, [...ancestors, layer], effective, depth + 1)
     }
   }
-  walk(null, [], 0)
+  walk(null, [], true, 0)
   return out
 }
 
-export const effectivelyVisible = (entry: Entry) => entry.layer.visible && entry.ancestors.every(a => a.visible)
+export const effectivelyVisible = (entry: Entry) => entry.visible
 
 type Part = { key: string; version: number; texture: WebGLTexture; step: number; width: number; height: number }
 type TextureRecord = { texture: WebGLTexture; version: number; mipVersion: number; width: number; height: number; channels: number }

@@ -130,4 +130,69 @@ describe('layer operations', () => {
     expect(store.doc.guides[0]).toMatchObject({ axis: 'vertical', position: 1 })
     expect(store.state.selection!.data[0]).toBe(255)
   })
+
+  it('hides clipped layers when their base is hidden, and clicking a clipped layer eye shows the stack', async () => {
+    const { drawOrder } = await import('../src/render/compositor')
+    const { store, id } = setup()
+    store.setActive(id('B')); store.toggleClip()
+    store.setActive(id('C')); store.toggleClip()
+    store.toggleLayerVisibility(id('A'))
+    const hiddenOrder = drawOrder(store.doc)
+    expect(hiddenOrder.map(e => e.visible)).toEqual([false, false, false])
+    expect(store.hiddenClippingStack(id('C'))).toEqual([id('A'), id('B'), id('C')])
+    store.toggleLayerVisibility(id('C'))
+    expect(store.doc.layers.every(l => l.visible)).toBe(true)
+    expect(store.history.undoName).toBe('Show Layers')
+    store.undo()
+    expect(store.layer(id('A'))!.visible).toBe(false)
+  })
+
+  it('duplicates a clipping base and its clipped layers as an independent stack, and inserts inside a stack clipped', () => {
+    const { store, id } = setup()
+    store.setActive(id('B')); store.toggleClip()
+    store.setActive(id('A')); store.setActive(id('B'), 'toggle')
+    store.duplicate()
+    const baseCopy = store.doc.layers.find(l => l.name === 'A copy')!
+    const clippedCopy = store.doc.layers.find(l => l.name === 'B copy')!
+    expect(baseCopy.clipTo).toBeNull()
+    expect(clippedCopy.clipTo).toBe(baseCopy.id)
+    expect(store.layer(id('B'))!.clipTo).toBe(id('A'))
+    // Adding a blank layer while the clipping base is active inserts it clipped between A and B.
+    store.setActive(id('A'))
+    store.addBlankLayer()
+    const inserted = store.active!
+    expect(inserted.clipTo).toBe(id('A'))
+  })
+
+  it('duplicates and nudges in one undo step, and puts new layers inside an active folder unless besideFolder is set', () => {
+    const { store, names, id } = setup()
+    store.setActive(id('A'))
+    store.duplicateAndNudge(10, -5)
+    expect(store.doc.layers.length).toBe(4)
+    expect(store.active!.transform.origin).toEqual([10, -5])
+    store.undo()
+    expect(store.doc.layers.length).toBe(3)
+    store.setActive(id('A')); store.group()
+    store.setActive(id('Group 1'))
+    store.addBlankLayer()
+    expect(names()).toEqual(['Group 1/A', 'Group 1/Layer 4', 'Group 1', 'B', 'C'])
+    const pasted = newLayer({ name: 'Pasted', transform: fullTransform(4, 4), image: new Raster(4, 4, 4) })
+    store.setActive(id('Group 1'))
+    store.addLayer(pasted, 'Paste', true)
+    expect(names()).toEqual(['Group 1/A', 'Group 1/Layer 4', 'Group 1', 'Pasted', 'B', 'C'])
+  })
+
+  it('adds feather linearly across repeated calls and remembers it in undo', () => {
+    const { store } = setup()
+    const box = new Raster(20, 20, 1)
+    for (let y = 6; y < 14; y++) for (let x = 6; x < 14; x++) box.data[y * 20 + x] = 255
+    store.open({ id: 'F', width: 20, height: 20, resolution: 72, layers: [newLayer({ name: 'L', transform: fullTransform(20, 20), image: new Raster(20, 20, 4) })], guides: [], extra: {} }, null, null)
+    store.setSelection(box)
+    store.modifySelection('feather', 2)
+    expect(store.state.selectionFeather).toBe(2)
+    store.modifySelection('feather', 3)
+    expect(store.state.selectionFeather).toBe(5)
+    store.undo()
+    expect(store.state.selectionFeather).toBe(2)
+  })
 })

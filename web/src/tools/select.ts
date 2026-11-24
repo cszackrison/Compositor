@@ -4,7 +4,7 @@ import { bounds, offsetSelection, shapeCoverage, wand, type SelectionMode } from
 import type { Raster } from '../model/raster'
 import { requestOverlay, samplePixels, view, hitSlop } from '../ui/canvasState'
 import { clearSnap, snapMove, snapPoint } from './snap'
-import { dashedPath, type Pointer, type ToolHandler } from './tool'
+import { dashedPath, drawHudLabel, type Pointer, type ToolHandler } from './tool'
 
 type Drag =
   | { kind: 'marquee'; start: [number, number]; current: [number, number]; mode: SelectionMode; square: boolean; center: boolean; pointer: [number, number]; moving?: { pointer: [number, number]; start: [number, number]; current: [number, number] } }
@@ -227,6 +227,11 @@ function drawDrag(context: CanvasRenderingContext2D) {
     if (store.state.marqueeShape === 'ellipse') context.ellipse((x0 + x1) / 2, (y0 + y1) / 2, Math.abs(x1 - x0) / 2, Math.abs(y1 - y0) / 2, 0, 0, Math.PI * 2)
     else context.rect(x0 + 0.5, y0 + 0.5, x1 - x0, y1 - y0)
     dashedPath(context)
+    if (shape.w >= 1 && shape.h >= 1) {
+      const corners: [number, number][] = [[shape.x, shape.y], [shape.x + shape.w, shape.y], [shape.x, shape.y + shape.h], [shape.x + shape.w, shape.y + shape.h]]
+      const far = corners.reduce((best, c) => Math.hypot(c[0] - d.start[0], c[1] - d.start[1]) > Math.hypot(best[0] - d.start[0], best[1] - d.start[1]) ? c : best)
+      drawHudLabel(context, `${Math.round(shape.w)} × ${Math.round(shape.h)} px`, view.toScreen(...far), view.width, view.height)
+    }
   }
   const points = d?.kind === 'lasso' ? d.points : polygon ? [...polygon.points, ...(polygon.hover ? [polygon.hover] : [])] : null
   if (points?.length) {

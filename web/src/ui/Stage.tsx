@@ -10,7 +10,7 @@ import { copyMerged } from '../editor/actions'
 import { copyLayersInto, paste } from '../editor/clipboard'
 import { draggedFromOtherProject, takeDraggedLayers } from './Tabs'
 import { chosenProfile, subscribeProfiles } from '../io/cmyk'
-import { proofing, setProofing, subscribeProofing, actualSize, blurReach, canvasDrag, canvasGesture, canvasOnly, canvasPicker, compositor, fit, onFrame, renderFull, renderDeep, renderScaleFor, requestRender, setCompositor, snapLines, view, viewChanged, modifierHeld, releaseOnceModifiers, subscribeModifiers, tapModifier, touchModifiers, type ModifierKey } from './canvasState'
+import { proofing, setProofing, subscribeProofing, subscribeView, actualSize, blurReach, canvasDrag, canvasGesture, canvasOnly, canvasPicker, compositor, fit, onFrame, renderFull, renderDeep, renderScaleFor, requestRender, setCompositor, snapLines, view, viewChanged, modifierHeld, releaseOnceModifiers, subscribeModifiers, tapModifier, touchModifiers, type ModifierKey } from './canvasState'
 import { useCoarse } from './layout'
 import type { Pointer, ToolHandler } from '../tools/tool'
 import { eyedropper, paint } from '../tools/paint'
@@ -18,7 +18,7 @@ import { smear } from '../tools/smear'
 import { holdSpace, lasso, magic, marquee, selectionSize } from '../tools/select'
 import { move } from '../tools/move'
 import { gradient } from '../tools/gradient'
-import { shapeTool } from '../tools/shape'
+import { shapeDragStatus, shapeTool } from '../tools/shape'
 import { typeTool } from '../tools/type'
 import { crop, startCrop } from '../tools/crop'
 import { cancelGuideDrag, endGuideDrag, guideDrag, moveGuideDrag, rulerSize, startGuideDrag } from '../tools/guides'
@@ -32,7 +32,12 @@ export const handlers: Record<Tool, ToolHandler> = {
   move, marquee, lasso, wand: magic, brush: paint, eraser: paint, heal: paint, clone: paint, smear, gradient, shape: shapeTool, type: typeTool, crop, eyedropper, hand: idle, zoom: zoomTool,
 }
 export const activeHandler = () => handlers[store.state.tool]
-const statusText = (where: string) => { const s = selectionSize(); return `${where}${s ? `  ·  Selection ${s[0]} × ${s[1]} px` : ''}  ·  ${Math.round(view.zoom * 100)}%` }
+const statusText = (where: string) => {
+  const shape = shapeDragStatus()
+  const s = selectionSize()
+  const feather = s && store.state.selectionFeather > 0 ? ` · Feather ${store.state.selectionFeather} px` : ''
+  return `${where}${shape ? `  ·  ${shape}` : ''}${s ? `  ·  Selection ${s[0]} × ${s[1]} px${feather}` : ''}  ·  ${Math.round(view.zoom * 100)}%`
+}
 const brushTools = new Set<Tool>(['brush', 'eraser', 'heal', 'clone', 'smear'])
 
 let stageCanvas: HTMLCanvasElement | null = null
@@ -230,7 +235,7 @@ function canvasMenu(point: [number, number]): MenuItem[] {
     { label: store.mergeTitle, shortcut: '⌘E', action: () => store.mergeDown(), disabled: !store.canMerge },
     { label: 'Flip Horizontal', action: () => store.flipLayer('x'), disabled: !layer },
     { label: 'Flip Vertical', action: () => store.flipLayer('y'), disabled: !layer },
-    { label: layer?.visible === false ? 'Show Layer' : 'Hide Layer', action: () => layer && store.updateLayer(layer.id, { visible: !layer.visible }, layer.visible ? 'Hide Layer' : 'Show Layer'), disabled: !layer },
+    { label: layer?.visible === false ? 'Show Layer' : 'Hide Layer', action: () => layer && store.toggleLayerVisibility(layer.id), disabled: !layer },
     'divider', ...tail,
   ]
 }
@@ -282,7 +287,12 @@ export function Stage() {
     observer.observe(ref.current!)
     resize()
     const stop = subscribePrefs(() => requestRender(false))
-    return () => { observer.disconnect(); stop() }
+    const stopView = subscribeView(() => {
+      if (!statusRef.current || !store.hasDocument) return
+      const where = lastPointer.current ? `${Math.floor(lastPointer.current.point[0])}, ${Math.floor(lastPointer.current.point[1])}` : `${store.doc.width} × ${store.doc.height}`
+      statusRef.current.textContent = statusText(where)
+    })
+    return () => { observer.disconnect(); stop(); stopView() }
   }, [])
 
   // Each tab keeps its own view: switching away saves it, coming back restores it, a newly opened project is fitted.
@@ -374,8 +384,8 @@ export function Stage() {
       if ((p.screen[0] >= rulerSize || p.screen[1] >= rulerSize) && !prefs.lockGuides) { startGuideDrag(p.screen[1] < rulerSize ? 'horizontal' : 'vertical', null, p); guideGesture.current = true }
       return
     }
-    if (canvasGesture.current && event.button === 0) { gesturing.current = true; canvasGesture.current.down(p.point, p.screen); requestRender(false); return }
     if (canvasPicker.current && event.button === 0) { canvasPicker.current(p.point, p.shift, p.alt); canvasDrag.startX = event.clientX; return }
+    if (canvasGesture.current && event.button === 0) { gesturing.current = true; canvasGesture.current.down(p.point, p.screen); requestRender(false); return }
     if (event.button === 2 && !brushTools.has(store.state.tool)) return
     activeHandler().down?.(p)
     if (touch.current) touch.current.tool = true
@@ -445,7 +455,7 @@ export function Stage() {
       // A pinch sends small deltas and zooms smoothly; a mouse wheel's click comes as a whole line or page, or 100 px or more, and
       // zooms a step of about 20%.
       const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? box.height : 1, deltaX = event.deltaX * unit, deltaY = event.deltaY * unit
-      if (event.ctrlKey || event.metaKey) view.zoomAt(Math.exp(-Math.max(-18, Math.min(18, deltaY)) * 0.01), event.clientX - box.left, event.clientY - box.top)
+      if (event.ctrlKey || event.metaKey || event.altKey) view.zoomAt(Math.exp(-Math.max(-18, Math.min(18, deltaY)) * 0.01), event.clientX - box.left, event.clientY - box.top)
       else { view.offsetX -= deltaX; view.offsetY -= deltaY }
       viewChanged()
       requestRender(false)
@@ -460,10 +470,12 @@ export function Stage() {
       if (event.code === 'Space') { setSpace(true); holdSpace(true); event.preventDefault() }
       if (event.key === 'Escape' && guideDrag()) { cancelGuideDrag(); guideGesture.current = false; event.preventDefault() }
       if (event.key === 'Alt' && lastPointer.current) { activeHandler().hover?.({ ...lastPointer.current, alt: true }); updateCursor() }
+      if ((isMac ? event.key === 'Meta' : event.key === 'Control') && lastPointer.current) { activeHandler().hover?.({ ...lastPointer.current, command: true }); updateCursor() }
     }
     const up = (event: KeyboardEvent) => {
       if (event.code === 'Space') { setSpace(false); holdSpace(false) }
       if (event.key === 'Alt' && lastPointer.current) { activeHandler().hover?.({ ...lastPointer.current, alt: false }); updateCursor() }
+      if ((isMac ? event.key === 'Meta' : event.key === 'Control') && lastPointer.current) { activeHandler().hover?.({ ...lastPointer.current, command: false }); updateCursor() }
     }
     window.addEventListener('keydown', down)
     window.addEventListener('keyup', up)

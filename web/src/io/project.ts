@@ -70,6 +70,12 @@ export async function readProject(files: PackageFiles): Promise<{ doc: Doc; acti
     if (exr && manifest.version < 13) fail(`the image for "${record.name}" is OpenEXR, which needs format version 13`)
     if (record.shape?.smoothing === true && manifest.version < 14) fail(`the shape "${record.name}" has smooth corners, which need format version 14`)
     if ((record.shape?.lineStyle !== undefined || record.shape?.lineCap !== undefined) && (manifest.version < 15 || record.shape?.kind !== 'Line')) fail(`the shape "${record.name}" has a line style, which needs format version 15 and a line`)
+    if (record.shape && (record.shape.strokeWidth !== undefined || record.shape.strokeRed !== undefined || record.shape.strokeGreen !== undefined || record.shape.strokeBlue !== undefined)) {
+      const s = record.shape
+      if (manifest.version < 22 || (s.kind !== 'Rectangle' && s.kind !== 'Ellipse') || !(typeof s.strokeWidth === 'number' && Number.isFinite(s.strokeWidth) && s.strokeWidth > 0 && s.strokeWidth <= 5000) || ![s.strokeRed, s.strokeGreen, s.strokeBlue].every((v: unknown) => typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= 1)) {
+        fail(`the shape "${record.name}" has a stroke, which needs format version 22 and a rectangle or ellipse`)
+      }
+    }
     const decoded = image ? await decodeLayerImage(image, exr) : null
     let gif: Layer['gif']
     if (record.gif) {

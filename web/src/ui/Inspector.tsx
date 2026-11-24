@@ -32,11 +32,22 @@ export function Scrub({ label, value, min, max, step = 0, sensitivity = 1, onCha
 }
 
 // A number field that can be typed through values outside its range ("5" on the way to "56"): each keystroke in range applies at
-// once, and leaving the field or Return brings anything else within range.
+// once, leaving the field or Return brings anything else within range, and Up/Down step by the last digit (Shift for ten).
 export function NumberField({ value, min, max, step, digits = 0, onChange, ...rest }: { value: number; min: number; max: number; step?: number; digits?: number; onChange: (value: number) => void } & Omit<React.InputHTMLAttributes<HTMLInputElement>, 'value' | 'onChange' | 'min' | 'max' | 'step'>) {
   const [text, setText] = useState<string | null>(null)
   const finish = () => { if (text !== null && text.trim() !== '' && Number.isFinite(+text)) onChange(+Math.min(max, Math.max(min, +text)).toFixed(digits)); setText(null) }
-  return <input type="number" min={min} max={max} step={step} {...rest} value={text ?? +value.toFixed(digits)} onChange={e => { setText(e.target.value); const v = +e.target.value; if (e.target.value.trim() !== '' && Number.isFinite(v) && v >= min && v <= max) onChange(+v.toFixed(digits)) }} onBlur={finish} onKeyDown={e => { if (e.key === 'Enter') finish(); rest.onKeyDown?.(e) }} />
+  const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+      e.preventDefault()
+      const delta = (step ?? Math.pow(10, -digits)) * (e.shiftKey ? 10 : 1) * (e.key === 'ArrowUp' ? 1 : -1)
+      const base = text !== null && text.trim() !== '' && Number.isFinite(+text) ? +text : value
+      const next = +Math.min(max, Math.max(min, base + delta)).toFixed(digits)
+      setText(null)
+      onChange(next)
+    } else if (e.key === 'Enter') finish()
+    rest.onKeyDown?.(e)
+  }
+  return <input type="number" min={min} max={max} step={step} {...rest} value={text ?? +value.toFixed(digits)} onChange={e => { setText(e.target.value); const v = +e.target.value; if (e.target.value.trim() !== '' && Number.isFinite(v) && v >= min && v <= max) onChange(+v.toFixed(digits)) }} onBlur={finish} onKeyDown={onKeyDown} />
 }
 
 export function Slider({ label, value, min, max, step, onChange, digits = 0, log = false, sensitivity, fieldMax, suffix }: { label: string; value: number; min: number; max: number; step?: number; digits?: number; log?: boolean; sensitivity?: number; fieldMax?: number; suffix?: string; onChange: (value: number) => void }) {

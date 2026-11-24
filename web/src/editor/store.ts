@@ -26,7 +26,7 @@ export type Tip = { diameter: number; hardness: number; opacity: number }
 // Brush and Spot Healing share a tip; Clone Stamp and Smear each keep their own, as in the Mac app.
 export const tipFamily = (tool: Tool) => tool === 'clone' ? 'clone' : tool === 'smear' ? 'smear' : tool === 'brush' || tool === 'eraser' || tool === 'heal' ? 'brush' : null
 export type GridSettings = { spacing: number; subdivisions: number; color: [number, number, number]; style: 'Lines' | 'Dashed Lines' | 'Dots'; opacity: number }
-export type Snapshot = { doc: Doc; activeId: string | null; selectedIds: string[]; selection: Raster | null; editingMask: boolean }
+export type Snapshot = { doc: Doc; activeId: string | null; selectedIds: string[]; selection: Raster | null; selectionFeather: number; selectionBase: Raster | null; editingMask: boolean }
 
 export type State = Snapshot & {
   tool: Tool
@@ -39,13 +39,13 @@ export type State = Snapshot & {
   // The selection tools' header: the sticky mode (Shift and Option override it) and anti-aliasing for new selections.
   selectionMode: SelectionMode
   selectionAntialias: boolean
-  modifyAmounts: { expand: number; contract: number; feather: number }
+  selectionModifyAmount: number
   healMode: HealMode
   clone: { aligned: boolean; sampleAll: boolean; source: [number, number] | null; offset: [number, number] | null }
   smearMode: SmearMode
   blurRadius: number
   gradient: { shape: 'Linear' | 'Radial'; style: 'Foreground to Transparent' | 'Foreground to Background'; reversed: boolean; opacity: number }
-  shape: { kind: ShapeKind; cornerRadius: number; smoothing: boolean; lineWidth: number; lineStyle: LineStyle; lineCap: LineCap }
+  shape: { kind: ShapeKind; cornerRadius: number; smoothing: boolean; lineWidth: number; lineStyle: LineStyle; lineCap: LineCap; strokeWidth: number; strokeColor: [number, number, number]; fillChoice: { fill: [number, number, number]; foreground: [number, number, number] } | null }
   crop: { ratio: string; rect: { x: number; y: number; w: number; h: number } | null }
   tips: Record<'brush' | 'clone' | 'smear', Tip>
   brush: BrushSettings
@@ -72,17 +72,22 @@ const emptyDoc: Doc = { id: '', width: 1, height: 1, resolution: 72, layers: [],
 
 export class Store {
   state: State = {
-    doc: emptyDoc, activeId: null, selectedIds: [], selection: null, editingMask: false, tool: 'move', marqueeShape: 'rect', lassoKind: 'freehand',
-    wand: { tolerance: 32, contiguous: true, sampleAll: false, sampleSize: 0 }, wandMode: 'Magic Wand', objectSelection: { sampleAll: true, edgeOffset: 0 }, selectionMode: 'replace', selectionAntialias: true, modifyAmounts: { expand: 1, contract: 1, feather: 2 },
-    brush: { diameter: 40, hardness: 1, opacity: 1, smoothing: 0, erasing: false },
+    doc: emptyDoc, activeId: null, selectedIds: [], selection: null, selectionFeather: 0, selectionBase: null, editingMask: false, tool: 'move', marqueeShape: 'rect', lassoKind: 'freehand',
+    wand: { tolerance: 32, contiguous: true, sampleAll: false, sampleSize: 0 }, wandMode: 'Magic Wand', objectSelection: { sampleAll: true, edgeOffset: 0 }, selectionMode: 'replace', selectionAntialias: true, selectionModifyAmount: 5,
+    brush: { diameter: 40, hardness: 1, opacity: 1, smoothing: 0, erasing: false, antialiased: true },
     healMode: 'Content-Aware', clone: { aligned: true, sampleAll: false, source: null, offset: null }, smearMode: 'Liquify', blurRadius: 5,
-    gradient: { shape: 'Linear', style: 'Foreground to Transparent', reversed: false, opacity: 1 }, shape: { kind: 'Rectangle', cornerRadius: 0, smoothing: false, lineWidth: 4, lineStyle: 'Solid', lineCap: 'Square' }, crop: { ratio: 'Free', rect: null },
+    gradient: { shape: 'Linear', style: 'Foreground to Transparent', reversed: false, opacity: 1 },
+    shape: { kind: 'Rectangle', cornerRadius: 0, smoothing: false, lineWidth: 4, lineStyle: 'Solid', lineCap: 'Square', strokeWidth: 0, strokeColor: [0, 0, 0], fillChoice: null },
+    crop: { ratio: 'Free', rect: null },
     tips: { brush: { diameter: 40, hardness: 1, opacity: 1 }, clone: { diameter: 40, hardness: 0, opacity: 1 }, smear: { diameter: 40, hardness: 0, opacity: 1 } },
     foreground: [0, 0, 0], background: [255, 255, 255], target: null, saved: true, revision: 0, pixelRevision: 0, message: null, inspector: null, panel: null, effectSelection: null, maskPaintWhite: false,
   }
   hasDocument = false
   // An unsaved project's name, the lowest "Untitled N" free when it was first shown (documentName); a project opened afresh gets a new one.
   untitled: string | null = null
+  // The image format a document began as (PNG, JPEG, …) until it's saved as a project, and the format it was last exported in.
+  sourceFormat: string | null = null
+  exportedFormat: string | null = null
   history = new History<Snapshot>(undefined, undefined, (before, after) => {
     const pixels = (snapshot: Snapshot) => snapshot.doc.layers.flatMap(l => [l.image?.data, l.mask?.data, l.deep?.pixels, l.deep?.base]).filter(b => !!b)
     const held = new Set(pixels(before))
@@ -91,6 +96,10 @@ export class Store {
   static renderer: Renderer | null = null
   // The Type tool's recolor for a text layer (tools/type.ts), set there so the store doesn't load text layout.
   static recolorText: ((store: Store, layer: Layer, color: [number, number, number]) => boolean) | null = null
+  // The Shape tool's recolor for a live shape layer (tools/shape.ts), keeping its stroke and shape metadata.
+  static recolorShape: ((store: Store, layer: Layer, color: [number, number, number]) => boolean) | null = null
+  // Told when the active layer or tool changes, so the Shape tool adopts the selected shape's kind.
+  static onSelectionOrToolChange: ((store: Store) => void) | null = null
   // The composite at full depth, for merging 16-bit and HDR layers (canvasState.renderDeep).
   static deepRenderer: ((doc: Doc) => Float32Array | null) | null = null
   // Where this project's view was, restored when its tab comes back.
@@ -115,8 +124,8 @@ export class Store {
   }
 
   snapshot(): Snapshot {
-    const { doc, activeId, selectedIds, selection, editingMask } = this.state
-    return { doc, activeId, selectedIds, selection, editingMask }
+    const { doc, activeId, selectedIds, selection, selectionFeather, selectionBase, editingMask } = this.state
+    return { doc, activeId, selectedIds, selection, selectionFeather, selectionBase, editingMask }
   }
 
   // Replaces the document state as one undoable step.
@@ -187,13 +196,17 @@ export class Store {
     this.history.clear()
     this.hasDocument = true
     this.untitled = null
-    this.set({ doc, activeId, selectedIds: activeId ? [activeId] : [], selection: null, editingMask: false, target, saved: true, inspector: null })
+    this.sourceFormat = null
+    this.exportedFormat = null
+    this.set({ doc, activeId, selectedIds: activeId ? [activeId] : [], selection: null, selectionFeather: 0, selectionBase: null, editingMask: false, target, saved: true, inspector: null })
   }
 
   close() {
     this.hasDocument = false
+    this.sourceFormat = null
+    this.exportedFormat = null
     this.history.clear()
-    this.set({ doc: emptyDoc, activeId: null, selectedIds: [], selection: null, target: null, saved: true })
+    this.set({ doc: emptyDoc, activeId: null, selectedIds: [], selection: null, selectionFeather: 0, selectionBase: null, target: null, saved: true })
   }
 
   // Layer queries
@@ -244,13 +257,28 @@ export class Store {
     }
     const layer = this.layer(id)
     this.set({ activeId: id, selectedIds, editingMask: this.state.editingMask && !!layer?.mask && layer.id === this.state.activeId, inspector: layer?.adjustment ? layer.id : this.state.inspector === id ? id : null, effectSelection: null })
+    Store.onSelectionOrToolChange?.(this)
   }
 
-  // Inserts above the active layer, in its folder, as the Mac app does (`into` a folder instead: on top of what's in it).
-  private insert(layers: Layer[], above = this.state.activeId, into?: string): Layer[] {
+  // A non-group layer added in the middle of a clipping group joins it, clipped to the same base (LiveLayerMask.adoptClipping).
+  static adoptClipping(id: string, layers: Layer[]): Layer[] {
+    const index = layers.findIndex(l => l.id === id)
+    if (index < 0 || layers[index].isGroup || layers[index].clipTo) return layers
+    const parent = layers[index].parentId
+    const below = layers.slice(0, index).reverse().find(l => l.parentId === parent)
+    const above = layers.slice(index + 1).find(l => l.parentId === parent)
+    if (!below || !above?.clipTo) return layers
+    const base = below.clipTo ?? below.id
+    if (above.clipTo !== base) return layers
+    return layers.map((l, i) => i === index ? { ...l, clipTo: base } : l)
+  }
+
+  // Inserts above the active layer, in its folder (or at the top inside an active folder unless `besideFolder` is true, as Paste does).
+  private insert(layers: Layer[], above = this.state.activeId, into?: string, besideFolder = false): Layer[] {
     const all = [...this.doc.layers]
     const anchor = this.layer(above)
-    const parentId = into ?? anchor?.parentId ?? null
+    const intoFolder = into ?? (!besideFolder && anchor?.isGroup ? anchor.id : undefined)
+    const parentId = intoFolder ?? anchor?.parentId ?? null
     const placed = layers.map(layer => layers.some(l => l.id === layer.parentId) ? layer : { ...layer, parentId })
     let index = all.length
     if (anchor) {
@@ -258,17 +286,18 @@ export class Store {
       index = Math.max(...[anchor.id, ...subtree].map(id => all.findIndex(l => l.id === id))) + 1
     }
     all.splice(index, 0, ...placed)
+    if (placed.length === 1 && !placed[0].isGroup && !placed[0].clipTo) return Store.adoptClipping(placed[0].id, all)
     return all
   }
 
-  // A layer put in above the active one without an undo step of its own, for an edit already under way (new text being typed).
+  // A layer put in above the active one (or top of active folder) without an undo step of its own, for an edit already under way (new text being typed).
   insertLive(layer: Layer) {
     this.set({ doc: this.replaceLayers(this.insert([layer])), activeId: layer.id, selectedIds: [layer.id], editingMask: false })
   }
 
-  addLayer(layer: Layer, name = 'New Layer') {
+  addLayer(layer: Layer, name = 'New Layer', besideFolder = false) {
     if (!this.hasDocument) return
-    this.commit(name, { doc: this.replaceLayers(this.insert([layer])), activeId: layer.id, selectedIds: [layer.id], editingMask: false })
+    this.commit(name, { doc: this.replaceLayers(this.insert([layer], this.state.activeId, undefined, besideFolder)), activeId: layer.id, selectedIds: [layer.id], editingMask: false })
   }
 
   // A Photoshop file's layers (EditorSession.insertPhotoshop): a new project when none is open; otherwise inside a folder named for the
@@ -360,23 +389,32 @@ export class Store {
     this.commit(ids.size > 1 ? 'Delete Layers' : 'Delete Layer', { doc: this.replaceLayers(remaining), activeId: next?.id ?? null, selectedIds: next ? [next.id] : [], editingMask: false })
   }
 
-  private cloneLayer(layer: Layer, ids: Map<string, string>): Layer {
+  private cloneLayer(layer: Layer, ids: Map<string, string>, bases = new Set<string>()): Layer {
     const image = layer.image?.clone() ?? null, deep = deepOf(layer)
-    return { ...layer, id: ids.get(layer.id)!, parentId: layer.parentId && ids.has(layer.parentId) ? ids.get(layer.parentId)! : layer.parentId, clipTo: layer.clipTo && ids.has(layer.clipTo) ? ids.get(layer.clipTo)! : layer.clipTo, image, deep: deep && image ? rebound(deep, image) : undefined, mask: layer.mask?.clone() ?? null, adjustment: layer.adjustment ? structuredClone(layer.adjustment) : null, effects: layer.effects ? structuredClone(layer.effects) : null }
+    const clipTo = layer.clipTo && ids.has(layer.clipTo) ? ids.get(layer.clipTo)! : bases.has(layer.id) ? null : layer.clipTo
+    return { ...layer, id: ids.get(layer.id)!, parentId: layer.parentId && ids.has(layer.parentId) ? ids.get(layer.parentId)! : layer.parentId, clipTo, image, deep: deep && image ? rebound(deep, image) : undefined, mask: layer.mask?.clone() ?? null, adjustment: layer.adjustment ? structuredClone(layer.adjustment) : null, effects: layer.effects ? structuredClone(layer.effects) : null }
   }
 
   // ⌘J and Option-drag (SelectionClipboard.duplicateLayers): every selected layer, folders with their contents, copied under fresh
   // IDs and named "… copy". One copy sits just above its original; several stack above the topmost original, in its folder.
-  // A clipped layer copied with its base (inside the same folder) clips to the copy; on its own it stays clipped to the original.
+  // A base duplicated with layers clipped to it makes a second clipping stack: the base's copy stays a base and the clipped copies
+  // clip to it, rather than all clipping to the original base (LiveLayerMask.relinkCopiedClipping).
   private duplicated() {
     const chosen = this.state.selectedIds.length ? this.state.selectedIds : this.state.activeId ? [this.state.activeId] : []
     const roots = this.doc.layers.filter(l => chosen.includes(l.id) && !this.ancestors(l.id).some(a => chosen.includes(a.id))).map(l => l.id)
     if (!roots.length) return null
-    const families = roots.map(root => {
-      const family = this.doc.layers.filter(l => l.id === root || this.descendants(root).some(d => d.id === l.id))
-      const ids = new Map(family.map(l => [l.id, uuid()]))
-      return { root, copy: ids.get(root)!, layers: family.map(l => l.id === root ? { ...this.cloneLayer(l, ids), name: `${l.name} copy` } : this.cloneLayer(l, ids)) }
-    })
+    const rawFamilies = roots.map(root => ({
+      root,
+      family: this.doc.layers.filter(l => l.id === root || this.descendants(root).some(d => d.id === l.id)),
+    }))
+    const ids = new Map<string, string>()
+    for (const { family } of rawFamilies) for (const l of family) ids.set(l.id, uuid())
+    const bases = new Set<string>()
+    for (const { family } of rawFamilies) for (const l of family) if (l.clipTo && ids.has(l.clipTo)) bases.add(l.clipTo)
+    const families = rawFamilies.map(({ root, family }) => ({
+      root, copy: ids.get(root)!,
+      layers: family.map(l => l.id === root ? { ...this.cloneLayer(l, ids, bases), name: `${l.name} copy` } : this.cloneLayer(l, ids, bases)),
+    }))
     const layers = [...this.doc.layers]
     const end = (id: string) => Math.max(...[id, ...this.descendants(id).map(d => d.id)].map(x => layers.findIndex(l => l.id === x))) + 1
     if (families.length === 1) layers.splice(end(roots[0]), 0, ...families[0].layers)
@@ -386,12 +424,30 @@ export class Store {
     }
     const copies = families.map(f => f.copy)
     const activeCopy = families.find(f => f.root === this.state.activeId)?.copy ?? copies.at(-1)!
-    return { doc: this.replaceLayers(layers), activeId: activeCopy, selectedIds: copies }
+    return { doc: this.replaceLayers(this.releaseBrokenClips(layers)), activeId: activeCopy, selectedIds: copies }
   }
 
   duplicate() {
     const next = this.duplicated()
     if (next) this.commit(next.selectedIds.length > 1 ? 'Duplicate Layers' : 'Duplicate Layer', next)
+  }
+
+  // Option-arrow with the Move tool: duplicates the selected layers and moves the copy by (dx, dy) in one undo step.
+  duplicateAndNudge(dx: number, dy: number) {
+    const next = this.duplicated()
+    if (!next) return
+    const ids = new Set(next.selectedIds)
+    for (const id of [...ids]) {
+      const walk = (parent: string) => { for (const l of next.doc.layers) if (l.parentId === parent) { ids.add(l.id); if (l.isGroup) walk(l.id) } }
+      walk(id)
+    }
+    const shift = (t: Transform): Transform => ({ ...t, origin: [t.origin[0] + dx, t.origin[1] + dy] })
+    const layers = next.doc.layers.map(l => {
+      if (!ids.has(l.id)) return l
+      const staying = l.mask && !l.maskLinked && !l.isGroup && !l.adjustment ? l.maskPlacement ?? l.transform : null
+      return { ...l, transform: shift(l.transform), maskPlacement: staying ?? (l.maskPlacement ? shift(l.maskPlacement) : null) }
+    })
+    this.commit(next.selectedIds.length > 1 ? 'Duplicate Layers' : 'Duplicate Layer', { ...next, doc: { ...next.doc, layers } })
   }
 
   // The same, within a gesture that's already recording (Option-drag).
@@ -401,13 +457,18 @@ export class Store {
   }
 
   // Moves layers (with their folders' contents) to sit above `anchorId` in its folder, or into `intoId` at its top.
-  move(ids: string[], target: { above?: string; below?: string; into?: string }) {
+  // Optional `parentId` and `clipTo` override the destination parent or clipping base (for split-height folder/clipping drops).
+  move(ids: string[], target: { above?: string; below?: string; into?: string; parentId?: string | null; clipTo?: string | null }) {
     const moving = new Set(ids)
     for (const id of ids) for (const d of this.descendants(id)) moving.add(d.id)
     const destination = target.into ?? target.above ?? target.below
     if (destination && moving.has(destination)) return
-    const parentId = target.into ?? this.layer(target.above ?? target.below)?.parentId ?? null
-    const block = this.doc.layers.filter(layer => moving.has(layer.id)).map(layer => ids.includes(layer.id) ? { ...layer, parentId } : layer)
+    const parentId = target.parentId !== undefined ? target.parentId : (target.into ?? this.layer(target.above ?? target.below)?.parentId ?? null)
+    const block = this.doc.layers.filter(layer => moving.has(layer.id)).map(layer => {
+      if (!ids.includes(layer.id)) return layer
+      const clipChange = target.clipTo !== undefined && !layer.isGroup ? { clipTo: target.clipTo } : {}
+      return { ...layer, parentId, ...clipChange }
+    })
     const rest = this.doc.layers.filter(layer => !moving.has(layer.id))
     let index: number
     if (target.into) {
@@ -425,9 +486,23 @@ export class Store {
     this.commit('Move Layer', { doc: this.replaceLayers(this.releaseBrokenClips(rest)) })
   }
 
-  // Clipped layers moved out of the contiguous run above their base stay linked: the renderer falls back to plain coverage.
+  // A moved layer stops clipping when its base is gone, is a group/adjustment, or is no longer in the contiguous run below it.
   private releaseBrokenClips(layers: Layer[]) {
-    return layers.map(layer => layer.clipTo && !layers.some(l => l.id === layer.clipTo && !l.isGroup && !l.adjustment) ? { ...layer, clipTo: null } : layer)
+    const release = new Set<string>()
+    const byParent = new Map<string | null, Layer[]>()
+    for (const l of layers) byParent.set(l.parentId, [...(byParent.get(l.parentId) ?? []), l])
+    for (const siblings of byParent.values()) {
+      for (let i = 0; i < siblings.length; i++) {
+        const layer = siblings[i]
+        if (!layer.clipTo) continue
+        const baseIdx = siblings.findIndex(s => s.id === layer.clipTo)
+        if (baseIdx < 0 || baseIdx >= i || siblings[baseIdx].isGroup || siblings[baseIdx].adjustment) { release.add(layer.id); continue }
+        let contiguous = true
+        for (let k = baseIdx + 1; k < i; k++) if (siblings[k].clipTo !== layer.clipTo) { contiguous = false; break }
+        if (!contiguous) release.add(layer.id)
+      }
+    }
+    return release.size ? layers.map(l => release.has(l.id) ? { ...l, clipTo: null } : l) : layers
   }
 
   stepLayer(direction: 1 | -1) {
@@ -502,12 +577,35 @@ export class Store {
   }
   get canToggleClip() { return this.canToggleClipFor(this.state.activeId) }
 
+  // A clipped layer whose base is hidden doesn't show, whatever its own eye says; clicking its eye shows the whole stack again,
+  // the base and every layer clipped to it, as in Photoshop (EditorSession.hiddenClippingStack).
+  hiddenClippingStack(id: string): string[] | null {
+    const layer = this.layer(id)
+    if (!layer?.clipTo) return null
+    const base = this.layer(layer.clipTo)
+    if (!base || base.parentId !== layer.parentId || base.visible) return null
+    return [base.id, ...this.doc.layers.filter(l => l.clipTo === base.id && l.parentId === base.parentId).map(l => l.id)]
+  }
+
+  toggleLayerVisibility(id: string) {
+    const layer = this.layer(id)
+    if (!layer) return
+    const stack = this.hiddenClippingStack(id)
+    if (stack) {
+      const ids = new Set(stack)
+      this.commit('Show Layers', { doc: this.replaceLayers(this.doc.layers.map(l => ids.has(l.id) ? { ...l, visible: true } : l)) })
+      return
+    }
+    this.updateLayer(id, { visible: !layer.visible }, layer.visible ? 'Hide Layer' : 'Show Layer')
+  }
+
   // The menus' Hide / Show Layer and Create / Release Clipping Mask work on every selected layer, as one step.
   private get targets() { return new Set([...this.state.selectedIds, ...(this.state.activeId ? [this.state.activeId] : [])]) }
   get visibilityTitle() { return `${this.active?.visible === false ? 'Show' : 'Hide'} ${this.state.selectedIds.length > 1 ? 'Layers' : 'Layer'}` }
   toggleSelectedVisibility() {
     const active = this.active
     if (!active) return
+    if (this.targets.size === 1) { this.toggleLayerVisibility(active.id); return }
     const ids = this.targets, visible = !active.visible
     this.commit(this.visibilityTitle, { doc: this.replaceLayers(this.doc.layers.map(l => ids.has(l.id) ? { ...l, visible } : l)) })
   }
@@ -630,16 +728,28 @@ export class Store {
   setSelection(next: Raster | null, mode: SelectionMode = 'replace', name = 'Select') {
     if (mode === 'subtract' && !this.state.selection) return
     const combined = next ? combine(this.state.selection, next, mode) : null
-    this.commit(name, { selection: combined && !isEmpty(combined) ? combined : null })
+    const keep = combined && !isEmpty(combined) ? combined : null
+    this.commit(name, { selection: keep, selectionFeather: 0, selectionBase: null })
   }
   selectAll() { this.setSelection(Raster.filled(this.doc.width, this.doc.height, 1, [255]), 'replace', 'Select All') }
-  deselect() { if (this.state.selection) this.commit('Deselect', { selection: null }) }
+  deselect() { if (this.state.selection) this.commit('Deselect', { selection: null, selectionFeather: 0, selectionBase: null }) }
 
   modifySelection(kind: 'expand' | 'contract' | 'feather', amount: number) {
     const selection = this.state.selection
     if (!selection) return
-    const next = kind === 'expand' ? expandSelection(selection, amount) : kind === 'contract' ? contractSelection(selection, amount) : featherSelection(selection, amount, (r, sigma) => blurRaster(r, sigma, true))
-    this.commit(kind === 'expand' ? 'Expand Selection' : kind === 'contract' ? 'Contract Selection' : 'Feather Selection', { selection: isEmpty(next) ? null : next })
+    if (kind === 'feather') {
+      const feather = Math.min(250, this.state.selectionFeather + Math.max(1, Math.round(amount)))
+      const base = this.state.selectionBase ?? selection
+      const next = featherSelection(base, feather, (r, sigma) => blurRaster(r, sigma, true))
+      this.commit('Feather Selection', { selection: isEmpty(next) ? null : next, selectionFeather: isEmpty(next) ? 0 : feather, selectionBase: isEmpty(next) ? null : base })
+      return
+    }
+    const source = this.state.selectionBase ?? selection
+    const resized = kind === 'expand' ? expandSelection(source, amount) : contractSelection(source, amount)
+    const empty = isEmpty(resized)
+    const feather = empty ? 0 : this.state.selectionFeather
+    const next = !empty && feather > 0 ? featherSelection(resized, feather, (r, sigma) => blurRaster(r, sigma, true)) : resized
+    this.commit(kind === 'expand' ? 'Expand Selection' : 'Contract Selection', { selection: empty || isEmpty(next) ? null : next, selectionFeather: feather, selectionBase: !empty && feather > 0 ? resized : null })
   }
 
   // ⌘-click a thumbnail: a layer's opaque pixels, or a mask's hidden areas, become the selection (⇧ adds, ⌥ subtracts).
@@ -657,11 +767,16 @@ export class Store {
     const selection = this.state.selection
     if (!selection) return
     const moved = offsetSelection(selection, dx, dy)
-    if (live) this.set({ selection: moved })
-    else this.commit('Move Selection', { selection: moved }, { coalesce: 'move-selection' })
+    const base = this.state.selectionBase ? offsetSelection(this.state.selectionBase, dx, dy) : null
+    if (live) this.set({ selection: moved, selectionBase: base })
+    else this.commit('Move Selection', { selection: moved, selectionBase: base }, { coalesce: 'move-selection' })
   }
 
-  invertSelection() { this.commit('Inverse Selection', { selection: this.state.selection ? invertSelection(this.state.selection) : null }) }
+  invertSelection() {
+    if (!this.state.selection) return
+    const base = this.state.selectionBase ? invertSelection(this.state.selectionBase) : null
+    this.commit('Inverse Selection', { selection: invertSelection(this.state.selection), selectionBase: base })
+  }
 
   // Fills or clears the selection (or everything) on the edit target.
   fill(color: [number, number, number] | null) {
@@ -670,6 +785,8 @@ export class Store {
     const { raster, toDocument, layer, isMask } = target
     // A text layer filled with a color, no selection, is recolored and stays text (Fill Text).
     if (color && !isMask && !this.state.selection && Store.recolorText?.(this, layer, color.map(v => v / 255) as [number, number, number])) return
+    // A live shape layer filled with a color, no selection, keeps its stroke and stays editable.
+    if (color && !isMask && !this.state.selection && Store.recolorShape?.(this, layer, color.map(v => v / 255) as [number, number, number])) return
     const before = raster.data.slice()
     const selection = this.state.selection
     const gray = Math.round(color ? 0.299 * color[0] + 0.587 * color[1] + 0.114 * color[2] : 0)
@@ -933,16 +1050,16 @@ export class Store {
       ...g, axis: g.axis === 'vertical' ? 'horizontal' as const : 'vertical' as const,
       position: g.axis === 'vertical' ? (clockwise ? g.position : width - g.position) : (clockwise ? height - g.position : g.position),
     }))
-    const old = this.state.selection
-    let selection: Raster | null = null
-    if (old) {
-      selection = new Raster(old.height, old.width, 1)
+    const rotateMask = (old: Raster | null) => {
+      if (!old) return null
+      const out = new Raster(old.height, old.width, 1)
       for (let y = 0; y < old.height; y++) for (let x = 0; x < old.width; x++) {
         const [nx, ny] = clockwise ? [old.height - 1 - y, x] : [y, old.width - 1 - x]
-        selection.data[ny * old.height + nx] = old.data[y * old.width + x]
+        out.data[ny * old.height + nx] = old.data[y * old.width + x]
       }
+      return out
     }
-    this.commit(clockwise ? 'Rotate Canvas 90° Clockwise' : 'Rotate Canvas 90° Counterclockwise', { doc: { ...this.doc, width: height, height: width, layers, guides }, selection })
+    this.commit(clockwise ? 'Rotate Canvas 90° Clockwise' : 'Rotate Canvas 90° Counterclockwise', { doc: { ...this.doc, width: height, height: width, layers, guides }, selection: rotateMask(this.state.selection), selectionBase: rotateMask(this.state.selectionBase) })
   }
 
   cropToSelection() {
@@ -993,6 +1110,7 @@ export class Store {
     const parked = from ? { ...tips, [from]: { diameter: brush.diameter, hardness: brush.hardness, opacity: brush.opacity } } : tips
     const restored = to && to !== from ? { ...brush, ...parked[to] } : brush
     this.set({ tool, tips: parked, brush: { ...restored, erasing: tool === 'eraser' } })
+    Store.onSelectionOrToolChange?.(this)
   }
 
   setBlend(id: string, blendMode: BlendMode) { this.updateLayer(id, { blendMode }, 'Blend Mode') }

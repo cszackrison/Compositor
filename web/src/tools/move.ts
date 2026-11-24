@@ -10,8 +10,9 @@ import { requestOverlay, requestRender, view, hitSlop } from '../ui/canvasState'
 import { redrawShape } from './shape'
 import { clearSnap, snapMove, snapPoint } from './snap'
 import { guideAt, startGuideDrag } from './guides'
+import { distancesBetween, movingDistances, type DistanceLine } from './distances'
 import { cancelFloating, commitFloating, isFloating } from '../editor/floating'
-import type { ToolHandler } from './tool'
+import { drawHudLabel, duplicateCursor, rotateCursor, type Pointer, type ToolHandler } from './tool'
 
 type Handle = 'nw' | 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w'
 const handleNames: Handle[] = ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w']
@@ -79,6 +80,36 @@ type Drag =
 let drag: Drag | null = null
 // Free distort waiting for Return: the layer and where its four corners (top-left, top-right, bottom-right, bottom-left) now are.
 let distort: { ids: string[]; box: [number, number][]; corners: [number, number][]; mask?: string } | null = null
+// View › Show › Distances lines (while dragging or hovering with Command), and resize/rotate floating readout.
+let distanceLines: DistanceLine[] = []
+let hud: { text: string; screen: [number, number] } | null = null
+
+function updateHoverDistances(p: Pointer | null) {
+  distanceLines = []
+  if (!prefs.distances || !p || !p.command || drag || distort || maskAlone()) return
+  const box = currentBox()
+  if (!box) return
+  const selected = new Set(members().map(l => l.id))
+  const hovered = store.layersAt(...p.point).find(l => !selected.has(l.id))
+  const other = hovered ? bbox(hovered.transform) : { x: 0, y: 0, w: store.doc.width, h: store.doc.height }
+  distanceLines = distancesBetween(bbox(box), other)
+}
+
+function updateMovingDistances() {
+  distanceLines = []
+  if (!prefs.distances || maskAlone()) return
+  const box = currentBox()
+  if (!box) return
+  const moving = new Set(members().map(l => l.id))
+  const others = drawOrder(store.doc).filter(e => effectivelyVisible(e) && !e.layer.isGroup && !!e.layer.image && !moving.has(e.layer.id)).map(e => bbox(e.layer.transform))
+  distanceLines = movingDistances(bbox(box), others, [store.doc.width, store.doc.height])
+}
+
+export function refreshMoveHover(p: Pointer | null) {
+  if (store.state.tool !== 'move') return
+  if (p) move.hover!(p)
+  else { distanceLines = []; requestOverlay() }
+}
 
 function hitHandle(screen: [number, number]): Handle | 'rotate' | 'body' | null {
   const box = distort ? null : currentBox()
@@ -323,6 +354,7 @@ export const move: ToolHandler = {
       const alone = maskAlone()
       if (alone) setMaskBox(alone, { ...d.box, origin: [d.box.origin[0] + Math.round(dx), d.box.origin[1] + Math.round(dy)] })
       else store.set({ doc: { ...store.doc, layers: store.movedLayers(Math.round(dx), Math.round(dy), d.originals) } })
+      updateMovingDistances()
       requestOverlay()
       return
     }
@@ -332,12 +364,14 @@ export const move: ToolHandler = {
       let angle = t.rotation + (Math.atan2(p.point[1] - cy, p.point[0] - cx) - Math.atan2(d.start[1] - cy, d.start[0] - cx)) * 180 / Math.PI
       angle = p.shift ? Math.round(angle / 15) * 15 : Math.round(angle)
       next = { ...t, rotation: ((angle + 180) % 360 + 360) % 360 - 180 }
+      hud = { text: `${Math.round(next.rotation)}°`, screen: p.screen }
     } else {
       // An upright box's dragged edges snap to the canvas, other layers, guides and grid (snappedResizePoint).
       const pointer = d.box.rotation % 360 === 0 ? snapPoint(p.point[0], p.point[1], p.control, true, 10, new Set(members().map(l => l.id))) : p.point
       const handle = d.handle as Handle
       const snapped: [number, number] = [handle.includes('e') || handle.includes('w') ? pointer[0] : p.point[0], handle.includes('n') || handle.includes('s') ? pointer[1] : p.point[1]]
       next = resize(d.box, handle, snapped, !p.shift, p.alt)
+      hud = { text: `${Math.round(next.size[0])} × ${Math.round(next.size[1])} px`, screen: p.screen }
     }
     const alone = maskAlone()
     if (alone) { setMaskBox(alone, next); requestOverlay(); return }
@@ -354,6 +388,8 @@ export const move: ToolHandler = {
   up() {
     const d = drag
     drag = null
+    hud = null
+    distanceLines = []
     clearSnap()
     if (!d || d.kind === 'distort') { requestOverlay(); return }
     if (d.kind === 'scale') for (const layer of members()) { const redraw = redrawShape(layer); if (redraw) store.updateLayerLive(layer.id, redraw) }
@@ -361,19 +397,36 @@ export const move: ToolHandler = {
     requestRender()
   },
   hover(p) {
+    const prevCount = distanceLines.length
+    updateHoverDistances(p)
+    if (distanceLines.length || prevCount) requestOverlay()
     const handle = hitHandle(p.screen)
-    hoverCursor = handle === 'rotate' ? 'alias' : !handle || handle === 'body' ? (guideAt(p.screen) && guidesShown() && !prefs.lockGuides ? (guideAt(p.screen)!.axis === 'vertical' ? 'col-resize' : 'row-resize') : 'default') : distort ? 'move' : ['n', 's'].includes(handle) ? 'ns-resize' : ['e', 'w'].includes(handle) ? 'ew-resize' : ['nw', 'se'].includes(handle) ? 'nwse-resize' : 'nesw-resize'
+    if (handle === 'rotate') {
+      const box = currentBox()
+      if (box) {
+        const [cx, cy] = view.toScreen(box.origin[0] + box.size[0] / 2, box.origin[1] + box.size[1] / 2)
+        hoverCursor = rotateCursor(Math.atan2(p.screen[1] - cy, p.screen[0] - cx) * 180 / Math.PI + 135)
+      } else hoverCursor = 'alias'
+      return
+    }
+    if (!handle || handle === 'body') {
+      const guide = guidesShown() && !prefs.lockGuides ? guideAt(p.screen) : null
+      hoverCursor = guide ? (guide.axis === 'vertical' ? 'col-resize' : 'row-resize') : (p.alt && !distort && !maskAlone() && currentBox() ? duplicateCursor : 'default')
+      return
+    }
+    hoverCursor = distort ? 'move' : ['n', 's'].includes(handle) ? 'ns-resize' : ['e', 'w'].includes(handle) ? 'ew-resize' : ['nw', 'se'].includes(handle) ? 'nwse-resize' : 'nesw-resize'
   },
+  leave() { if (distanceLines.length) { distanceLines = []; requestOverlay() } },
   key(event) {
     if (distort && event.key === 'Enter') { applyDistort(); if (isFloating()) commitFloating(); return true }
     if (distort && event.key === 'Escape') { cancelDistort(); return true }
     if (isFloating() && event.key === 'Enter') { commitFloating(); return true }
     if (isFloating() && event.key === 'Escape' && !drag) { cancelFloating(); return true }
-    if (drag && event.key === 'Escape') { drag = null; clearSnap(); store.cancelGesture(); requestRender(); return true }
+    if (drag && event.key === 'Escape') { drag = null; hud = null; distanceLines = []; clearSnap(); store.cancelGesture(); requestRender(); return true }
     return false
   },
   busy: () => !!drag,
-  settle: () => { applyDistort(); commitFloating() },
+  settle: () => { distanceLines = []; hud = null; applyDistort(); commitFloating() },
   cursor: () => hoverCursor,
   draw(context) {
     if (distort) {
@@ -384,16 +437,52 @@ export const move: ToolHandler = {
       return
     }
     const box = currentBox()
-    if (!box || !prefs.transformControls) return
-    const corners = transformCorners(box).map(c => view.toScreen(...c))
-    context.strokeStyle = '#3d8bfd'; context.lineWidth = 1
-    context.beginPath(); corners.forEach(([x, y], i) => i ? context.lineTo(x, y) : context.moveTo(x, y)); context.closePath(); context.stroke()
-    const m = unitToDocument(box)
-    for (const name of handleNames) {
-      const [x, y] = view.toScreen(...apply(m, ...handleUnit[name]))
-      context.fillStyle = '#fff'; context.fillRect(x - 4, y - 4, 8, 8); context.strokeRect(x - 3.5, y - 3.5, 7, 7)
+    if (box && prefs.transformControls) {
+      const corners = transformCorners(box).map(c => view.toScreen(...c))
+      context.strokeStyle = '#3d8bfd'; context.lineWidth = 1
+      context.beginPath(); corners.forEach(([x, y], i) => i ? context.lineTo(x, y) : context.moveTo(x, y)); context.closePath(); context.stroke()
+      const m = unitToDocument(box)
+      for (const name of handleNames) {
+        const [x, y] = view.toScreen(...apply(m, ...handleUnit[name]))
+        context.fillStyle = '#fff'; context.fillRect(x - 4, y - 4, 8, 8); context.strokeRect(x - 3.5, y - 3.5, 7, 7)
+      }
     }
+    if (distanceLines.length) drawDistances(context, distanceLines)
+    if (hud) drawHudLabel(context, hud.text, hud.screen, view.width, view.height)
   },
+}
+
+function drawDistances(context: CanvasRenderingContext2D, lines: DistanceLine[]) {
+  context.save()
+  const pink = '#ff2d55'
+  context.strokeStyle = pink
+  context.lineWidth = 1
+  context.beginPath()
+  for (const line of lines) {
+    const start = line.horizontal ? view.toScreen(line.from, line.across) : view.toScreen(line.across, line.from)
+    const end = line.horizontal ? view.toScreen(line.to, line.across) : view.toScreen(line.across, line.to)
+    context.moveTo(start[0], start[1]); context.lineTo(end[0], end[1])
+    for (const pt of [start, end]) {
+      if (line.horizontal) { context.moveTo(pt[0], pt[1] - 4); context.lineTo(pt[0], pt[1] + 4) }
+      else { context.moveTo(pt[0] - 4, pt[1]); context.lineTo(pt[0] + 4, pt[1]) }
+    }
+  }
+  context.stroke()
+  context.font = '500 11px ui-monospace, "SF Mono", Menlo, monospace'
+  context.textBaseline = 'middle'
+  for (const line of lines) {
+    const start = line.horizontal ? view.toScreen(line.from, line.across) : view.toScreen(line.across, line.from)
+    const end = line.horizontal ? view.toScreen(line.to, line.across) : view.toScreen(line.across, line.to)
+    const text = `${Math.round(line.length)} px`
+    const tw = Math.ceil(context.measureText(text).width)
+    const w = tw + 10, h = 18
+    const x = (start[0] + end[0]) / 2 - w / 2, y = (start[1] + end[1]) / 2 - h / 2
+    context.fillStyle = pink
+    context.beginPath(); context.roundRect(x, y, w, h, 4); context.fill()
+    context.fillStyle = '#fff'
+    context.fillText(text, x + 5, y + h / 2 + 0.5)
+  }
+  context.restore()
 }
 let hoverCursor = 'default'
 

@@ -5,7 +5,7 @@ import { NumberField } from './Inspector'
 import { openColorPicker } from './ColorPicker'
 import { type TextAlignment, type TextStyle, setTextFont, uniformFont } from '../model/text'
 import { commonFaces, guessFace, installedFaces, listInstalledFaces, subscribeFonts } from '../render/text'
-import { cancelText, changeTextStyle, currentTextStyle, editActiveText, endFontPreview, finishText, isEditingText, keepFontPreview, liveText, previewFont, setTypeColor, subscribeType, textSelection, typeColor, typeVersion } from '../tools/type'
+import { cancelText, changeTextStyle, currentTextStyle, editActiveText, endFontPreview, finishText, focusTextInput, isEditingText, keepFontPreview, liveText, previewFont, setTypeColor, subscribeType, textSelection, typeColor, typeVersion } from '../tools/type'
 
 // The Type tool's bar (TypeControls.swift): the face, size, color, alignment, tracking and leading of the text being edited (its selected
 // letters, for face and color), of the selected text layer, or of new text; Done and Cancel while text is open.
@@ -22,8 +22,8 @@ export function TypeBar() {
   }
   return <>
     <FontMenu value={face} />
-    <label title="Size in pixels"><NumberField min={1} max={2000} digits={1} value={style.fontSize} style={{ width: 58 }} onChange={fontSize => set({ fontSize })} /> px</label>
-    <button className="swatch-button" title="Text color: the selected letters, or all of it" style={{ background: `rgb(${color.join(',')})` }} onClick={pickColor} />
+    <label title="Size in pixels"><span className="muted">Size</span><NumberField min={1} max={2000} digits={1} value={style.fontSize} style={{ width: 54 }} onChange={fontSize => set({ fontSize })} onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); (e.target as HTMLInputElement).blur(); focusTextInput() } }} /></label>
+    <label><span className="muted">Color</span><button className="swatch" title="Text color: the selected letters, or all of it" style={{ width: 22, height: 22, background: `rgb(${color.join(',')})` }} onClick={pickColor} /></label>
     <span className="segmented">{(['Left', 'Center', 'Right'] as TextAlignment[]).map(a => <button key={a} className={style.alignment === a ? 'on' : ''} onClick={() => set({ alignment: a })}>{a}</button>)}</span>
     <label title="Tracking: the space added after each letter, in pixels (Option with ← →)">Tracking <NumberField min={-100} max={1000} value={style.tracking} style={{ width: 52 }} onChange={tracking => set({ tracking })} /></label>
     <label title="Leading: baseline to baseline, in pixels; 0 is Auto, 120% of the size (Option with ↑ ↓)">Leading <NumberField min={0} max={5000} value={style.leading} style={{ width: 58 }} onChange={leading => set({ leading })} /></label>

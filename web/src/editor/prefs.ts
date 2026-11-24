@@ -3,8 +3,12 @@ import type { GridSettings } from './store'
 // Per-user view settings, kept across sessions as the Mac app keeps them in user defaults. Not saved in projects.
 export type Prefs = {
   rulers: boolean; guides: boolean; grid: boolean; lockGuides: boolean; pixelGrid: boolean; transformControls: boolean
+  // View › Show › Distances: Move tool pixel gaps while dragging and with Command held.
+  distances: boolean
   snap: boolean; snapSession: boolean; snapTo: { guides: boolean; grid: boolean; layers: boolean; bounds: boolean }
   gridSettings: GridSettings; jpegQuality: number
+  // The last format Export As wrote, and the last blank canvas size created.
+  lastExportFormat: string; lastCanvasWidth: number; lastCanvasHeight: number
   // A pen's pressure sets the brush's size and how strongly it lays down, as Photoshop's two pressure buttons do.
   penPressure: boolean; penPressureOpacity: boolean
   // View › Navigator: a minimap in the canvas's corner from 300% zoom.
@@ -16,9 +20,11 @@ export type Prefs = {
 export const gridColors: [string, [number, number, number]][] = [['Light Gray', [0.7, 0.7, 0.7]], ['Light Blue', [0.29, 0.78, 1]], ['Light Red', [1, 0.4, 0.4]], ['Green', [0.25, 0.8, 0.25]], ['Medium Blue', [0.2, 0.4, 1]], ['Yellow', [1, 1, 0]], ['Magenta', [1, 0, 1]], ['Cyan', [0, 1, 1]], ['Black', [0, 0, 0]]]
 
 const defaults: Prefs = {
-  rulers: false, guides: true, grid: false, lockGuides: false, pixelGrid: true, transformControls: true,
+  rulers: false, guides: true, grid: false, lockGuides: false, pixelGrid: true, transformControls: true, distances: false,
   snap: true, snapSession: true, snapTo: { guides: true, grid: false, layers: true, bounds: true },
-  gridSettings: { spacing: 64, subdivisions: 8, color: [0.7, 0.7, 0.7], style: 'Lines', opacity: 45 }, jpegQuality: 0.85, penPressure: false, penPressureOpacity: false, navigator: false, extrasHidden: false,
+  gridSettings: { spacing: 64, subdivisions: 8, color: [0.7, 0.7, 0.7], style: 'Lines', opacity: 45 }, jpegQuality: 0.85,
+  lastExportFormat: 'PNG', lastCanvasWidth: 1920, lastCanvasHeight: 1080,
+  penPressure: false, penPressureOpacity: false, navigator: false, extrasHidden: false,
 }
 
 const key = 'compositor.prefs.v1'

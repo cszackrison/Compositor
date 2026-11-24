@@ -12,6 +12,7 @@ import { exportLayers } from '../editor/actions'
 import { isMac } from '../editor/shortcuts'
 import { setDraggedLayers } from './Tabs'
 import { useCoarse } from './layout'
+import { duplicateCursor } from '../tools/tool'
 
 const command = isMac ? '⌘' : 'Ctrl'
 const commandKey = (e: React.MouseEvent) => isMac ? e.metaKey : e.ctrlKey
@@ -36,13 +37,21 @@ export function filteredRows(list: Row[], layers: Layer[], query: string, types:
 
 function rows(layers: Layer[], collapsed: Set<string>): Row[] {
   const out: Row[] = []
-  const walk = (parent: string | null, depth: number, hidden: boolean) => {
-    for (const layer of layers.filter(l => l.parentId === parent).reverse()) {
-      out.push({ layer, depth, hiddenByParent: hidden })
-      if (layer.isGroup && !collapsed.has(layer.id)) walk(layer.id, depth + 1, hidden || !layer.visible)
+  const walk = (parent: string | null, depth: number, visible: boolean) => {
+    const siblings = layers.filter(l => l.parentId === parent)
+    // Bottom up: a layer clipped to one below it that doesn't show is hidden too (LayerHierarchy.entries).
+    const shown = new Set<string>(), below = new Set<string>()
+    for (const layer of siblings) {
+      if (visible && layer.visible && !(layer.clipTo && below.has(layer.clipTo) && !shown.has(layer.clipTo))) shown.add(layer.id)
+      below.add(layer.id)
+    }
+    for (const layer of [...siblings].reverse()) {
+      const effective = shown.has(layer.id)
+      out.push({ layer, depth, hiddenByParent: layer.visible && !effective })
+      if (layer.isGroup && !collapsed.has(layer.id)) walk(layer.id, depth + 1, effective)
     }
   }
-  walk(null, 0, false)
+  walk(null, 0, true)
   return out
 }
 
@@ -70,12 +79,12 @@ function Appearance() {
   )
 }
 
-function Popup({ label, icon, items, disabled }: { label: string; icon: string; items: { label: string; action: () => void; disabled?: boolean }[]; disabled?: boolean }) {
+function Popup({ label, icon, items, disabled, align = 'left' }: { label: string; icon: string; items: { label: string; action: () => void; disabled?: boolean }[]; disabled?: boolean; align?: 'left' | 'right' }) {
   const [open, setOpen] = useState(false)
   return (
     <div className="menu" style={{ position: 'relative' }} onPointerLeave={e => { if (e.pointerType === 'mouse') setOpen(false) }}>
       <button className="icon" title={label} disabled={disabled} onClick={() => setOpen(!open)}><Icon name={icon} /></button>
-      {open && <div className="menu-list" style={{ top: 'auto', bottom: '100%', left: 0 }}>{items.map(item => <button key={item.label} disabled={item.disabled} onClick={() => { setOpen(false); item.action() }}><span>{item.label}</span></button>)}</div>}
+      {open && <div className="menu-list" style={{ top: 'auto', bottom: '100%', ...(align === 'right' ? { right: 0, left: 'auto' } : { left: 0 }) }}>{items.map(item => <button key={item.label} disabled={item.disabled} onClick={() => { setOpen(false); item.action() }}><span>{item.label}</span></button>)}</div>}
     </div>
   )
 }
@@ -85,7 +94,8 @@ export function LayersPanel() {
   useSyncExternalStore(subscribeThumbnails, thumbnailsVersion)
   const [collapsed, setCollapsed] = useState(new Set<string>())
   const [renaming, setRenaming] = useState<string | null>(null)
-  const [drop, setDrop] = useState<{ id: string; where: 'above' | 'below' | 'into' } | null>(null)
+  const [drop, setDrop] = useState<{ id: string; where: 'above' | 'below' | 'into'; indent: number; exitFolder?: string; clipTo?: string | null } | null>(null)
+  const dragAlt = useRef(false)
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
   const closeMenu = useCallback(() => setMenu(null), [])
   const [search, setSearch] = useState<string | null>(null)
@@ -193,15 +203,36 @@ export function LayersPanel() {
     ]
   }
 
-  const onDragOver = (event: DragEvent, layer: Layer) => {
-    if (event.dataTransfer.types.includes('application/x-compositor-effect')) { if (layer.image && !layer.isGroup) { event.preventDefault(); setDrop({ id: layer.id, where: 'into' }) } return }
+  // Computes the landing target for a drag over `layer` at fractional row height `y` (0–1):
+  // - Under a folder's last child: upper half of bottom stays at the bottom of the folder, lower strip exits outside the folder.
+  // - Over the top of a clipping group: upper strip lands unclipped above the group, lower strip lands clipped to its base.
+  const dropTarget = (layer: Layer, depth: number, y: number): NonNullable<typeof drop> => {
+    if (layer.isGroup && y > 0.3 && y < 0.7) return { id: layer.id, where: 'into', indent: depth + 1 }
+    if (y < 0.5) {
+      const siblings = store.children(layer.parentId)
+      const above = siblings[siblings.findIndex(l => l.id === layer.id) + 1]
+      const topOfClipGroup = !!layer.clipTo && (!above || above.clipTo !== layer.clipTo)
+      if (topOfClipGroup && y >= 0.25) return { id: layer.id, where: 'above', indent: depth + 1, clipTo: layer.clipTo }
+      if (topOfClipGroup) return { id: layer.id, where: 'above', indent: depth, clipTo: null }
+      return { id: layer.id, where: 'above', indent: depth }
+    }
+    if (layer.parentId) {
+      const siblings = store.children(layer.parentId)
+      const isLastInFolder = siblings[0]?.id === layer.id
+      if (isLastInFolder && y >= 0.78) return { id: layer.id, where: 'below', indent: Math.max(0, depth - 1), exitFolder: layer.parentId }
+    }
+    return { id: layer.id, where: 'below', indent: depth }
+  }
+
+  const onDragOver = (event: DragEvent, layer: Layer, depth: number) => {
+    if (event.dataTransfer.types.includes('application/x-compositor-effect')) { if (layer.image && !layer.isGroup) { event.preventDefault(); setDrop({ id: layer.id, where: 'into', indent: depth }) } return }
     if (!event.dataTransfer.types.includes('application/x-compositor-layers')) return
     event.preventDefault()
     const box = (event.currentTarget as HTMLElement).getBoundingClientRect(), y = (event.clientY - box.top) / box.height
-    setDrop({ id: layer.id, where: layer.isGroup && y > 0.3 && y < 0.7 ? 'into' : y < 0.5 ? 'above' : 'below' })
+    setDrop(dropTarget(layer, depth, y))
   }
   // Reordering by touch, from a row's grip, as the mouse's drag does: where it's let go marks above, below or into a folder.
-  const reorder = useRef<{ ids: string[]; target: { id: string; where: 'above' | 'below' | 'into' } | null } | null>(null)
+  const reorder = useRef<{ ids: string[]; target: typeof drop } | null>(null)
   const startReorder = (event: React.PointerEvent, layer: Layer, selected: boolean) => {
     event.stopPropagation(); event.preventDefault()
     ;(event.currentTarget as HTMLElement).setPointerCapture(event.pointerId)
@@ -210,18 +241,29 @@ export function LayersPanel() {
   const moveReorder = (event: React.PointerEvent) => {
     const r = reorder.current
     if (!r) return
-    const list = listRef.current, box = list?.getBoundingClientRect()
-    if (list && box) { if (event.clientY < box.top + 30) list.scrollTop -= 8; else if (event.clientY > box.bottom - 30) list.scrollTop += 8 }
+    const listEl = listRef.current, box = listEl?.getBoundingClientRect()
+    if (listEl && box) { if (event.clientY < box.top + 30) listEl.scrollTop -= 8; else if (event.clientY > box.bottom - 30) listEl.scrollTop += 8 }
     const row = document.elementFromPoint(event.clientX, event.clientY)?.closest('[data-layer-id]') as HTMLElement | null, over = row && store.layer(row.dataset.layerId)
     if (!row || !over || r.ids.includes(over.id)) { r.target = null; setDrop(null); return }
     const rect = row.getBoundingClientRect(), y = (event.clientY - rect.top) / rect.height
-    r.target = { id: over.id, where: over.isGroup && y > 0.3 && y < 0.7 ? 'into' : y < 0.5 ? 'above' : 'below' }
+    const depth = store.ancestors(over.id).length
+    r.target = dropTarget(over, depth, y)
     setDrop(r.target)
+  }
+  const applyDrop = (ids: string[], target: NonNullable<typeof drop>) => {
+    if (target.exitFolder) {
+      const folder = store.layer(target.exitFolder)
+      if (folder) { store.move(ids, { below: folder.id, parentId: folder.parentId, clipTo: null }); return }
+    }
+    store.move(ids, {
+      ...(target.where === 'into' ? { into: target.id } : target.where === 'above' ? { above: target.id } : { below: target.id }),
+      ...(target.clipTo !== undefined ? { clipTo: target.clipTo } : {}),
+    })
   }
   const endReorder = () => {
     const r = reorder.current
     reorder.current = null
-    if (r?.target) store.move(r.ids, r.target.where === 'into' ? { into: r.target.id } : r.target.where === 'above' ? { above: r.target.id } : { below: r.target.id })
+    if (r?.target) applyDrop(r.ids, r.target)
     setDrop(null)
   }
 
@@ -230,9 +272,16 @@ export function LayersPanel() {
     const effect = event.dataTransfer.getData('application/x-compositor-effect')
     if (effect) { const { layerId, kind } = JSON.parse(effect); if (drop) store.copyEffect(layerId, kind, drop.id); setDrop(null); return }
     const ids = JSON.parse(event.dataTransfer.getData('application/x-compositor-layers') || '[]') as string[]
+    const duplicate = event.altKey || dragAlt.current
+    dragAlt.current = false
     if (drop && ids.length) {
-      if (event.altKey) { store.setActive(ids[0]); store.duplicate(); ids.splice(0, ids.length, store.state.activeId!) }
-      store.move(ids, drop.where === 'into' ? { into: drop.id } : drop.where === 'above' ? { above: drop.id } : { below: drop.id })
+      if (duplicate) {
+        store.set({ activeId: ids[0], selectedIds: ids })
+        store.duplicate()
+        applyDrop([...store.state.selectedIds], drop)
+      } else {
+        applyDrop(ids, drop)
+      }
     }
     setDrop(null)
   }
@@ -263,13 +312,14 @@ export function LayersPanel() {
           const editingMask = isActive && state.editingMask
           return (
             <Fragment key={layer.id}>
-            <div className={classes} data-layer-id={layer.id} style={{ paddingLeft: 4 + depth * 16 }} draggable={renaming !== layer.id && !coarse} onPointerMoveCapture={movePress} onPointerUp={cancelPress} onPointerCancel={cancelPress}
-              onDragStart={e => { const ids = selected ? state.selectedIds : [layer.id]; e.dataTransfer.setData('application/x-compositor-layers', JSON.stringify(ids)); setDraggedLayers(ids); e.dataTransfer.effectAllowed = 'copyMove' }} onDragEnd={() => setDraggedLayers(null)}
-              onDragOver={e => onDragOver(e, layer)} onDrop={onDrop} onContextMenu={e => openMenu(e, layer)}
-              onPointerDown={e => { startPress(e, layer); if (e.button === 0 && e.altKey && !commandKey(e) && clipZone(e, layer) && !(e.target as HTMLElement).classList.contains('mask')) { store.set({ effectSelection: null }); store.toggleClip(layer.id); e.preventDefault(); return } if (e.button === 0 && !(e.target as HTMLElement).closest('button,input')) { store.setActive(layer.id, e.shiftKey ? 'range' : e.metaKey || e.ctrlKey ? 'toggle' : 'none'); if (!(e.target as HTMLElement).classList.contains('mask')) store.set({ editingMask: false }) } }}
+            <div className={classes} data-layer-id={layer.id} style={{ paddingLeft: 4 + depth * 16, ...(drop?.id === layer.id ? { ['--drop-indent' as string]: `${drop.indent * 16}px` } : {}) }} draggable={renaming !== layer.id && !coarse} onPointerMoveCapture={movePress} onPointerUp={cancelPress} onPointerCancel={cancelPress}
+              onDragStart={e => { dragAlt.current = e.altKey; const ids = selected ? state.selectedIds : [layer.id]; e.dataTransfer.setData('application/x-compositor-layers', JSON.stringify(ids)); setDraggedLayers(ids); e.dataTransfer.effectAllowed = 'copyMove' }} onDragEnd={() => { dragAlt.current = false; setDraggedLayers(null) }}
+              onDragOver={e => onDragOver(e, layer, depth)} onDrop={onDrop} onContextMenu={e => openMenu(e, layer)}
+              onClick={e => { if (e.altKey && !commandKey(e) && clipZone(e, layer) && !(e.target as HTMLElement).classList.contains('mask')) { store.set({ effectSelection: null }); store.toggleClip(layer.id) } }}
+              onPointerDown={e => { startPress(e, layer); if (e.button === 0 && !(e.target as HTMLElement).closest('button,input')) { if (!(e.altKey && !commandKey(e) && clipZone(e, layer))) { store.setActive(layer.id, e.shiftKey ? 'range' : e.metaKey || e.ctrlKey ? 'toggle' : 'none'); if (!(e.target as HTMLElement).classList.contains('mask')) store.set({ editingMask: false }) } } }}
               onDoubleClick={e => { if ((e.target as HTMLElement).classList.contains('name')) setRenaming(layer.id); else if (liveText(layer)) { store.setActive(layer.id); editActiveText() } else if (layer.adjustment || layer.effects) store.set({ inspector: layer.id }) }}
-              onPointerMove={e => { const zone = clipZone(e, layer); (e.currentTarget as HTMLElement).style.cursor = e.altKey && !commandKey(e) ? (zone ? (store.canToggleClipFor(layer.id) ? 'alias' : 'default') : 'copy') : '' }}>
-              <button className={`icon eye ${layer.visible ? '' : 'off'}`} title={layer.visible ? 'Hide' : 'Show'} onClick={() => store.updateLayer(layer.id, { visible: !layer.visible }, layer.visible ? 'Hide Layer' : 'Show Layer')}><Icon name={layer.visible ? 'eye' : 'eyeOff'} /></button>
+              onPointerMove={e => { const zone = clipZone(e, layer); (e.currentTarget as HTMLElement).style.cursor = e.altKey && !commandKey(e) ? (zone ? (store.canToggleClipFor(layer.id) ? 'alias' : 'default') : duplicateCursor) : '' }}>
+              <button className={`icon eye ${layer.visible ? '' : 'off'}`} title={layer.visible ? 'Hide' : 'Show'} onClick={() => store.toggleLayerVisibility(layer.id)}><Icon name={layer.visible ? 'eye' : 'eyeOff'} /></button>
               {layer.isGroup ? <span className="chevron" onClick={() => { const next = new Set(collapsed); next.has(layer.id) ? next.delete(layer.id) : next.add(layer.id); setCollapsed(next) }}><Icon name={collapsed.has(layer.id) ? 'chevronRight' : 'chevronDown'} size={12} /></span> : <span className="clip" title={layer.clipTo ? 'Clipped to the layer below' : undefined}>{layer.clipTo ? '↳' : ''}</span>}
               {layer.isGroup ? <span className="thumb" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'none' }}><Icon name="folder" size={20} /></span>
                 : layer.adjustment ? <span className="thumb" title={layer.adjustment.kind} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'none' }} onClick={() => store.set({ inspector: layer.id })}><Icon name="adjust" size={20} /></span>
@@ -312,9 +362,9 @@ export function LayersPanel() {
           ...(state.selection ? [{ label: 'Reveal Selection', action: () => active && store.addMask(active.id, false, true) }] : []),
           { label: 'Hide All', action: () => active && store.addMask(active.id, true) },
         ]} />
-        <Popup label="New adjustment layer" icon="adjust" disabled={!store.hasDocument} items={imageAdjustmentKinds.map(kind => ({ label: kind, action: () => store.addAdjustment(kind) }))} />
-        <Popup label="New filter layer" icon="filters" disabled={!store.hasDocument} items={filterAdjustmentKinds.map(kind => ({ label: kind, action: () => store.addAdjustment(kind) }))} />
-        <Popup label="Layer effects" icon="fx" disabled={!active?.image || active.isGroup} items={effectKinds.map(kind => ({ label: `${effectNames[kind]}…`, action: () => { if (!active) return; const bg = state.background.map(v => v / 255); store.addEffect(active.id, kind, kind === 'stroke' || kind === 'colorOverlay' ? { ...defaultEffect(kind), red: bg[0], green: bg[1], blue: bg[2] } : defaultEffect(kind)) } }))} />
+        <Popup label="New adjustment layer" icon="adjust" align="right" disabled={!store.hasDocument} items={imageAdjustmentKinds.map(kind => ({ label: kind, action: () => store.addAdjustment(kind) }))} />
+        <Popup label="New filter layer" icon="filters" align="right" disabled={!store.hasDocument} items={filterAdjustmentKinds.map(kind => ({ label: kind, action: () => store.addAdjustment(kind) }))} />
+        <Popup label="Layer effects" icon="fx" align="right" disabled={!active?.image || active.isGroup} items={effectKinds.map(kind => ({ label: `${effectNames[kind]}…`, action: () => { if (!active) return; const bg = state.background.map(v => v / 255); store.addEffect(active.id, kind, kind === 'stroke' || kind === 'colorOverlay' ? { ...defaultEffect(kind), red: bg[0], green: bg[1], blue: bg[2] } : defaultEffect(kind)) } }))} />
         <span className="spacer" />
         <button className="icon" title={state.effectSelection ? 'Delete selected effect' : 'Delete layer'} disabled={!active} onClick={() => store.deleteSelected()}><Icon name="trash" /></button>
       </div>

@@ -101,22 +101,59 @@ export function motionBlur(input: FilterInput, angle: number, distance: number, 
   const margin = input.isMask ? 0 : reach + 2
   const grid = margin ? paddedSides(input.pixels, margin, sides) : { pixels: input.pixels, origin: [0, 0] as [number, number] }
   const { width, height, data } = grid.pixels, clamped = input.isMask || anySide(sides)
-  const out = like(grid.pixels, width, height)
+  const out = like(grid.pixels, width, height), dst = out.data, float = isFloat(out)
   const dx = Math.cos(angle * Math.PI / 180), dy = -Math.sin(angle * Math.PI / 180)
-  const taps = Math.min(96, Math.max(1, reach)), step = reach / taps
-  const weights: number[] = []
+  const taps = Math.min(96, Math.max(1, reach)), step = reach / taps, count = taps * 2 + 1
+  const weights = new Float64Array(count), ox = new Float64Array(count), oy = new Float64Array(count)
   let total = 0
-  for (let k = -taps; k <= taps; k++) { const d = k * step, w = Math.exp(-d * d / (2 * sigma * sigma)); weights.push(w); total += w }
-  const sample = (x: number, y: number, c: number) => {
-    if (clamped) { x = Math.min(width - 1, Math.max(0, x)); y = Math.min(height - 1, Math.max(0, y)) }
-    const x0 = Math.floor(x), y0 = Math.floor(y), fx = x - x0, fy = y - y0
-    const at = (px: number, py: number) => px < 0 || py < 0 || px >= width || py >= height ? 0 : data[(py * width + px) * 4 + c]
-    return (at(x0, y0) * (1 - fx) + at(x0 + 1, y0) * fx) * (1 - fy) + (at(x0, y0 + 1) * (1 - fx) + at(x0 + 1, y0 + 1) * fx) * fy
+  for (let i = 0; i < count; i++) {
+    const k = i - taps, d = k * step, w = Math.exp(-d * d / (2 * sigma * sigma))
+    weights[i] = w; total += w
+    ox[i] = dx * d; oy[i] = dy * d
   }
-  for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) for (let c = 0; c < 4; c++) {
-    let sum = 0
-    for (let k = -taps; k <= taps; k++) sum += sample(x + dx * k * step, y + dy * k * step, c) * weights[k + taps]
-    out.data[(y * width + x) * 4 + c] = put(out, sum / total)
+  for (let i = 0; i < count; i++) weights[i] /= total
+  const wMax = width - 1, hMax = height - 1, rowStride = width * 4
+  for (let y = 0; y < height; y++) {
+    const outRow = y * rowStride
+    for (let x = 0; x < width; x++) {
+      let r = 0, g = 0, b = 0, a = 0
+      for (let i = 0; i < count; i++) {
+        let sx = x + ox[i], sy = y + oy[i]
+        if (clamped) {
+          if (sx < 0) sx = 0; else if (sx > wMax) sx = wMax
+          if (sy < 0) sy = 0; else if (sy > hMax) sy = hMax
+        }
+        const x0 = Math.floor(sx), y0 = Math.floor(sy), fx = sx - x0, fy = sy - y0
+        const w = weights[i]
+        if (x0 >= 0 && y0 >= 0 && x0 < wMax && y0 < hMax) {
+          const p00 = y0 * rowStride + x0 * 4, p10 = p00 + 4, p01 = p00 + rowStride, p11 = p01 + 4
+          const w00 = (1 - fx) * (1 - fy) * w, w10 = fx * (1 - fy) * w, w01 = (1 - fx) * fy * w, w11 = fx * fy * w
+          r += data[p00] * w00 + data[p10] * w10 + data[p01] * w01 + data[p11] * w11
+          g += data[p00 + 1] * w00 + data[p10 + 1] * w10 + data[p01 + 1] * w01 + data[p11 + 1] * w11
+          b += data[p00 + 2] * w00 + data[p10 + 2] * w10 + data[p01 + 2] * w01 + data[p11 + 2] * w11
+          a += data[p00 + 3] * w00 + data[p10 + 3] * w10 + data[p01 + 3] * w01 + data[p11 + 3] * w11
+        } else {
+          const x1 = x0 + 1, y1 = y0 + 1
+          const i00 = x0 >= 0 && y0 >= 0 && x0 < width && y0 < height ? y0 * rowStride + x0 * 4 : -1
+          const i10 = x1 >= 0 && y0 >= 0 && x1 < width && y0 < height ? y0 * rowStride + x1 * 4 : -1
+          const i01 = x0 >= 0 && y1 >= 0 && x0 < width && y1 < height ? y1 * rowStride + x0 * 4 : -1
+          const i11 = x1 >= 0 && y1 >= 0 && x1 < width && y1 < height ? y1 * rowStride + x1 * 4 : -1
+          const w00 = (1 - fx) * (1 - fy) * w, w10 = fx * (1 - fy) * w, w01 = (1 - fx) * fy * w, w11 = fx * fy * w
+          if (i00 >= 0) { r += data[i00] * w00; g += data[i00 + 1] * w00; b += data[i00 + 2] * w00; a += data[i00 + 3] * w00 }
+          if (i10 >= 0) { r += data[i10] * w10; g += data[i10 + 1] * w10; b += data[i10 + 2] * w10; a += data[i10 + 3] * w10 }
+          if (i01 >= 0) { r += data[i01] * w01; g += data[i01 + 1] * w01; b += data[i01 + 2] * w01; a += data[i01 + 3] * w01 }
+          if (i11 >= 0) { r += data[i11] * w11; g += data[i11 + 1] * w11; b += data[i11 + 2] * w11; a += data[i11 + 3] * w11 }
+        }
+      }
+      const p = outRow + x * 4
+      if (float) { dst[p] = r; dst[p + 1] = g; dst[p + 2] = b; dst[p + 3] = a }
+      else {
+        dst[p] = r <= 0 ? 0 : r >= 255 ? 255 : (r + 0.5) | 0
+        dst[p + 1] = g <= 0 ? 0 : g >= 255 ? 255 : (g + 0.5) | 0
+        dst[p + 2] = b <= 0 ? 0 : b >= 255 ? 255 : (b + 0.5) | 0
+        dst[p + 3] = a <= 0 ? 0 : a >= 255 ? 255 : (a + 0.5) | 0
+      }
+    }
   }
   return { pixels: out, origin: grid.origin }
 }

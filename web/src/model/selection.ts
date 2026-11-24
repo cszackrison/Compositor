@@ -77,58 +77,97 @@ export function outline(coverage: Raster): Int32Array[] | null {
   })
 }
 
-// Squared Euclidean distance from every pixel to the nearest pixel where `inside` is true (Felzenszwalb–Huttenlocher).
-function distanceTo(inside: (i: number) => boolean, width: number, height: number) {
-  const big = 1e20, d = new Float64Array(width * height)
-  for (let i = 0; i < d.length; i++) d[i] = inside(i) ? 0 : big
-  const pass = (f: Float64Array, n: number) => {
-    const out = new Float64Array(n), v = new Int32Array(n), z = new Float64Array(n + 1)
-    let k = 0
-    v[0] = 0; z[0] = -big; z[1] = big
-    for (let q = 1; q < n; q++) {
-      let s = ((f[q] + q * q) - (f[v[k]] + v[k] * v[k])) / (2 * q - 2 * v[k])
-      while (s <= z[k]) { k--; s = ((f[q] + q * q) - (f[v[k]] + v[k] * v[k])) / (2 * q - 2 * v[k]) }
-      k++; v[k] = q; z[k] = s; z[k + 1] = big
-    }
-    k = 0
-    for (let q = 0; q < n; q++) { while (z[k + 1] < q) k++; out[q] = (q - v[k]) * (q - v[k]) + f[v[k]] }
-    return out
-  }
-  const column = new Float64Array(height)
-  for (let x = 0; x < width; x++) {
-    for (let y = 0; y < height; y++) column[y] = d[y * width + x]
-    const out = pass(column, height)
-    for (let y = 0; y < height; y++) d[y * width + x] = out[y]
-  }
-  const row = new Float64Array(width)
+// Separable sliding-window max (expand) or min (contract) of radius `reach`: O(W×H) regardless of reach, keeping square corners
+// sharp so repeated Expand and Contract keep a rectangle a rectangle and never round or lose a corner (Selection.resizeSelection).
+function resizeMask(data: Uint8Array, width: number, height: number, reach: number, dilate: boolean): Uint8Array {
+  const r = Math.max(0, Math.round(reach))
+  if (r === 0) return data.slice()
+  let minX = width, minY = height, maxX = -1, maxY = -1
   for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) row[x] = d[y * width + x]
-    d.set(pass(row, width), y * width)
+    const row = y * width
+    for (let x = 0; x < width; x++) if (data[row + x]) {
+      if (x < minX) minX = x; if (x > maxX) maxX = x; if (y < minY) minY = y; maxY = y
+    }
   }
-  return d
+  const out = new Uint8Array(data.length)
+  if (maxX < 0) return out
+  const x0 = dilate ? Math.max(0, minX - r) : Math.max(r, minX), x1 = dilate ? Math.min(width - 1, maxX + r) : Math.min(width - 1 - r, maxX)
+  const y0 = dilate ? Math.max(0, minY - r) : Math.max(r, minY), y1 = dilate ? Math.min(height - 1, maxY + r) : Math.min(height - 1 - r, maxY)
+  if (x0 > x1 || y0 > y1) return out
+
+  const temp = new Uint8Array(data.length), queue = new Int32Array(Math.max(width, height))
+  if (dilate) {
+    // Horizontal max over rows that contain any non-zero pixel.
+    for (let y = minY; y <= maxY; y++) {
+      const base = y * width
+      let head = 0, tail = 0, next = Math.max(0, x0 - r)
+      for (let x = x0; x <= x1; x++) {
+        const hi = Math.min(width - 1, x + r)
+        while (next <= hi) {
+          const v = data[base + next]
+          while (tail > head && data[base + queue[tail - 1]] <= v) tail--
+          queue[tail++] = next++
+        }
+        while (head < tail && queue[head] < x - r) head++
+        temp[base + x] = data[base + queue[head]]
+      }
+    }
+    // Vertical max over columns that can become non-zero.
+    for (let x = x0; x <= x1; x++) {
+      let head = 0, tail = 0, next = Math.max(0, y0 - r)
+      for (let y = y0; y <= y1; y++) {
+        const hi = Math.min(height - 1, y + r)
+        while (next <= hi) {
+          const v = temp[next * width + x]
+          while (tail > head && temp[queue[tail - 1] * width + x] <= v) tail--
+          queue[tail++] = next++
+        }
+        while (head < tail && queue[head] < y - r) head++
+        out[y * width + x] = temp[queue[head] * width + x]
+      }
+    }
+  } else {
+    // Horizontal min (pixels within `r` of left/right canvas edges are 0, so only x in [x0, x1] can survive).
+    for (let y = minY; y <= maxY; y++) {
+      const base = y * width
+      let head = 0, tail = 0, next = x0 - r
+      for (let x = x0; x <= x1; x++) {
+        const hi = x + r
+        while (next <= hi) {
+          const v = data[base + next]
+          while (tail > head && data[base + queue[tail - 1]] >= v) tail--
+          queue[tail++] = next++
+        }
+        while (head < tail && queue[head] < x - r) head++
+        temp[base + x] = data[base + queue[head]]
+      }
+    }
+    // Vertical min (only y in [y0, y1] can survive).
+    for (let x = x0; x <= x1; x++) {
+      let head = 0, tail = 0, next = y0 - r
+      for (let y = y0; y <= y1; y++) {
+        const hi = y + r
+        while (next <= hi) {
+          const v = temp[next * width + x]
+          while (tail > head && temp[queue[tail - 1] * width + x] >= v) tail--
+          queue[tail++] = next++
+        }
+        while (head < tail && queue[head] < y - r) head++
+        out[y * width + x] = temp[queue[head] * width + x]
+      }
+    }
+  }
+  return out
 }
 
-// Select › Modify › Expand: everything within `amount` pixels of the selection, with a round, antialiased edge, kept on the canvas.
+// Select › Modify › Expand: grows the selection by `amount` pixels, keeping its corners sharp, clipped to the canvas.
 export function expandSelection(selection: Raster, amount: number): Raster {
-  const { width, height, data } = selection
-  const distance = distanceTo(i => data[i] >= 128, width, height)
-  const out = new Raster(width, height, 1)
-  for (let i = 0; i < out.data.length; i++) out.data[i] = Math.max(data[i], Math.round(255 * Math.min(1, Math.max(0, amount - Math.sqrt(distance[i]) + 0.5))))
-  return out
+  return new Raster(selection.width, selection.height, 1, resizeMask(selection.data, selection.width, selection.height, amount, true))
 }
 
-// Contract: pulls the edge in by `amount`, away from the canvas edges too, as stroking the outline and cutting it away does.
+// Contract: pulls the edge in by `amount` pixels, including away from the canvas edges, keeping corners sharp.
 export function contractSelection(selection: Raster, amount: number): Raster {
-  const { width, height, data } = selection
-  const padded = new Raster(width + 2, height + 2, 1)
-  for (let y = 0; y < height; y++) padded.data.set(data.subarray(y * width, (y + 1) * width), (y + 1) * (width + 2) + 1)
-  const distance = distanceTo(i => padded.data[i] < 128, width + 2, height + 2)
-  const out = new Raster(width, height, 1)
-  for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
-    const i = y * width + x, d = Math.sqrt(distance[(y + 1) * (width + 2) + x + 1]) - 0.5
-    out.data[i] = Math.min(data[i], Math.round(255 * Math.min(1, Math.max(0, d - amount + 0.5))))
-  }
-  return out
+  return new Raster(selection.width, selection.height, 1, resizeMask(selection.data, selection.width, selection.height, amount, false))
 }
 
 // Feather: a Gaussian of σ = amount/2 over the coverage, clamped at the canvas edge (successive feathers add in quadrature).

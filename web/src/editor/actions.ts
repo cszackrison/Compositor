@@ -20,7 +20,9 @@ import { renderFull } from '../ui/Stage'
 import { frameDelays, frameRaster, frameReferences, openGIF } from '../model/gif'
 import { encodeGIF, exportSchedule, framePositionAt } from '../io/gif'
 import { type ChannelSource, channelPack, isolatingChannel } from '../io/channelPack'
+import { writePSD } from '../io/psdWriter'
 import { syncedGIF, withGIF } from '../model/gifLayer'
+import { prefs, setPrefs } from './prefs'
 
 function guard<T extends unknown[]>(body: (...args: T) => Promise<void> | void) {
   return async (...args: T) => {
@@ -102,12 +104,30 @@ let toldReadOnly = false
 // Opens an image as a new document when nothing is open, or places it as a layer. A Photoshop file brings its layers, a PDF its pages
 // (a Photoshop file's artboards open as documents of their own). Dropped on the
 // canvas, each is centered where it was dropped (`at`, in document pixels).
+// Maps an opened image file's extension to the Export As format it came in as, so PNG goes back out as PNG, JPEG as JPEG, etc.
+export function formatFromFilename(filename: string): string | null {
+  const ext = filename.slice(filename.lastIndexOf('.') + 1).toLowerCase()
+  if (ext === 'png') return 'PNG'
+  if (ext === 'jpg' || ext === 'jpeg') return 'JPEG'
+  if (ext === 'tif' || ext === 'tiff') return 'TIFF'
+  if (ext === 'gif') return 'GIF'
+  if (ext === 'exr') return 'EXR'
+  if (ext === 'psd' || ext === 'psb') return 'PSD'
+  return null
+}
+
+// What Export As starts on for the current document: what it was last exported as, else the image format it began as, else the last used format.
+export function startingExportFormat(of: Store = store): string {
+  return of.exportedFormat ?? of.sourceFormat ?? prefs.lastExportFormat ?? 'PNG'
+}
+
 export const placeImages = guard(async (files: File[], at?: [number, number]) => {
   // A RAW brought in with Camera Raw…: the Camera Raw Filter opens on its layer once everything is in, as Photoshop opens a RAW in
   // Camera Raw.
   let cameraRawOn: string | null = null
   for (const file of files) {
     const name = file.name.replace(/\.[^.]+$/, '')
+    const fmt = formatFromFilename(file.name)
     if (isPSD(new Uint8Array(await file.slice(0, 4).arrayBuffer()))) { await placePhotoshop(file, name, at); continue }
     if (isPDF(file)) { await placePDF(file, name, at); continue }
     // A camera RAW is developed first, in its sheet; cancelled, it's skipped.
@@ -116,21 +136,22 @@ export const placeImages = guard(async (files: File[], at?: [number, number]) =>
     // An animated GIF comes in as a GIF layer, its first frame showing.
     if (/\.gif$/i.test(file.name) || file.type === 'image/gif') {
       const gif = openGIF(new Uint8Array(await file.arrayBuffer()))
-      if (gif.source.frameCount > 1) { const shown = withGIF(gif); await placeImage(shown.image!, name, undefined, null, at, shown.gif); continue }
+      if (gif.source.frameCount > 1) { const shown = withGIF(gif); await placeImage(shown.image!, name, undefined, null, at, shown.gif, fmt); continue }
     }
     const { image, deep, profile }: Awaited<ReturnType<typeof decodeLayerFile>> = developed ?? await decodeLayerFile(file, store.hasDocument ? store.state.doc : undefined)
-    await placeImage(image, name, deep, profile, at)
+    await placeImage(image, name, deep, profile, at, undefined, fmt)
     if (developed?.cameraRaw) cameraRawOn = store.state.activeId
   }
   if (cameraRawOn && store.layer(cameraRawOn)) { store.setActive(cameraRawOn); store.set({ panel: 'Camera Raw Filter' }) }
 })
 
-async function placeImage(image: Raster, name: string, deep?: Layer['deep'], profile?: CMYKProfile | null, at?: [number, number], gif?: Layer['gif']) {
+async function placeImage(image: Raster, name: string, deep?: Layer['deep'], profile?: CMYKProfile | null, at?: [number, number], gif?: Layer['gif'], sourceFormat: string | null = null) {
   if (!store.hasDocument) {
     // A CMYK file starting a project: its profile is kept and chosen, so proofing and CMYK export go back to the inks it was made for.
     if (profile) await (await import('../io/cmyk')).adoptProfile(profile)
     const layer = newLayer({ name, transform: fullTransform(image.width, image.height), image, deep, ...(gif ? { gif } : {}) })
     store.open({ id: uuid(), width: image.width, height: image.height, resolution: 72, layers: [layer], guides: [], extra: {} }, layer.id, null)
+    store.sourceFormat = sourceFormat
     store.set({ target: { kind: 'download', name } })
   } else store.addImageLayer(image, name, deep, at, gif)
 }
@@ -205,7 +226,9 @@ async function placePhotoshop(file: File, name: string, at?: [number, number]) {
   if (!(await finishPSDReading(imported.conversions))) return
   // A CMYK file making a new document: its profile is kept and chosen, for proofing and for CMYK export when it's asked for.
   if (!store.hasDocument && parsed.cmykProfile) await (await import('../io/cmyk')).adoptProfile(parsed.cmykProfile)
+  const started = !store.hasDocument
   store.addPhotoshop(imported, name, at)
+  if (started) store.sourceFormat = 'PSD'
 }
 
 // A Photoshop file's artboards (EditorSession.importArtboard), each a document of its own in a tab named for it, after its conversion
@@ -304,6 +327,7 @@ export const save = guard(async (as: boolean = false) => {
   await savingProject(owner, () => writeDirectory(target.handle, files))
   if (!(await watching(owner, target.handle))) watchProject(owner, target.handle)
   noteRecent(target.handle)
+  owner.sourceFormat = null
   owner.set({ saved: written(), target })
   owner.notify(`Saved ${target.name}`, 'info')
 })
@@ -337,6 +361,8 @@ export const exportImage = guard(async () => {
   if (!store.hasDocument) return
   commitFloating()
   await saveFile(`${documentName()}.png`, new Blob([encodePNG(renderFull(store.state.doc)) as Uint8Array<ArrayBuffer>], { type: 'image/png' }))
+  store.exportedFormat = 'PNG'
+  setPrefs({ lastExportFormat: 'PNG' })
 })
 
 // The layer `id` alone, as it looks in the document: it (shown even if hidden), what's inside it, the layers clipped to those, and the
@@ -435,6 +461,23 @@ export function encodeChannelPack(doc: Doc, sources: ChannelSource[], width: num
   const pixelsOf = (id: string) => rendered.get(id) ?? rendered.set(id, renderFull(isolatingChannel(doc, id))).get(id)!
   const { png, preview } = channelPack(sources, width, height, doc.resolution || 72, pixelsOf, sizedPixels)
   return { blob: new Blob([png], { type: 'image/png' }), preview: new Blob([encodePNG(preview) as Uint8Array<ArrayBuffer>], { type: 'image/png' }) }
+}
+
+// Export As › PSD: layered Photoshop file at the document's own size, previewed by its flattened composite.
+export async function encodePSDExport(doc: Doc, composite: Raster, deepComposite: Float32Array | null): Promise<{ blob: Blob; preview: Blob }> {
+  const bytes = writePSD(doc, composite, deepComposite)
+  let preview: Blob
+  if (typeof OffscreenCanvas !== 'undefined') {
+    const canvas = new OffscreenCanvas(composite.width, composite.height)
+    canvas.getContext('2d')!.putImageData(imageData(composite), 0, 0)
+    preview = await canvas.convertToBlob({ type: 'image/png' })
+  } else {
+    preview = new Blob([encodePNG(composite) as Uint8Array<ArrayBuffer>], { type: 'image/png' })
+  }
+  return {
+    blob: new Blob([bytes], { type: 'image/vnd.adobe.photoshop' }),
+    preview,
+  }
 }
 
 export async function encodeExport(pixels: Raster, format: 'JPEG' | 'PNG' | 'TIFF' | 'PDF' | 'EXR', width: number, height: number, { quality, background, resolution, linear = null, cmyk = null, deep = null }: ExportOptions): Promise<{ blob: Blob; preview: Blob }> {

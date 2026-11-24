@@ -1,6 +1,6 @@
 import { useEffect, useState, useSyncExternalStore } from 'react'
 import { useEditor } from './hooks'
-import { ColorSwatch, openColorPicker } from './ColorPicker'
+import { isColorPickerOpen, openColorPicker, sampleIntoColorPicker } from './ColorPicker'
 import { store, lineStyles, type HealMode, type LineCap, type LineStyle, type ShapeKind, type SmearMode, type Tool } from '../editor/store'
 import { Icon } from './icons'
 import { NumberField, Scrub } from './Inspector'
@@ -14,6 +14,12 @@ import { useCoarse } from './layout'
 import { prefs, setPrefs, subscribePrefs } from '../editor/prefs'
 import { TypeBar } from './TypeBar'
 import { changeTextStyle, currentTextStyle, isEditingText, setTypeColor } from '../tools/type'
+import {
+  cancelShapeColor, commitShapeColor, displayedCornerRadius, displayedLineCap, displayedLineStyle, displayedLineWidth,
+  displayedShapeSmoothing, displayedShapeStroke, displayedStrokeWidth, editingLineLayer, editingShapeLayer,
+  liveShapeStyle, nextShapeFill, previewShapeColor, setDisplayedCornerRadius, setDisplayedLineCap, setDisplayedLineStyle,
+  setDisplayedLineWidth, setDisplayedShapeSmoothing, setDisplayedStrokeWidth,
+} from '../tools/shape'
 
 export const tools: { tool: Tool; label: string; shortcut: string; icon: string }[] = [
   { tool: 'move', label: 'Move / Transform', shortcut: 'Move / Transform tool', icon: 'move' },
@@ -36,12 +42,13 @@ export const tools: { tool: Tool; label: string; shortcut: string; icon: string 
 
 const option = isMac ? '⌥' : 'Alt', command = isMac ? '⌘' : 'Ctrl'
 
-// The foreground swatch over the background one. Each opens the color picker; with a mask targeted they're black and white only,
-// and a click offers Black · Hide or White · Reveal.
+// The foreground swatch over the background one. Each opens the color picker (or samples into an already-open picker); with a mask
+// targeted they're black and white only, and a click offers Black · Hide or White · Reveal.
 function Palette() {
   const state = useEditor()
   const [maskMenu, setMaskMenu] = useState<'foreground' | 'background' | null>(null)
   const pick = (which: 'foreground' | 'background') => {
+    if (isColorPickerOpen() && sampleIntoColorPicker(store.paletteColor(which))) return
     if (state.editingMask) { setMaskMenu(maskMenu === which ? null : which); return }
     const original = store.state[which]
     // With text open, the foreground color paints its selected letters too.
@@ -68,30 +75,111 @@ export function ToolRail() {
     <nav className="toolrail">
       {tools.map(t => <button key={t.tool} className={`icon ${state.tool === t.tool ? 'on' : ''}`} title={`${t.label} (${shortcutText(t.shortcut, 'Canvas & Layers')})`} onClick={() => store.setTool(t.tool)}><Icon name={t.tool === 'marquee' && state.marqueeShape === 'ellipse' ? 'ellipse' : t.icon} /></button>)}
       <Palette />
-      <button className="icon" title="Swap colors (X)" onClick={() => { store.swapColors(); refreshGradient() }}><Icon name="swap" size={14} /></button>
-      <button className="icon" title="Default colors (D)" onClick={() => { store.resetColors(); refreshGradient() }}>↺</button>
+      <div className="palette-actions">
+        <button className="icon" title="Default colors (D)" onClick={() => { store.resetColors(); refreshGradient() }}><Icon name="resetColors" size={12} /></button>
+        <button className="icon" title="Swap colors (X)" onClick={() => { store.swapColors(); refreshGradient() }}><Icon name="swap" size={12} /></button>
+      </div>
     </nav>
   )
 }
 
 // `fieldMax`: how far typing or scrubbing may go past the slider's end.
-function Range({ label, value, min, max, fieldMax = max, step = 1, suffix = '', sensitivity = 1, onChange }: { label: string; value: number; min: number; max: number; fieldMax?: number; step?: number; suffix?: string; sensitivity?: number; onChange: (v: number) => void }) {
+function Range({ label, value, min, max, fieldMax = max, step = 1, suffix = '', sensitivity = 1, disabled = false, onChange }: { label: string; value: number; min: number; max: number; fieldMax?: number; step?: number; suffix?: string; sensitivity?: number; disabled?: boolean; onChange: (v: number) => void }) {
   const clamp = (v: number) => Math.min(fieldMax, Math.max(min, v))
-  return <label><Scrub label={label} value={value} min={min} max={fieldMax} step={step} sensitivity={sensitivity} onChange={v => onChange(clamp(v))} /><input type="range" min={min} max={max} step={step} value={value} onChange={e => onChange(+e.target.value)} /><NumberField min={min} max={fieldMax} step={step} digits={step < 1 ? String(step).split('.')[1]?.length ?? 0 : 0} value={value} onChange={onChange} />{suffix}</label>
+  return <label style={disabled ? { opacity: 0.45, pointerEvents: 'none' } : undefined}><Scrub label={label} value={value} min={min} max={fieldMax} step={step} sensitivity={sensitivity} onChange={v => onChange(clamp(v))} /><input type="range" disabled={disabled} min={min} max={max} step={step} value={Math.min(max, Math.max(min, value))} onChange={e => onChange(+e.target.value)} /><NumberField disabled={disabled} min={min} max={fieldMax} step={step} digits={step < 1 ? String(step).split('.')[1]?.length ?? 0 : 0} value={value} onChange={onChange} />{suffix}</label>
 }
 
 function Choice<T extends string>({ value, options, onChange }: { value: T; options: readonly T[]; onChange: (v: T) => void }) {
   return <span style={{ display: 'inline-flex', gap: 2 }}>{options.map(o => <button key={o} className={`icon ${o === value ? 'on' : ''}`} style={{ padding: '3px 8px' }} onClick={() => onChange(o)}>{o}</button>)}</span>
 }
 
-function TipControls({ strength = false }: { strength?: boolean }) {
+function TipControls({ strength = false, disableHardness = false }: { strength?: boolean; disableHardness?: boolean }) {
   const state = useEditor()
   const brush = state.brush
   const set = (changes: Partial<typeof brush>) => store.set({ brush: { ...brush, ...changes } })
   return <>
-    <Range label="Size" value={brush.diameter} min={1} max={2000} onChange={diameter => set({ diameter })} suffix="px" />
-    <Range label="Hardness" value={Math.round(brush.hardness * 100)} min={0} max={100} onChange={v => set({ hardness: v / 100 })} suffix="%" />
+    <Range label="Size" value={brush.diameter} min={1} max={2000} onChange={diameter => set({ diameter })} />
+    <Range label="Hardness" value={Math.round(brush.hardness * 100)} min={0} max={100} disabled={disableHardness} onChange={v => set({ hardness: v / 100 })} suffix="%" />
     <Range label={strength ? 'Strength' : 'Opacity'} value={Math.round(brush.opacity * 100)} min={1} max={100} onChange={v => set({ opacity: v / 100 })} suffix="%" />
+  </>
+}
+
+function ShapeHeader() {
+  const state = useEditor()
+  const editingShape = editingShapeLayer(), editingLine = editingLineLayer()
+  const editingStyle = liveShapeStyle(editingShape), lineStyle = liveShapeStyle(editingLine)
+  const kind = state.shape.kind
+  const showsLine = kind === 'Line' || !!editingLine
+  const showsStroke = !showsLine
+  const showsRadius = !showsLine && (editingStyle ? editingStyle.kind === 'Rectangle' : kind === 'Rectangle')
+  const fillColor = nextShapeFill()
+  const strokeColor = displayedShapeStroke()
+  const strokeWidth = displayedStrokeWidth()
+  const cornerRadius = displayedCornerRadius()
+  const smoothing = displayedShapeSmoothing()
+  const lineWidth = displayedLineWidth()
+  const lineDash = displayedLineStyle()
+  const lineCap = displayedLineCap()
+
+  const pickFill = () => {
+    const target = editingLine ?? (kind !== 'Line' ? editingShape : null)
+    if (target) {
+      const style = liveShapeStyle(target)!
+      const initial: [number, number, number] = [Math.round(style.red * 255), Math.round(style.green * 255), Math.round(style.blue * 255)]
+      openColorPicker({
+        title: 'Color Picker (Fill Color)', initial,
+        onChange: c => previewShapeColor(target.id, true, c),
+        onCommit: c => commitShapeColor(target.id, true, c),
+        onCancel: () => cancelShapeColor(target.id),
+      })
+      return
+    }
+    const original = store.state.foreground
+    openColorPicker({
+      title: 'Color Picker (Foreground Color)', initial: fillColor,
+      onChange: c => store.set({ foreground: c }),
+      onCommit: c => store.set({ foreground: c }),
+      onCancel: () => store.set({ foreground: original }),
+    })
+  }
+
+  const pickStroke = () => {
+    const bound = editingShape && (liveShapeStyle(editingShape)?.strokeWidth ?? 0) > 0 ? editingShape : null
+    if (bound) {
+      openColorPicker({
+        title: 'Color Picker (Stroke Color)', initial: strokeColor,
+        onChange: c => previewShapeColor(bound.id, false, c),
+        onCommit: c => commitShapeColor(bound.id, false, c),
+        onCancel: () => cancelShapeColor(bound.id),
+      })
+      return
+    }
+    const original = store.state.shape.strokeColor
+    openColorPicker({
+      title: 'Color Picker (Stroke Color)', initial: strokeColor,
+      onChange: c => store.set({ shape: { ...store.state.shape, strokeColor: c } }),
+      onCommit: c => store.set({ shape: { ...store.state.shape, strokeColor: c } }),
+      onCancel: () => store.set({ shape: { ...store.state.shape, strokeColor: original } }),
+    })
+  }
+
+  return <>
+    <Choice value={kind} options={['Rectangle', 'Ellipse', 'Line'] as ShapeKind[]} onChange={next => store.set({ shape: { ...state.shape, kind: next } })} />
+    <label><span className="muted">Fill</span><button type="button" className="swatch" title="Fill color" style={{ width: 22, height: 22, background: `rgb(${fillColor.join(',')})` }} onClick={pickFill} /></label>
+    {showsStroke && <>
+      <label><span className="muted">Stroke</span><button type="button" className="swatch" title="Stroke color" style={{ width: 22, height: 22, background: `rgb(${strokeColor.join(',')})` }} onClick={pickStroke} /></label>
+      <Range label="Width" value={strokeWidth} min={0} max={200} fieldMax={5000} onChange={setDisplayedStrokeWidth} />
+    </>}
+    {showsRadius && <>
+      <Range label="Radius" value={cornerRadius} min={0} max={200} fieldMax={5000} onChange={setDisplayedCornerRadius} />
+      <label title={cornerRadius > 0 ? 'Smooth squircle corners at 60% smoothing, matching Figma\'s iOS setting' : 'Set a radius above 0 to use smooth corners.'}><input type="checkbox" disabled={cornerRadius <= 0} checked={smoothing} onChange={e => setDisplayedShapeSmoothing(e.target.checked)} /> Smooth Corners</label>
+    </>}
+    {showsLine && <>
+      <Range label="Width" value={lineWidth} min={1} max={50} fieldMax={5000} onChange={setDisplayedLineWidth} />
+      <label><span className="muted">Style</span><select title="Line style" value={lineDash} onChange={e => setDisplayedLineStyle(e.target.value as LineStyle)}>{lineStyles.map(s => <option key={s}>{s}</option>)}</select></label>
+      <label><span className="muted">Cap</span><select title="How the line's ends, and each dash, are finished" value={lineCap} onChange={e => setDisplayedLineCap(e.target.value as LineCap)}><option>Square</option><option>Round</option></select></label>
+    </>}
+    {!editingStyle && !lineStyle && <span className="muted">Shift for squares and 45° lines, {option} from the center</span>}
   </>
 }
 
@@ -108,8 +196,9 @@ export function ToolHeader() {
       <span className="name">{state.tool === 'move' && maskAlone() ? 'Transform Mask' : tool.label}</span>
       {(state.tool === 'brush' || state.tool === 'eraser') && <>
         <Choice value={state.tool === 'brush' ? 'Paint' : 'Erase'} options={['Paint', 'Erase'] as const} onChange={v => store.setTool(v === 'Paint' ? 'brush' : 'eraser')} />
-        <TipControls />
+        <TipControls disableHardness={state.brush.antialiased === false} />
         <Range label="Smoothing" value={state.brush.smoothing} min={0} max={100} onChange={smoothing => store.set({ brush: { ...state.brush, smoothing } })} />
+        <label title="Smooth edges; turn off for hard pixel edges, like a pencil"><input type="checkbox" checked={state.brush.antialiased !== false} onChange={e => store.set({ brush: { ...state.brush, antialiased: e.target.checked } })} /> Anti-alias</label>
         <span className="muted">Pen Pressure</span><label title="A pen's pressure sets the brush size"><input type="checkbox" checked={prefs.penPressure} onChange={e => setPrefs({ penPressure: e.target.checked })} /> Size</label><label title="A pen's pressure sets how strongly the brush lays down"><input type="checkbox" checked={prefs.penPressureOpacity} onChange={e => setPrefs({ penPressureOpacity: e.target.checked })} /> Opacity</label>
         {target && <span className="muted">On {mask ? `${target.name}’s mask` : target.name}</span>}
       </>}
@@ -127,7 +216,7 @@ export function ToolHeader() {
       {state.tool === 'smear' && <>
         <Choice value={state.smearMode} options={['Liquify', 'Blur', 'Smudge'] as SmearMode[]} onChange={smearMode => store.set({ smearMode })} />
         <TipControls strength />
-        {state.smearMode === 'Blur' && <Range label="Radius" value={state.blurRadius} min={0.5} max={20} step={0.1} sensitivity={0.1} onChange={blurRadius => store.set({ blurRadius })} suffix="px" />}
+        {state.smearMode === 'Blur' && <Range label="Radius" value={state.blurRadius} min={0.5} max={20} fieldMax={50} step={0.1} sensitivity={0.1} onChange={blurRadius => store.set({ blurRadius })} />}
       </>}
       {state.tool === 'gradient' && <>
         <Choice value={state.gradient.shape} options={['Linear', 'Radial'] as const} onChange={shape => { store.set({ gradient: { ...state.gradient, shape } }); refreshGradient() }} />
@@ -136,20 +225,7 @@ export function ToolHeader() {
         <Range label="Opacity" value={Math.round(state.gradient.opacity * 100)} min={1} max={100} onChange={v => { store.set({ gradient: { ...state.gradient, opacity: v / 100 } }); refreshGradient() }} suffix="%" />
         <button onClick={applyGradient}>Apply</button><button onClick={cancelGradient}>Cancel</button>
       </>}
-      {state.tool === 'shape' && <>
-        <Choice value={state.shape.kind} options={['Rectangle', 'Ellipse', 'Line'] as ShapeKind[]} onChange={kind => store.set({ shape: { ...state.shape, kind } })} />
-        <ColorSwatch title="Fill Color" value={state.foreground} onChange={foreground => store.set({ foreground })} />
-        {state.shape.kind === 'Rectangle' && <>
-          <Range label="Corner Radius" value={state.shape.cornerRadius} min={0} max={200} onChange={cornerRadius => store.set({ shape: { ...state.shape, cornerRadius } })} suffix="px" />
-          <label title={state.shape.cornerRadius > 0 ? 'Smooth squircle corners at 60% smoothing, matching Figma\'s iOS setting' : 'Set a radius above 0 to use smooth corners.'}><input type="checkbox" disabled={state.shape.cornerRadius <= 0} checked={state.shape.smoothing} onChange={e => store.set({ shape: { ...state.shape, smoothing: e.target.checked } })} /> Smooth Corners</label>
-        </>}
-        {state.shape.kind === 'Line' && <>
-          <Range label="Line Width" value={state.shape.lineWidth} min={1} max={50} fieldMax={5000} onChange={lineWidth => store.set({ shape: { ...state.shape, lineWidth } })} suffix="px" />
-          <select title="Line style" value={state.shape.lineStyle} onChange={e => store.set({ shape: { ...state.shape, lineStyle: e.target.value as LineStyle } })}>{lineStyles.map(s => <option key={s}>{s}</option>)}</select>
-          <select title="How the line's ends, and each dash, are finished" value={state.shape.lineCap} onChange={e => store.set({ shape: { ...state.shape, lineCap: e.target.value as LineCap } })}><option>Square</option><option>Round</option></select>
-        </>}
-        <span className="muted">Fills with the foreground color. Shift for squares and 45° lines, {option} from the center</span>
-      </>}
+      {state.tool === 'shape' && <ShapeHeader />}
       {state.tool === 'type' && <TypeBar />}
       {state.tool === 'crop' && <>
         <CropRatio />
@@ -168,7 +244,7 @@ export function ToolHeader() {
       {state.tool === 'wand' && <Choice value={state.wandMode} options={['Magic Wand', 'Object'] as const} onChange={wandMode => store.set({ wandMode })} />}
       {state.tool === 'wand' && state.wandMode === 'Object' && <>
         <Choice value={state.objectSelection.sampleAll ? 'All Layers' : 'This Layer'} options={['All Layers', 'This Layer'] as const} onChange={v => store.set({ objectSelection: { ...state.objectSelection, sampleAll: v === 'All Layers' } })} />
-        <Range label="Edge" value={state.objectSelection.edgeOffset} min={-10} max={10} suffix="px" onChange={edgeOffset => store.set({ objectSelection: { ...state.objectSelection, edgeOffset } })} />
+        <Range label="Edge" value={state.objectSelection.edgeOffset} min={-10} max={10} onChange={edgeOffset => store.set({ objectSelection: { ...state.objectSelection, edgeOffset } })} />
         <SelectionHeader />
         <span className="muted">Click an object to select it. Uses the SlimSAM model (Apache-2.0) in your browser.</span>
       </>}
@@ -200,27 +276,32 @@ function useHeldKeys() {
 }
 
 // The rest of the Marquee, Lasso and Magic headers (LassoControls): the selection mode, anti-alias, and Expand, Contract and
-// Feather applied to the current selection straight away.
+// Feather as icon buttons in one pill sharing a single Size amount (default 5 px).
 function SelectionHeader() {
   const state = useEditor()
   const held = useHeldKeys()
   const shown = held.alt ? 'subtract' : held.shift ? 'add' : state.selectionMode
-  const amounts = state.modifyAmounts
-  const setAmount = (key: keyof typeof amounts, value: number, max: number) => store.set({ modifyAmounts: { ...amounts, [key]: Math.min(max, Math.max(1, Math.round(value) || 1)) } })
+  const amount = state.selectionModifyAmount
+  const setAmount = (v: number) => store.set({ selectionModifyAmount: Math.min(500, Math.max(1, Math.round(v) || 1)) })
   const can = !!state.selection
   const showsAntialias = state.tool !== 'marquee' || state.marqueeShape === 'ellipse'
   return <>
     <Choice value={({ replace: 'New', add: 'Add', subtract: 'Subtract', intersect: 'New' } as const)[shown]} options={['New', 'Add', 'Subtract'] as const} onChange={v => store.set({ selectionMode: v === 'New' ? 'replace' : v === 'Add' ? 'add' : 'subtract' })} />
     {showsAntialias && <label><input type="checkbox" checked={state.selectionAntialias} onChange={e => store.set({ selectionAntialias: e.target.checked })} /> Anti-alias</label>}
     <span className="divider" />
-    {(['expand', 'contract', 'feather'] as const).map(key => {
-      const max = key === 'feather' ? 250 : 500
-      return <label key={key}>
-        <button disabled={!can} onClick={() => store.modifySelection(key, amounts[key])}>{key[0].toUpperCase() + key.slice(1)}</button>
-        <input type="number" min={1} max={max} style={{ width: key === 'feather' ? 48 : 40 }} value={amounts[key]} onChange={e => setAmount(key, +e.target.value, max)} />
-        <Scrub label="px" value={amounts[key]} min={1} max={max} onChange={v => setAmount(key, v, max)} />
-      </label>
-    })}
+    <label title="How many pixels to expand, contract or feather the selection by" style={!can ? { opacity: 0.45 } : undefined}>
+      <Scrub label="Size" value={amount} min={1} max={500} onChange={setAmount} />
+      <NumberField disabled={!can} min={1} max={500} style={{ width: 48 }} value={amount} onChange={setAmount} />
+    </label>
+    <span className="segmented">
+      {(['expand', 'contract', 'feather'] as const).map(op => (
+        <button key={op} type="button" disabled={!can} title={`${op[0].toUpperCase() + op.slice(1)} the selection by this many pixels`} aria-label={op}
+          style={{ padding: '4px 7px', display: 'inline-flex', alignItems: 'center' }}
+          onClick={() => store.modifySelection(op, op === 'feather' ? Math.min(250, amount) : amount)}>
+          <Icon name={op} size={14} />
+        </button>
+      ))}
+    </span>
     <span style={{ flex: 1 }} />
     {state.selection && <button onClick={() => store.deselect()}>Deselect</button>}
   </>
@@ -263,16 +344,26 @@ function MoveHeader() {
   const state = useEditor()
   const target = store.active
   const distorting = !!target && isDistorting()
+  // Return in a transform field applies and returns focus to the canvas, so tool keys work right away (6120b8e).
+  const onEnter = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') { e.preventDefault(); (e.target as HTMLInputElement).blur(); (document.querySelector('.stage') as HTMLElement | null)?.focus() }
+  }
   return <>
     {target?.image && !target.isGroup && state.selectedIds.length <= 1 && !maskAlone() && <>
-      <label><span className="muted">X</span><input type="number" value={Math.round(target.transform.origin[0])} onChange={e => store.setTransform(target.id, { ...target.transform, origin: [+e.target.value, target.transform.origin[1]] }, 'Move', 'position')} /></label>
-      <label><span className="muted">Y</span><input type="number" value={Math.round(target.transform.origin[1])} onChange={e => store.setTransform(target.id, { ...target.transform, origin: [target.transform.origin[0], +e.target.value] }, 'Move', 'position')} /></label>
-      <label><span className="muted">W</span><input type="number" min={1} value={Math.round(target.transform.size[0])} onChange={e => store.setTransform(target.id, { ...target.transform, size: [Math.max(1, +e.target.value), target.transform.size[1]] }, 'Scale', 'size')} /></label>
-      <label><span className="muted">H</span><input type="number" min={1} value={Math.round(target.transform.size[1])} onChange={e => store.setTransform(target.id, { ...target.transform, size: [target.transform.size[0], Math.max(1, +e.target.value)] }, 'Scale', 'size')} /></label>
-      <label><span className="muted">Angle</span><input type="number" step={0.1} value={+target.transform.rotation.toFixed(1)} onChange={e => store.setTransform(target.id, { ...target.transform, rotation: +e.target.value }, 'Rotate', 'rotation')} />°</label>
+      <label><span className="muted">X</span><NumberField min={-30000} max={30000} value={Math.round(target.transform.origin[0])} onKeyDown={onEnter} onChange={x => store.setTransform(target.id, { ...target.transform, origin: [x, target.transform.origin[1]] }, 'Move', 'position')} /></label>
+      <label><span className="muted">Y</span><NumberField min={-30000} max={30000} value={Math.round(target.transform.origin[1])} onKeyDown={onEnter} onChange={y => store.setTransform(target.id, { ...target.transform, origin: [target.transform.origin[0], y] }, 'Move', 'position')} /></label>
+      <label><span className="muted">W</span><NumberField min={1} max={30000} value={Math.round(target.transform.size[0])} onKeyDown={onEnter} onChange={w => store.setTransform(target.id, { ...target.transform, size: [Math.max(1, w), target.transform.size[1]] }, 'Scale', 'size')} /></label>
+      <label><span className="muted">H</span><NumberField min={1} max={30000} value={Math.round(target.transform.size[1])} onKeyDown={onEnter} onChange={h => store.setTransform(target.id, { ...target.transform, size: [target.transform.size[0], Math.max(1, h)] }, 'Scale', 'size')} /></label>
+      <label><span className="muted">Angle</span><NumberField min={-360} max={360} step={0.1} digits={1} value={+target.transform.rotation.toFixed(1)} onKeyDown={onEnter} onChange={rotation => store.setTransform(target.id, { ...target.transform, rotation }, 'Rotate', 'rotation')} />°</label>
       <select value={target.transform.sampling} onChange={e => store.setTransform(target.id, { ...target.transform, sampling: e.target.value as typeof target.transform.sampling }, 'Sampling')}><option>High quality</option><option>Smooth</option><option>Nearest</option></select>
     </>}
-    {target && <><button onClick={() => store.flipLayer('x')}>Flip H</button><button onClick={() => store.flipLayer('y')}>Flip V</button><AlignButton /></>}
+    {target && <>
+      <span className="segmented">
+        <button type="button" onClick={() => store.flipLayer('x')}>Flip H</button>
+        <button type="button" onClick={() => store.flipLayer('y')}>Flip V</button>
+      </span>
+      <AlignButton />
+    </>}
     {distorting && <><button className="primary" onClick={applyDistort}>Apply</button><button onClick={cancelDistort}>Cancel</button></>}
     <span className="muted">Shift frees the ratio, {option} scales from the center, {command}-drag a handle distorts, {option}-drag duplicates, {command}-click picks a layer</span>
   </>

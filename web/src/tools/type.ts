@@ -33,6 +33,7 @@ const changed = () => { version++; listeners.forEach(l => l()) }
 // A layer's text while its pixels are still the text drawn.
 export const liveText = (layer: Layer | undefined | null) => layer?.image && !layer.isGroup && !layer.adjustment ? readTextStyle(layer.text) : null
 export const isEditingText = () => !!draft
+export function focusTextInput() { if (draft) focusField(); else (document.querySelector('.stage') as HTMLElement | null)?.focus() }
 export const currentTextStyle = () => draft?.style ?? liveText(store.active) ?? defaults
 export const textSelection = () => draft?.selection ?? null
 

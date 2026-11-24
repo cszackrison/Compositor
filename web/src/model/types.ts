@@ -2,7 +2,7 @@ import type { Deep } from './deep'
 import type { Raster } from './raster'
 import type { GIFLayerData } from './gif'
 
-export const formatVersion = 21
+export const formatVersion = 22
 export const maxSide = 30_000
 // DocumentLimits.swift: the largest single surface, and the raster one document may hold across its layers, a sixteenth of the
 // device's memory (as the browser reports it, 8 GB at most) between one surface and 800 MP.

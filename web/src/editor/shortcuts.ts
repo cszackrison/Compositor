@@ -47,7 +47,7 @@ export type ShortcutDefinition = { id: string; group: ShortcutGroup; title: stri
 // app reads (a project folder can't be picked with files), so Open Project adds Option.
 export const definitions: ShortcutDefinition[] = ([
   ['Menus', 'Undo', c('z', 1)], ['Menus', 'Redo', c('z', 9)], ['Menus', 'New Canvas', c('n', 3)], ['Menus', 'Open', c('o', 1)], ['Menus', 'Open Project', c('o', 3)],
-  ['Menus', 'Save', c('s', 1)], ['Menus', 'Save As', c('s', 9)], ['Menus', 'Export PNG', c('e', 9)], ['Menus', 'Export JPEG', c('s', 11)], ['Menus', 'Export As', c('w', 11)],
+  ['Menus', 'Save', c('s', 1)], ['Menus', 'Save As', c('s', 9)], ['Menus', 'Export PNG', c('e', 9)], ['Menus', 'Export As', c('s', 11)],
   ['Menus', 'Close Project', c('w', 3)], ['Menus', 'Fit Canvas', c('0', 1)], ['Menus', 'Search Commands', c('f', 1)], ['Menus', 'Actual Pixels', c('1', 1)], ['Menus', 'Zoom In', c('=', 1)],
   ['Menus', 'Zoom Out', c('-', 1)], ['Menus', 'Show Transform Controls', c('h', 1)], ['Menus', 'Cut', c('x', 1)], ['Menus', 'Copy', c('c', 1)],
   ['Menus', 'Copy Merged', c('c', 9)], ['Menus', 'Paste', c('v', 1)], ['Menus', 'Fill with Foreground', c('\u007f', 2)], ['Menus', 'Fill with Background', c('\u007f', 1)],
@@ -66,7 +66,7 @@ export const definitions: ShortcutDefinition[] = ([
   ['Canvas & Layers', 'Decrease brush size', c('[')], ['Canvas & Layers', 'Increase brush size', c(']')], ['Canvas & Layers', 'Decrease brush hardness', c('[', 8)], ['Canvas & Layers', 'Increase brush hardness', c(']', 8)],
   ['Canvas & Layers', 'Previous blend mode', c('-', 8)], ['Canvas & Layers', 'Next blend mode', c('=', 8)], ['Canvas & Layers', 'Cycle shape kind', c('u', 8)],
   ...Array.from({ length: 10 }, (_, n) => ['Canvas & Layers', `Opacity digit ${n} (type two for exact %)`, c(String(n))]),
-  ...(['Left', 'Right', 'Up', 'Down'] as const).flatMap((d, i) => { const key = ['', '', '', ''][i]; return [['Canvas & Layers', `Nudge ${d} 1 px`, c(key)], ['Canvas & Layers', `Nudge ${d} 10 px`, c(key, 8)], ['Canvas & Layers', `Move selected pixels ${d} 1 px`, c(key, 1)], ['Canvas & Layers', `Move selected pixels ${d} 10 px`, c(key, 9)]] }),
+  ...(['Left', 'Right', 'Up', 'Down'] as const).flatMap((d, i) => { const key = ['', '', '', ''][i]; return [['Canvas & Layers', `Nudge ${d} 1 px`, c(key)], ['Canvas & Layers', `Nudge ${d} 10 px`, c(key, 8)], ['Canvas & Layers', `Duplicate and Nudge ${d} 1 px`, c(key, 2)], ['Canvas & Layers', `Duplicate and Nudge ${d} 10 px`, c(key, 10)], ['Canvas & Layers', `Move selected pixels ${d} 1 px`, c(key, 1)], ['Canvas & Layers', `Move selected pixels ${d} 10 px`, c(key, 9)]] }),
 ] as [ShortcutGroup, string, Chord][]).map(([group, title, chord]) => ({ id: `${group}:${title}`, group, title, chord }))
 
 const reserved = [c('q', 1), c(',', 1), ...['n', 'w', 't'].flatMap(key => [c(key, 1), c(key, 9)])]

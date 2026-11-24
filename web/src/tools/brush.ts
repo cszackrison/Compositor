@@ -3,7 +3,7 @@ import type { PixelPatch } from '../model/history'
 import { type Mat3, apply, invert } from '../render/gl'
 import type { GPUBrush, GPUSource } from '../render/gpuBrush'
 
-export type BrushSettings = { diameter: number; hardness: number; opacity: number; smoothing: number; erasing: boolean }
+export type BrushSettings = { diameter: number; hardness: number; opacity: number; smoothing: number; erasing: boolean; antialiased?: boolean }
 // Where a stroke's color comes from: the brush color, or another image sampled at each pixel of the raster's grid (Clone Stamp,
 // Blur). `wash` shows the original under a dark wash while Spot Healing gathers its coverage.
 // A source the GPU can sample itself carries `gpu`.
@@ -225,9 +225,10 @@ export class BrushStroke {
     const x0 = Math.max(0, Math.floor(cx - radius - 1)), y0 = Math.max(0, Math.floor(cy - radius - 1))
     const x1 = Math.min(width, Math.ceil(cx + radius + 1)), y1 = Math.min(height, Math.ceil(cy + radius + 1))
     if (x0 >= x1 || y0 >= y1) return
-    if (this.gpu) { this.gpu.dab(cx, cy, radius, this.settings.hardness, { x0, y0, x1, y1 }, this.strength); this.include({ x0, y0, x1, y1 }); return }
+    const aliased = this.settings.antialiased === false
+    if (this.gpu) { this.gpu.dab(cx, cy, radius, this.settings.hardness, { x0, y0, x1, y1 }, this.strength, aliased); this.include({ x0, y0, x1, y1 }); return }
     const hard = this.settings.hardness >= 1, inner = radius * this.settings.hardness, band = Math.max(1e-6, radius - inner)
-    const coverage = this.coverage, outer = radius + 0.5, outer2 = outer * outer, solid = Math.max(0, radius - 0.5), solid2 = solid * solid, inner2 = inner * inner
+    const coverage = this.coverage, outer = aliased ? radius : radius + 0.5, outer2 = outer * outer, solid = Math.max(0, radius - 0.5), solid2 = solid * solid, inner2 = inner * inner
     const lutScale = falloffSteps / band, strength = Math.max(0, Math.min(1, this.strength))
     for (let y = y0; y < y1; y++) {
       const dy = y + 0.5 - cy, dy2 = dy * dy
@@ -239,7 +240,13 @@ export class BrushStroke {
       for (let x = from; x < to; x++) {
         const dx = x + 0.5 - cx, d2 = dx * dx + dy2
         let v: number
-        if (hard) {
+        if (aliased) {
+          if (d2 >= outer2) continue
+          v = strength
+          if (v <= 0) continue
+          const tile = coverage.at(x, y), i = row + (x & 63), c = tile[i]
+          if (v > c) tile[i] = v
+        } else if (hard) {
           if (d2 >= outer2) continue
           v = d2 <= solid2 ? 1 : radius - Math.sqrt(d2) + 0.5
           if (v > 1) v = 1

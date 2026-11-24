@@ -7,7 +7,9 @@ import { encodeEXR, toHalf } from '../src/io/exr'
 import { readProject, writeProject } from '../src/io/project'
 import { channelTables, curveValue, hueSaturationCube, kernelCube } from '../src/model/adjustments'
 import { newAdjustment, newLayer, fullTransform, type Doc } from '../src/model/types'
-import { wand } from '../src/model/selection'
+import { expandSelection, contractSelection, wand } from '../src/model/selection'
+import { movingDistances, distancesBetween } from '../src/tools/distances'
+import { parseTypedHex } from '../src/ui/ColorPicker'
 import { BrushStroke } from '../src/tools/brush'
 import { History } from '../src/model/history'
 import { pixelToDocument } from '../src/render/compositor'
@@ -40,7 +42,7 @@ describe('project format', () => {
     const doc = sampleDoc()
     const files = writeProject(doc, doc.layers[1].id)
     const manifest = JSON.parse(new TextDecoder().decode(files.get('manifest.json')))
-    expect(manifest.version).toBe(21)
+    expect(manifest.version).toBe(22)
     expect(Object.keys(manifest)).toEqual([...Object.keys(manifest)].sort())
     const record = manifest.layers[1]
     expect(record.imageFile).toBe(`${record.id}.png`)
@@ -63,9 +65,25 @@ describe('project format', () => {
   it('rejects a newer format version', async () => {
     const files = writeProject(sampleDoc(), null)
     const manifest = JSON.parse(new TextDecoder().decode(files.get('manifest.json')))
-    manifest.version = 22
+    manifest.version = 23
     files.set('manifest.json', new TextEncoder().encode(JSON.stringify(manifest)))
-    await expect(readProject(files)).rejects.toThrow(/version 22/)
+    await expect(readProject(files)).rejects.toThrow(/version 23/)
+  })
+
+  it('keeps a shape\'s inside stroke, which needs format version 22', async () => {
+    const doc = sampleDoc()
+    const style = { kind: 'Rectangle', red: 1, green: 0, blue: 0, cornerRadius: 2, strokeWidth: 4, strokeRed: 0, strokeGreen: 0, strokeBlue: 1 }
+    doc.layers[1] = { ...doc.layers[1], shape: style }
+    const files = writeProject(doc, null)
+    expect((await readProject(files)).doc.layers[1].shape).toEqual(style)
+    const manifest = JSON.parse(new TextDecoder().decode(files.get('manifest.json')))
+    manifest.version = 21
+    files.set('manifest.json', new TextEncoder().encode(JSON.stringify(manifest)))
+    await expect(readProject(files)).rejects.toThrow(/needs format version 22/)
+    manifest.version = 22
+    manifest.layers[1].shape = { ...style, kind: 'Line', lineWidth: 2 }
+    files.set('manifest.json', new TextEncoder().encode(JSON.stringify(manifest)))
+    await expect(readProject(files)).rejects.toThrow(/rectangle or ellipse/)
   })
 
   it('keeps a shape\'s smooth corners, which need format version 14', async () => {
@@ -308,6 +326,46 @@ describe('pixel tools', () => {
     expect(raster.data.every(v => v === 0)).toBe(true)
     history.redo()
     expect(raster.data[center + 3]).toBe(128)
+  })
+
+  it('aliased brush paints hard pixel edges with no partial alpha', () => {
+    const raster = new Raster(20, 20, 4)
+    const stroke = new BrushStroke(raster, pixelToDocument(fullTransform(20, 20), 20, 20), { diameter: 7, hardness: 0.2, opacity: 1, smoothing: 0, erasing: false, antialiased: false }, [0, 255, 0], null)
+    stroke.moveTo(10, 10); stroke.lineTo(14, 10); stroke.finish()
+    const alphas = new Set<number>()
+    for (let i = 3; i < raster.data.length; i += 4) alphas.add(raster.data[i])
+    expect(alphas).toEqual(new Set([0, 255]))
+  })
+
+  it('expand and contract keep square corners sharp', () => {
+    const mask = new Raster(20, 20, 1)
+    for (let y = 8; y < 12; y++) for (let x = 8; x < 12; x++) mask.data[y * 20 + x] = 255
+    const grown = expandSelection(mask, 3)
+    expect(grown.data[5 * 20 + 5]).toBe(255)
+    expect(grown.data[14 * 20 + 14]).toBe(255)
+    expect(grown.data[4 * 20 + 5]).toBe(0)
+    const shrunk = contractSelection(grown, 3)
+    expect(shrunk.data).toEqual(mask.data)
+  })
+
+  it('computes layer distances while moving and between two boxes', () => {
+    const lines = movingDistances({ x: 40, y: 50, w: 20, h: 20 }, [{ x: 10, y: 45, w: 15, h: 30 }], [100, 100])
+    const horiz = lines.filter(l => l.horizontal).map(l => [l.from, l.to, l.length])
+    expect(horiz).toEqual([[25, 40, 15], [60, 100, 40]])
+    const vert = lines.filter(l => !l.horizontal).map(l => [l.from, l.to, l.length])
+    expect(vert).toEqual([[0, 50, 50], [70, 100, 30]])
+    const apart = distancesBetween({ x: 10, y: 10, w: 20, h: 20 }, { x: 45, y: 15, w: 10, h: 10 })
+    expect(apart).toEqual([{ horizontal: true, from: 30, to: 45, across: 20, length: 15 }])
+    const nested = distancesBetween({ x: 10, y: 10, w: 20, h: 20 }, { x: 0, y: 0, w: 50, h: 50 })
+    expect(nested.map(l => l.length)).toEqual([10, 20, 10, 20])
+  })
+
+  it('parses partially typed hex colors padded with zeros', () => {
+    expect(parseTypedHex('F')).toEqual([0xf0, 0, 0])
+    expect(parseTypedHex('#FF8')).toEqual([0xff, 0x80, 0])
+    expect(parseTypedHex('1a2b3c')).toEqual([0x1a, 0x2b, 0x3c])
+    expect(parseTypedHex('')).toBeNull()
+    expect(parseTypedHex('GGGGGG')).toBeNull()
   })
 })
 

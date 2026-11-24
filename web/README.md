@@ -45,15 +45,15 @@ edited one saves as 8-bit. Text and shape metadata are dropped once their pixels
 - **Transform:**
   - Move, scale, rotate and flip, for one layer or several (or a folder) together.
   - Free distort (⌘-drag a handle).
-  - Option-drag to duplicate.
-  - Snapping to the canvas, layers, guides and grid, with snap lines.
+  - Option-drag or Option-arrow to duplicate.
+  - Snapping to the canvas, layers, guides and grid, with snap lines, plus View › Show › Distances (pink pixel gap lines while moving or holding ⌘).
 - **Selections:**
   - Marquee, Lasso (Freehand and Polygonal), Magic Wand and Color Range.
-  - Expand, Contract and Feather.
+  - Expand, Contract (sharp corners) and Feather (additive across repeated clicks).
   - Load a layer or mask as a selection (⌘-click its thumbnail).
   - Move the outline, or ⌘-drag to move the selected pixels (⌘⌥-drag duplicates them). Hold Space while drawing a Marquee to move it.
-  - The status bar shows the selection's size.
-- **Painting and retouching:** Brush and Eraser, Spot Healing, Clone Stamp, Smear (Liquify, Blur and Smudge), Gradient, and Shape layers that redraw when scaled (Lines solid, dotted or dashed, with square or round caps). Plus right-drag to resize the tip, `[` `]` `{` `}`, and digit keys for opacity (the selected layers' with Move and the selection tools).
+  - The status bar shows the selection's size and feather radius.
+- **Painting and retouching:** Brush and Eraser (with Anti-alias toggle for pixel-art pencil edges), Spot Healing, Clone Stamp, Smear (Liquify, Blur and Smudge), Gradient, and Shape layers that redraw live when edited or scaled (Rectangle and Ellipse with fill, inside stroke, corner radius and smooth corners; Lines solid, dotted or dashed, with square or round caps). Plus right-drag to resize the tip, `[` `]` `{` `}`, and digit keys for opacity (the selected layers' with Move and the selection tools).
 - **Image menu:** Curves, Levels, Hue/Saturation, Black & White, Color Balance, Exposure, Gradient Map, Grain and Invert, applied to a layer's pixels. Also Canvas Size, Image Size, Trim, Crop to Selection and Flip Canvas.
 - **Filter menu:** Last Filter, Gaussian Blur, Motion Blur, Progressive Blur, Add Noise, Vignette, Bloom / Glow, RGB Split, Lens Effects, Sharpen, Reduce Noise, Dither (all ten styles), Scanlines, Tonal Contrast, Volumetric Light, Rim Light and Lens Correction. Edit › Content-Aware Fill (⇧⌫). Each previews live and is limited to the selection.
 - **Canvas aids:** the Crop tool (grouped ratios and a custom one, ⌥ for symmetric cropping), View › Show Extras (⌘H outside the Move tool hides the selection's outline and the guides), rulers, guides dragged from them, a layout grid, and a pixel grid at 800% and above.
@@ -64,7 +64,7 @@ edited one saves as 8-bit. Text and shape metadata are dropped once their pixels
 - **Photoshop files:** PSD and PSB (RGB at 8, 16 and 32 bits, the deeper ones as 16-bit and HDR layers; CMYK at 8 and 16) open with their layers, folders, masks, clipping, text, shapes and
   Levels, Curves and Hue/Saturation layers, after a report of what will be converted. Artboards open as canvases of their own, one tab each.
 - **Export and settings:**
-  - Export As: JPEG, PNG, a one-page PDF, GIF, or a Channel Pack (layers packed into a PNG's red, green, blue and alpha, for game textures; RGB Split's Split to Layers turns a layer back into those four), sized, previewed live (on the checkerboard for PNG) with the file's size. Export PNG saves at once.
+  - Export As (⌥⇧⌘S): JPEG, PNG, a one-page PDF, GIF, layered PSD (8- or 16-bit with folders, masks and clipping), or a Channel Pack (layers packed into a PNG's red, green, blue and alpha, for game textures; RGB Split's Split to Layers turns a layer back into those four), sized, previewed live (on the checkerboard for PNG) with the file's size. Export PNG saves at once.
   - Remappable keyboard shortcuts (Edit › Keyboard Shortcuts).
   - Drag a field's label to scrub its number.
 - **Phones and tablets:**
@@ -86,7 +86,7 @@ edited one saves as 8-bit. Text and shape metadata are dropped once their pixels
 
 It's live at [compositor.fyi](https://compositor.fyi). `npm run deploy` builds and uploads `dist/` to the server, where nginx
 serves it as static files over HTTPS (needed for WebGPU, folder access and the clipboard). Before a deploy, raise the web release in
-`package.json`'s version (`1.6.2-1`: the Mac version this follows, then the web release on it), which the About box shows.
+`package.json`'s version (`1.7.1-1`: the Mac version this follows, then the web release on it), which the About box shows.
 
 ## Not yet ported
 

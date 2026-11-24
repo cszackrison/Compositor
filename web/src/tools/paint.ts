@@ -22,15 +22,35 @@ let pointer: [number, number] | null = null
 let altHeld = false
 
 // Painting can reach past a layer's pixels to the whole canvas: the grid grows first, and shrinks back to what was painted after.
+// A scaled-down layer that would outgrow the pixel budget at its own resolution is resampled to its displayed size first (#334).
 function growToCanvas(layerId: string): { x: number; y: number; w: number; h: number } | null {
-  const layer = store.layer(layerId)!, image = layer.image!
-  const toPixel = invert(pixelToDocument(layer.transform, image.width, image.height))
-  const { width, height } = store.doc
-  const corners = [[0, 0], [width, 0], [width, height], [0, height]].map(([x, y]) => apply(toPixel, x, y))
-  const x0 = Math.min(0, Math.floor(Math.min(...corners.map(c => c[0])))), y0 = Math.min(0, Math.floor(Math.min(...corners.map(c => c[1]))))
-  const x1 = Math.max(image.width, Math.ceil(Math.max(...corners.map(c => c[0])))), y1 = Math.max(image.height, Math.ceil(Math.max(...corners.map(c => c[1]))))
+  let layer = store.layer(layerId)!, image = layer.image!
+  const calcBounds = (img: Raster, t: typeof layer.transform) => {
+    const toPixel = invert(pixelToDocument(t, img.width, img.height))
+    const { width, height } = store.doc
+    const corners = [[0, 0], [width, 0], [width, height], [0, height]].map(([x, y]) => apply(toPixel, x, y))
+    return {
+      x0: Math.min(0, Math.floor(Math.min(...corners.map(c => c[0])))),
+      y0: Math.min(0, Math.floor(Math.min(...corners.map(c => c[1])))),
+      x1: Math.max(img.width, Math.ceil(Math.max(...corners.map(c => c[0])))),
+      y1: Math.max(img.height, Math.ceil(Math.max(...corners.map(c => c[1])))),
+    }
+  }
+  let { x0, y0, x1, y1 } = calcBounds(image, layer.transform)
   if (x0 === 0 && y0 === 0 && x1 === image.width && y1 === image.height) return null
-  if ((x1 - x0) * (y1 - y0) > 120_000_000) return null
+  if ((x1 - x0) * (y1 - y0) > 120_000_000) {
+    const dw = Math.max(1, Math.round(layer.transform.size[0])), dh = Math.max(1, Math.round(layer.transform.size[1]))
+    if (dw >= image.width && dh >= image.height) return null
+    const resampled = new Raster(dw, dh, 4), sx = image.width / dw, sy = image.height / dh
+    for (let y = 0; y < dh; y++) for (let x = 0; x < dw; x++) {
+      const ix = Math.min(image.width - 1, Math.floor((x + 0.5) * sx)), iy = Math.min(image.height - 1, Math.floor((y + 0.5) * sy))
+      resampled.data.set(image.data.subarray((iy * image.width + ix) * 4, (iy * image.width + ix) * 4 + 4), (y * dw + x) * 4)
+    }
+    store.updateLayerLive(layerId, { image: resampled, deep: undefined })
+    layer = store.layer(layerId)!; image = resampled
+    ;({ x0, y0, x1, y1 } = calcBounds(image, layer.transform))
+    if ((x1 - x0) * (y1 - y0) > 120_000_000) return null
+  }
   const grown = placeOnGrid(image, [x0, y0], x1 - x0, y1 - y0)
   const transform = grownTransform(layer.transform, pixelToDocument(layer.transform, image.width, image.height), image.width, image.height, [x0, y0], grown.width, grown.height)
   // A mask on the layer's own grid is padded with white (reveal) to the grown grid, so its coverage stays where it was.
@@ -182,7 +202,7 @@ export const paint: ToolHandler = {
     const toDoc = target.isMask ? (maskGrowth ? pixelToDocument(maskGrowth.base, raster.width, raster.height) : target.toDocument) : pixelToDocument(layer.transform, raster.width, raster.height)
     const deep = target.isMask || tool !== 'smear' ? null : deepOf(layer), blur = deep ? { hdr: deep.hdr, before: deepToFloats(flattened(deep), deep.hdr), sigma: blurSigma(raster, toDoc) } : undefined
     const mode = strokeMode(tool, raster, toDoc, target.isMask, () => raster.data.slice(), p.point)!
-    const settings = { ...store.state.brush, erasing: tool === 'eraser', smoothing: tool === 'brush' || tool === 'eraser' ? store.state.brush.smoothing : 0 }
+    const settings = { ...store.state.brush, erasing: tool === 'eraser', smoothing: tool === 'brush' || tool === 'eraser' ? store.state.brush.smoothing : 0, antialiased: tool === 'brush' || tool === 'eraser' ? store.state.brush.antialiased !== false : true }
     const color = store.paletteColor('foreground')
     const stroke = new BrushStroke(raster, toDoc, settings, color, store.state.selection, mode)
     // Every stroke runs on the GPU where it can: Spot Healing's wash is paint in a dark gray (its heal is done on the CPU when it

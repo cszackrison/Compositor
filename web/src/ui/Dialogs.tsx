@@ -1,6 +1,7 @@
 import { Fragment, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { Store, store, tabForOpening } from '../editor/store'
-import { answerConversion, answerUnsaved, conversionRequest, encodeChannelPack, encodeExport, encodeGIFExport, renderGIFFrames, subscribeConversion, newCanvas, documentName, placeImages, saveFile } from '../editor/actions'
+import { answerConversion, answerUnsaved, conversionRequest, encodeChannelPack, encodeExport, encodeGIFExport, encodePSDExport, renderGIFFrames, startingExportFormat, subscribeConversion, newCanvas, documentName, placeImages, saveFile } from '../editor/actions'
+import { psdNotes, psdSummary } from '../io/psdWriter'
 import { prefs, setPrefs, gridColors } from '../editor/prefs'
 import { chordLabel, chordOf, currentOverrides, definitions, effective, problem, saveOverrides, unassigned, type Chord } from '../editor/shortcuts'
 import { color_range, colorRangeMask } from './colorRange'
@@ -50,8 +51,8 @@ const canvasUnits = [['px', 'Pixels', 0], ['in', 'Inches', 1], ['cm', 'Centimete
 const canvasFills = ['transparent', 'white', 'black'] as const
 
 function NewCanvas() {
-  // Always starting from the common case: transparent, in pixels, at 72 DPI.
-  const [width, setWidth] = useState('1920'), [height, setHeight] = useState('1080')
+  // Always starting transparent in pixels at 72 DPI, remembering the last blank canvas dimensions in pixels.
+  const [width, setWidth] = useState(() => String(prefs.lastCanvasWidth || 1920)), [height, setHeight] = useState(() => String(prefs.lastCanvasHeight || 1080))
   const [unit, setUnit] = useState(0), [resolution, setResolution] = useState(72), [fill, setFill] = useState(0)
   const pixels = (text: string) => {
     const value = Number(text.trim().replace(',', '.')), perInch = canvasUnits[unit][2]
@@ -81,7 +82,7 @@ function NewCanvas() {
     </label>
   )
   return (
-    <Modal title="New Canvas" onSubmit={() => pixelWidth && pixelHeight && newCanvas(pixelWidth, pixelHeight, canvasFills[fill], resolution)} submit="Create Canvas" disabled={!pixelWidth || !pixelHeight}>
+    <Modal title="New Canvas" onSubmit={() => { if (pixelWidth && pixelHeight) { setPrefs({ lastCanvasWidth: pixelWidth, lastCanvasHeight: pixelHeight }); newCanvas(pixelWidth, pixelHeight, canvasFills[fill], resolution) } }} submit="Create Canvas" disabled={!pixelWidth || !pixelHeight}>
       <div style={{ display: 'flex', alignItems: 'flex-end', gap: 10 }}>
         {field('Width', width, setWidth, true)}<span className="muted" style={{ paddingBottom: 8 }}>×</span>{field('Height', height, setHeight)}
         <span className="icon-select" title="Preset sizes for screens and common formats">▾
@@ -178,8 +179,8 @@ function Trim() {
 // previewed as it will be written, on the checkerboard where it keeps transparency. With an HDR layer, EXR too: flattened in half
 // floats, the one format that keeps light brighter than white. JPEG, TIFF and PDF can be written in a CMYK profile's inks instead, for
 // print: RGB at each opening, as most exports are for screens. Channel Pack packs layers into a PNG's red, green, blue and alpha, for game textures.
-type ExportFormat = 'JPEG' | 'PNG' | 'TIFF' | 'PDF' | 'GIF' | 'EXR' | 'Channel Pack'
-let lastExportFormat: ExportFormat = 'PNG'
+type ExportFormat = 'JPEG' | 'PNG' | 'TIFF' | 'PDF' | 'GIF' | 'EXR' | 'Channel Pack' | 'PSD'
+const validFormats: ExportFormat[] = ['JPEG', 'PNG', 'TIFF', 'PDF', 'GIF', 'EXR', 'Channel Pack', 'PSD']
 // Each document's last Channel Pack choices (red, green, blue and alpha), while the page is open.
 const channelChoices = new Map<string, ChannelSource[]>()
 type Flattened = { pixels: Raster; linear: LinearImage | null; deep: Float32Array | null }
@@ -197,9 +198,13 @@ function ExportAs({ start }: { start?: ExportFormat }) {
 }
 function ExportSheet({ start, pixels, linear, deep }: { start?: ExportFormat } & Flattened) {
   const [sixteenBit, setSixteenBit] = useState(false)
-  const others: ExportFormat[] = linear ? ['TIFF', 'PDF', 'GIF', 'EXR', 'Channel Pack'] : ['TIFF', 'PDF', 'GIF', 'Channel Pack']
+  const others: ExportFormat[] = linear ? ['TIFF', 'PDF', 'GIF', 'EXR', 'Channel Pack', 'PSD'] : ['TIFF', 'PDF', 'GIF', 'Channel Pack', 'PSD']
   const resolution = store.state.doc.resolution || 72
-  const [format, setFormat] = useState<ExportFormat>(() => { const f = start ?? lastExportFormat; return f === 'EXR' && !linear ? 'PNG' : f })
+  const [format, setFormat] = useState<ExportFormat>(() => {
+    const raw = start ?? startingExportFormat()
+    const f = validFormats.includes(raw as ExportFormat) ? (raw as ExportFormat) : 'PNG'
+    return f === 'EXR' && !linear ? 'PNG' : f
+  })
   const [cmyk, setCMYK] = useState(false), profile = useSyncExternalStore(subscribeProfiles, chosenProfile)
   const takesCMYK = format === 'JPEG' || format === 'TIFF' || format === 'PDF', inks = cmyk && takesCMYK
   const [width, setWidth] = useState(pixels.width), [height, setHeight] = useState(pixels.height)
@@ -211,11 +216,12 @@ function ExportSheet({ start, pixels, linear, deep }: { start?: ExportFormat } &
   const [zoom, setZoom] = useState<'fit' | number>('fit')
   const [loops, setLoops] = useState(true), [gifClear, setGIFClear] = useState(true)
   const gifFrames = useMemo(() => format === 'GIF' ? renderGIFFrames(store.state.doc) : null, [format === 'GIF'])
-  const keepsClear = format === 'PNG' || format === 'EXR' || (format === 'TIFF' && !inks) || (format === 'GIF' && gifClear)
+  const psdChanges = useMemo(() => format === 'PSD' ? psdSummary(psdNotes(store.state.doc)) : null, [format === 'PSD'])
+  const keepsClear = format === 'PNG' || format === 'EXR' || format === 'PSD' || (format === 'TIFF' && !inks) || (format === 'GIF' && gifClear)
   const deepPNG = format === 'PNG' && sixteenBit && !!deep
   const packing = format === 'Channel Pack', layers = store.state.doc.layers, rendered = useRef(new Map<string, Raster>())
   const [channels, setChannels] = useState<ChannelSource[]>(() => { const kept = channelChoices.get(store.state.doc.id)?.filter(s => s === 'black' || s === 'white' || layers.some(l => l.id === s)); return kept?.length === 4 ? kept : packChannels.map(c => defaultSource(c, layers)) })
-  const key = JSON.stringify([format, width, height, format === 'JPEG' ? quality : 0, keepsClear ? 0 : background, inks ? profile?.name ?? '' : '', deepPNG, format === 'GIF' ? loops : 0, packing ? channels : 0])
+  const key = JSON.stringify([format, format === 'PSD' ? pixels.width : width, format === 'PSD' ? pixels.height : height, format === 'JPEG' ? quality : 0, keepsClear ? 0 : background, inks ? profile?.name ?? '' : '', deepPNG, format === 'GIF' ? loops : 0, packing ? channels : 0])
   const ready = result?.key === key && !error
   useEffect(() => {
     // An encode overtaken by a newer setting is dropped when it finishes, so the slower one can't replace what's shown.
@@ -223,7 +229,13 @@ function ExportSheet({ start, pixels, linear, deep }: { start?: ExportFormat } &
     const timer = setTimeout(async () => {
       try {
         if (inks && !profile) throw new Error('Load a CMYK profile to export in inks.')
-        const encoded = format === 'GIF' ? (b => ({ blob: b, preview: b }))(encodeGIFExport(gifFrames!, width, height, loops, gifClear, background)) : format === 'Channel Pack' ? encodeChannelPack(store.state.doc, channels, width, height, rendered.current) : await encodeExport(pixels, format, width, height, { quality, background, resolution, linear, cmyk: inks ? profile : null, deep: deepPNG ? deep : null })
+        const encoded = format === 'PSD'
+          ? await encodePSDExport(store.state.doc, pixels, deep)
+          : format === 'GIF'
+            ? (b => ({ blob: b, preview: b }))(encodeGIFExport(gifFrames!, width, height, loops, gifClear, background))
+            : format === 'Channel Pack'
+              ? encodeChannelPack(store.state.doc, channels, width, height, rendered.current)
+              : await encodeExport(pixels, format, width, height, { quality, background, resolution, linear, cmyk: inks ? profile : null, deep: deepPNG ? deep : null })
         if (!current) return
         if (shownUrl.current) URL.revokeObjectURL(shownUrl.current)
         shownUrl.current = URL.createObjectURL(encoded.preview)
@@ -248,8 +260,8 @@ function ExportSheet({ start, pixels, linear, deep }: { start?: ExportFormat } &
   const step = (up: boolean) => setZoom(z => { const current = z === 'fit' ? 0.25 : z; return up ? steps.find(s => s > current * 1.001) ?? current : [...steps].reverse().find(s => s < current * 0.999) ?? current })
   const size = result?.blob.size ?? 0
   const finish = () => {
-    lastExportFormat = format
-    if (format === 'JPEG') setPrefs({ jpegQuality: quality })
+    store.exportedFormat = format
+    setPrefs({ lastExportFormat: format, ...(format === 'JPEG' ? { jpegQuality: quality } : {}) })
     if (packing) channelChoices.set(store.state.doc.id, channels)
     if (result) saveFile(`${documentName()}.${format === 'JPEG' ? 'jpg' : packing ? 'png' : format.toLowerCase()}`, result.blob).catch(e => store.notify((e as Error).message))
   }
@@ -260,25 +272,26 @@ function ExportSheet({ start, pixels, linear, deep }: { start?: ExportFormat } &
         <button type="button" onClick={() => step(false)}>−</button><button type="button" onClick={() => step(true)}>+</button>
       </div>
       <div className="export-preview" style={{ overflow: zoom === 'fit' ? 'hidden' : 'auto', display: zoom === 'fit' ? 'flex' : 'block' }} onDoubleClick={() => setZoom(zoom === 'fit' ? 1 : 'fit')} title="Double-click switches between Fit and 100%">
-        {result && <img src={result.url} alt="" className={keepsClear ? 'checkered' : ''} style={zoom === 'fit' ? { maxWidth: '100%', maxHeight: '100%' } : { width: width * zoom / devicePixelRatio, imageRendering: zoom >= 1 ? 'pixelated' : 'auto' }} />}
+        {result && <img src={result.url} alt="" className={keepsClear ? 'checkered' : ''} style={zoom === 'fit' ? { maxWidth: '100%', maxHeight: '100%' } : { width: (format === 'PSD' ? pixels.width : width) * zoom / devicePixelRatio, imageRendering: zoom >= 1 ? 'pixelated' : 'auto' }} />}
         {!ready && !error && <span className="muted" style={{ position: 'absolute', right: 10, bottom: 8 }}>Updating…</span>}
       </div>
       <div className="grid" style={{ gridTemplateColumns: '84px 1fr', gridTemplateRows: 'repeat(5, minmax(28px, auto))', alignContent: 'start' }}>
         <span className="muted">Format</span>
         <span style={{ display: 'flex', gap: 10 }}>
           <span className="segmented">{(['JPEG', 'PNG'] as const).map(f => <button key={f} type="button" className={format === f ? 'on' : ''} onClick={() => setFormat(f)}>{f}</button>)}</span>
-          <select title={`Other formats: TIFF, PDF and GIF${linear ? ', EXR to keep light brighter than white' : ''}, and Channel Pack for game textures`} className={others.includes(format) ? 'on' : ''} value={others.includes(format) ? format : ''} onChange={e => e.target.value && setFormat(e.target.value as ExportFormat)}><option value="" disabled>More</option>{others.map(f => <option key={f}>{f}</option>)}</select>
+          <select title={`Other formats: TIFF, PDF and GIF${linear ? ', EXR to keep light brighter than white' : ''}, Channel Pack for game textures, and PSD to keep the layers for Photoshop`} className={others.includes(format) ? 'on' : ''} value={others.includes(format) ? format : ''} onChange={e => e.target.value && setFormat(e.target.value as ExportFormat)}><option value="" disabled>More</option>{others.map(f => <option key={f}>{f}</option>)}</select>
         </span>
         {takesCMYK && <><span className="muted">Color</span><span style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
           <select value={cmyk ? 'CMYK' : 'RGB'} title="CMYK writes a printer's inks through the profile in View › CMYK › Profile" onChange={e => setCMYK(e.target.value === 'CMYK')}><option>RGB</option><option>CMYK</option></select>
           {cmyk && <button type="button" title="Use a CMYK ICC profile, such as the one your printer gave you" onClick={() => { pickProfile().catch(e => setError((e as Error).message)) }}>Load Profile…</button>}
         </span></>}
-        <span className="muted">Size</span>
+        {format !== 'PSD' && <><span className="muted">Size</span>
         <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
           <input type="number" min={1} style={{ width: 72 }} value={typed?.side === 'width' ? typed.text : width} title="Width in pixels; the height follows, keeping the proportions" onChange={e => type('width', e.target.value)} onBlur={() => setTyped(null)} />×
           <input type="number" min={1} style={{ width: 72 }} value={typed?.side === 'height' ? typed.text : height} title="Height in pixels; the width follows, keeping the proportions" onChange={e => type('height', e.target.value)} onBlur={() => setTyped(null)} /><span className="muted">px</span>
           <select title="Scale the export: the document stays as it is" value="" onChange={e => setScale(+e.target.value / 100)}><option value="" disabled>{percent}%</option>{[25, 50, 75, 100, 200].map(p => <option key={p} value={p}>{p}%</option>)}</select>
-        </span>
+        </span></>}
+        {format === 'PSD' && psdChanges && <><span className="muted">Changes</span><span className="muted" style={{ whiteSpace: 'pre-line' }}>{psdChanges}</span></>}
         {format === 'PNG' && deep && <><span className="muted">Depth</span><label title="Keep the 16-bit layers’ full precision, in a file about twice the size"><input type="checkbox" checked={sixteenBit} onChange={e => setSixteenBit(e.target.checked)} /> 16 bits per channel</label></>}
         {format === 'JPEG' && <><span className="muted">Quality</span><span style={{ display: 'flex', alignItems: 'center', gap: 8 }}><input type="range" min={0} max={1} step={0.01} value={quality} onChange={e => setQuality(+e.target.value)} style={{ width: 300 }} /><span>{Math.round(quality * 100)}%</span></span></>}
         {packing && packChannels.map((channel, c) => <Fragment key={channel}><span className="muted">{channel}</span><select style={{ width: 260 }} title={`What fills the ${channel.toLowerCase()} channel: a layer or group read as grayscale, or solid black or white`} value={channels[c]} onChange={e => setChannels(channels.map((s, i) => i === c ? e.target.value : s))}><option value="black">Black</option><option value="white">White</option><optgroup label="──────">{[...layers].reverse().filter(l => !l.adjustment).map(l => <option key={l.id} value={l.id}>{l.name}</option>)}</optgroup></select></Fragment>)}
@@ -287,7 +300,7 @@ function ExportSheet({ start, pixels, linear, deep }: { start?: ExportFormat } &
         {!keepsClear && !packing && <><span className="muted">Background</span><ColorSwatch title="Export Background" sampling={false} value={background} onChange={setBackground} /></>}
       </div>
       <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-        <span className="muted">{packing ? 'Each channel from a layer, read as grayscale · PNG' : format === 'EXR' ? 'Brighter than white kept · Transparency kept' : deepPNG ? '16 bits per channel · Transparency kept · sRGB' : inks ? `CMYK – ${profile?.name ?? 'No profile'}` : keepsClear ? 'Transparency kept · sRGB' : 'sRGB'}</span>
+        <span className="muted">{format === 'PSD' ? 'Layers, folders and masks kept · sRGB' : packing ? 'Each channel from a layer, read as grayscale · PNG' : format === 'GIF' ? 'Up to 256 colors · sRGB' : format === 'EXR' ? 'Brighter than white kept · Transparency kept' : deepPNG ? '16 bits per channel · Transparency kept · sRGB' : inks ? `CMYK – ${profile?.name ?? 'No profile'}` : keepsClear ? 'Transparency kept · sRGB' : 'sRGB'}</span>
         {error ? <span style={{ color: 'var(--danger)' }}>{error}</span> : <span className="muted">{ready ? (size > 1e6 ? `${(size / 1e6).toFixed(1)} MB` : `${Math.max(1, Math.round(size / 1e3))} KB`) : 'Updating…'}</span>}
       </div>
     </Modal>
@@ -307,10 +320,10 @@ function About() {
 }
 
 function Amount({ kind }: { kind: 'expand' | 'contract' | 'feather' }) {
-  const [amount, setAmount] = useState(store.state.modifyAmounts[kind])
   const max = kind === 'feather' ? 250 : 500, title = kind === 'expand' ? 'Expand Selection' : kind === 'contract' ? 'Contract Selection' : 'Feather Selection'
+  const [amount, setAmount] = useState(Math.min(max, store.state.selectionModifyAmount))
   return (
-    <Modal title={title} onSubmit={() => { store.set({ modifyAmounts: { ...store.state.modifyAmounts, [kind]: amount } }); store.modifySelection(kind, amount) }}>
+    <Modal title={title} onSubmit={() => { store.set({ selectionModifyAmount: amount }); store.modifySelection(kind, amount) }}>
       <div className="grid"><Scrub label={kind === 'feather' ? 'Feather radius' : kind === 'expand' ? 'Expand by' : 'Contract by'} value={amount} min={1} max={max} onChange={v => setAmount(Math.round(v))} /><label><input type="number" min={1} max={max} value={amount} onChange={e => setAmount(Math.min(max, Math.max(1, +e.target.value)))} autoFocus /> px</label></div>
     </Modal>
   )
@@ -483,7 +496,7 @@ function PhotoshopConversion() {
 }
 
 export const panels: Record<string, () => React.ReactNode> = {
-  'New Canvas': () => <NewCanvas />, 'Canvas Size': () => <CanvasSize />, 'Image Size': () => <ImageSize />, Trim: () => <Trim />, 'Export JPEG': () => <ExportAs start="JPEG" />, 'Export As': () => <ExportAs />,
+  'New Canvas': () => <NewCanvas />, 'Canvas Size': () => <CanvasSize />, 'Image Size': () => <ImageSize />, Trim: () => <Trim />, 'Export As': () => <ExportAs />,
   About: () => <About />, 'Expand Selection': () => <Amount kind="expand" />, 'Contract Selection': () => <Amount kind="contract" />, 'Feather Selection': () => <Amount kind="feather" />,
   Effect: () => <EffectPanel />, 'Grid Settings': () => <GridSettings />, 'Keyboard Shortcuts': () => <KeyboardShortcuts />, 'Color Range': () => <ColorRange />,
   'Unsaved Changes': () => <UnsavedChanges />, 'Develop RAW': () => <RawDevelop />, 'Changed on Disk': () => <ChangedOnDisk />, 'Photoshop Conversion': () => <PhotoshopConversion />,

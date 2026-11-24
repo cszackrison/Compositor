@@ -87,8 +87,13 @@ kbd { font: inherit; color: var(--muted); }
 .layer { display: flex; align-items: center; gap: 6px; height: 40px; padding-right: 8px; border-top: 2px solid transparent; border-bottom: 2px solid transparent; cursor: default; user-select: none; }
 .layer.active { background: var(--accent-soft); }
 .layer.selected:not(.active) { background: rgba(61,139,253,0.1); }
-.layer.drop-above { border-top-color: var(--accent); }
-.layer.drop-below { border-bottom-color: var(--accent); }
+.layer.drop-above { border-top-color: var(--accent); position: relative; }
+.layer.drop-below { border-bottom-color: var(--accent); position: relative; }
+.layer.drop-above::before, .layer.drop-below::before { content: ''; position: absolute; left: var(--drop-indent, 0px); right: 0; height: 2px; background: var(--accent); pointer-events: none; }
+.layer.drop-above { border-top-color: transparent; }
+.layer.drop-below { border-bottom-color: transparent; }
+.layer.drop-above::before { top: -2px; }
+.layer.drop-below::before { bottom: -2px; }
 .layer.drop-into { outline: 2px solid var(--accent); outline-offset: -2px; }
 .layer .eye { width: 22px; color: var(--muted); }
 .layer .eye.off { opacity: 0.35; }
@@ -178,16 +183,19 @@ input[type="range"].track::-moz-range-thumb { width: 12px; height: 12px; border-
 .tab.drop-target { background: var(--accent-soft); outline: 2px solid var(--accent); outline-offset: -2px; }
 .tab.new-slot { border: 1px dashed var(--line); color: var(--muted); padding: 0 14px; }
 .tab { width: auto; min-width: 0; flex: 0 1 170px; }
-.color-picker { position: fixed; z-index: 160; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px 20px 20px; box-shadow: 0 20px 60px rgba(0,0,0,0.5); user-select: none; }
+.color-picker { position: fixed; z-index: 160; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px 20px 14px; box-shadow: 0 20px 60px rgba(0,0,0,0.5); user-select: none; }
 .color-picker .picker-title { font-weight: 600; margin-bottom: 12px; cursor: move; }
-.color-picker .sb { position: relative; width: 256px; height: 256px; border: 1px solid rgba(0,0,0,0.6); cursor: crosshair; touch-action: none; }
+.color-picker .sb { position: relative; width: 256px; height: 256px; border-radius: 6px; border: 1px solid rgba(0,0,0,0.6); cursor: crosshair; touch-action: none; }
 .color-picker .marker { position: absolute; width: 12px; height: 12px; margin: -6px 0 0 -6px; border-radius: 50%; border: 1.5px solid #fff; box-shadow: 0 0 0 0.75px #000; pointer-events: none; }
-.color-picker .hue { position: relative; width: 20px; height: 256px; margin: 0 7px; background: linear-gradient(to bottom, #f00, #f0f, #00f, #0ff, #0f0, #ff0, #f00); cursor: ns-resize; touch-action: none; }
-.color-picker .arrow { position: absolute; left: -7px; right: -7px; height: 0; border-top: 1px solid #fff; box-shadow: 0 0 0 1px #000; pointer-events: none; }
-.swatch { padding: 0; border-radius: 4px; border: 1px solid #000; box-shadow: inset 0 0 0 1px rgba(255,255,255,0.8); }
-.toolrail .swatches .swatch { position: absolute; width: 22px; height: 22px; border-radius: 5px; border: 1px solid #000; box-shadow: inset 0 0 0 1.5px #fff; cursor: pointer; padding: 0; }
+.color-picker .hue { position: relative; width: 16px; height: 256px; margin: 0 6px; border-radius: 5px; background: linear-gradient(to bottom, #f00, #f0f, #00f, #0ff, #0f0, #ff0, #f00); cursor: ns-resize; touch-action: none; }
+.color-picker .arrow { position: absolute; left: -6px; right: -6px; height: 0; border-top: 1.5px solid #fff; box-shadow: 0 0 0 1px #000; pointer-events: none; }
+.color-picker .picker-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line); }
+.swatch { padding: 0; border-radius: 5px; border: 1px solid rgba(255,255,255,0.22); box-shadow: 0 0 0 1px rgba(0,0,0,0.65); }
+.toolrail .swatches .swatch { position: absolute; width: 22px; height: 22px; border-radius: 5px; border: 1px solid rgba(255,255,255,0.25); box-shadow: 0 0 0 1px rgba(0,0,0,0.7); cursor: pointer; padding: 0; }
 .toolrail .swatches .swatch.fg { left: 0; top: 0; z-index: 1; }
 .toolrail .swatches .swatch.bg { right: 0; bottom: 0; }
+.toolrail .palette-actions { display: flex; gap: 2px; margin-top: 2px; }
+.toolrail .palette-actions button.icon { width: 18px; height: 20px; padding: 0; }
 .toolheader .divider { width: 1px; align-self: stretch; margin: 8px 0; background: var(--line); }
 
 .workspace { grid-row: 3; grid-column: 2; position: relative; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
